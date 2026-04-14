@@ -1,0 +1,3 @@
+import{create}from'zustand';import{persist}from'zustand/middleware';import type{Workspace,WorkspaceMember}from'@/types/models';
+interface WorkspaceState{activeWorkspaceId:string|null;workspace:Workspace|null;member:WorkspaceMember|null;setActive:(id:string)=>void;setWorkspace:(ws:Workspace,member:WorkspaceMember)=>void;clear:()=>void;}
+export const useWorkspaceStore=create<WorkspaceState>()(persist((set)=>({activeWorkspaceId:null,workspace:null,member:null,setActive:(id)=>set({activeWorkspaceId:id}),setWorkspace:(workspace,member)=>set({workspace,member,activeWorkspaceId:workspace.id}),clear:()=>set({activeWorkspaceId:null,workspace:null,member:null})}),{name:'kith-workspace',partialize:(s)=>({activeWorkspaceId:s.activeWorkspaceId})}));

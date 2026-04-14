@@ -1,0 +1,2 @@
+import{api}from'@/lib/axios';
+export const inviteService={list:(w:string)=>api.get(`/v1/workspaces/${w}/invites`).then(r=>r.data),create:(w:string,p:{email?:string;role?:string;message?:string})=>api.post(`/v1/workspaces/${w}/invites`,p).then(r=>r.data),revoke:(w:string,id:string)=>api.delete(`/v1/workspaces/${w}/invites/${id}`).then(r=>r.data),preview:(token:string)=>api.get(`/v1/public/invites/${token}`).then(r=>r.data),accept:(token:string)=>api.post(`/v1/public/invites/${token}/accept`).then(r=>r.data)};

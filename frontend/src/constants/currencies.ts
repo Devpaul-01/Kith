@@ -1,0 +1,4 @@
+export const SUPPORTED_CURRENCIES=['USD','EUR','GBP','NGN','GHS','KES','ZAR','CAD','AUD','INR','JPY','CNY','BRL','MXN','AED','SAR','QAR','TRY','CHF','SEK'] as const;
+export type SupportedCurrency=typeof SUPPORTED_CURRENCIES[number];
+export const CURRENCY_SYMBOLS:Record<string,string>={USD:'$',EUR:'€',GBP:'£',NGN:'₦',GHS:'₵',KES:'KSh',ZAR:'R',CAD:'CA$',AUD:'A$',INR:'₹',JPY:'¥',CNY:'¥',BRL:'R$',MXN:'MX$',AED:'د.إ',SAR:'﷼',QAR:'﷼',TRY:'₺',CHF:'CHF',SEK:'kr'};
+export const CURRENCY_LABELS:Record<string,string>={USD:'US Dollar',EUR:'Euro',GBP:'British Pound',NGN:'Naira',GHS:'Cedi',KES:'Kenyan Shilling',ZAR:'Rand',CAD:'Canadian Dollar',AUD:'Australian Dollar',INR:'Indian Rupee',JPY:'Japanese Yen',CNY:'Chinese Yuan',BRL:'Brazilian Real',MXN:'Mexican Peso',AED:'UAE Dirham',SAR:'Saudi Riyal',QAR:'Qatari Riyal',TRY:'Turkish Lira',CHF:'Swiss Franc',SEK:'Swedish Krona'};
