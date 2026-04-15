@@ -93,25 +93,38 @@ export default function SignupPage() {
     },
   });
 
-  function redirectAfterAuth(memberships: Membership[]) {
-    // If they arrived via an invite link, accept it first
-    if (inviteToken) {
-      nav(`/invite/${inviteToken}`);
-      return;
-    }
-    if (memberships.length === 0) {
-      // Brand new user — send to workspace creation
-      // Pass intent so the container creation step is pre-selected
-      nav(intent ? `/workspace/create?intent=${intent}` : '/workspace/create');
-      return;
-    }
+  // Update the redirectAfterAuth function
+function redirectAfterAuth(memberships: Membership[]) {
+  // ✅ FIRST: Check for pending invite token
+  const pendingInviteToken = localStorage.getItem('pendingInviteToken');
+  
+  if (pendingInviteToken) {
+    // User signed up via invite - accept invite first
+    localStorage.removeItem('pendingInviteToken');
+    nav(`/invite/${pendingInviteToken}`);
+    return;
+  }
+  
+  // ✅ SECOND: Check URL invite param (legacy support)
+  if (inviteToken) {
+    nav(`/invite/${inviteToken}`);
+    return;
+  }
+  
+  // ✅ THIRD: User has memberships → go to dashboard
+  if (memberships.length > 0) {
     if (memberships.length === 1) {
       setActive(memberships[0].workspace_id);
       nav('/app/dashboard');
       return;
     }
     nav('/workspace/select');
+    return;
   }
+  
+  // ✅ LAST: No memberships, no invite → create workspace
+  nav(intent ? `/workspace/create?intent=${intent}` : '/workspace/create');
+}
 
   return (
     <div className="space-y-6">

@@ -18,6 +18,9 @@ import type { User, Membership } from '@/types/models';
 const schema = z.object({ email: z.string().email('Invalid email'), password: z.string().min(1, 'Required') });
 type Form = z.infer<typeof schema>;
 
+
+
+
 export default function LoginPage() {
   const nav = useNavigate();
   const [params] = useSearchParams();
@@ -36,6 +39,13 @@ export default function LoginPage() {
       const d = data as { access_token: string; refresh_token: string; expires_in: number; user: User | null; memberships: Membership[] };
       setSession(d.access_token, d.refresh_token, d.expires_in);
       setDbUser(d.user, d.memberships);
+    
+      const pendingInviteToken = localStorage.getItem('pendingInviteToken');
+      if (pendingInviteToken) {
+        localStorage.removeItem('pendingInviteToken');
+        nav(`/invite/${pendingInviteToken}`);
+      }
+    
       if (!d.user) { nav('/register'); return; }
       if (d.memberships.length === 0) { nav('/workspace/create'); return; }
       if (d.memberships.length === 1) { setActive(d.memberships[0].workspace_id); nav('/app/dashboard'); return; }

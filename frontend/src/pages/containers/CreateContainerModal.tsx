@@ -200,13 +200,13 @@ export function CreateContainerModal({ onClose }: Props) {
               </div>
             )}
             
-            {containerType === 'recurring' && (
-              <Checkbox 
-                label="Carry forward unpaid amounts" 
-                checked={watch('carry_forward_unpaid')}
-                onCheckedChange={(checked) => setValue('carry_forward_unpaid', checked === true)}
-              />
-            )}
+            {containerType === 'recurring' && enableMoney && (
+  <Checkbox 
+    label="Carry forward unpaid amounts" 
+    checked={watch('carry_forward_unpaid')}
+    onCheckedChange={(checked) => setValue('carry_forward_unpaid', checked === true)}
+  />
+)}
           </div>
           
           {/* Actions */}
