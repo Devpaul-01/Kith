@@ -12,8 +12,20 @@ async function listParticipants(req, res, next) {
     const { data, error } = await supabaseAdmin
       .from('container_participants')
       .select(`
-        *, workspace_members!inner(display_name, is_proxy, role),
-        contributor_targets(target_amount, target_currency, due_date, id, is_current, cycle_id)
+        *,
+        workspace_members!container_participants_workspace_member_id_fkey (
+          display_name,
+          is_proxy,
+          role
+        ),
+        contributor_targets(
+          target_amount,
+          target_currency,
+          due_date,
+          id,
+          is_current,
+          cycle_id
+        )
       `)
       .eq('container_id', containerId);
 
@@ -30,7 +42,8 @@ async function listParticipants(req, res, next) {
         target_currency: currentTarget?.target_currency,
         due_date:        currentTarget?.due_date,
         target_id:       currentTarget?.id,
-        workspace_members: undefined, contributor_targets: undefined,
+        workspace_members: undefined,
+        contributor_targets: undefined,
       };
     });
 
@@ -40,40 +53,118 @@ async function listParticipants(req, res, next) {
 
 async function addParticipants(req, res, next) {
   try {
-    const data                          = addParticipantsSchema.parse(req.body);
-    const { workspaceId, containerId }  = req.params;
+    const payload = addParticipantsSchema.parse(req.body);
+    const { workspaceId, containerId } = req.params;
 
-    const { data: container } = await supabaseAdmin.from('containers').select('*').eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
+    // Check container exists and get money tracking status
+    const { data: container, error: containerError } = await supabaseAdmin
+      .from('containers')
+      .select('enable_money, enable_tasks, status')
+      .eq('id', containerId)
+      .eq('workspace_id', workspaceId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (containerError) throw new Error(containerError.message);
     if (!container) throw new NotFoundError('Container not found');
+    
+    // Only active containers can add participants
+    if (container.status !== 'active') {
+      throw new BusinessRuleError('Cannot add participants to a completed or archived container');
+    }
 
-    const added = [];
+    // Get all workspace member IDs at once (more efficient)
+    const memberIds = payload.participants.map(p => p.workspace_member_id);
+    const { data: validMembers } = await supabaseAdmin
+      .from('workspace_members')
+      .select('id')
+      .eq('workspace_id', workspaceId)
+      .in('id', memberIds)
+      .is('deleted_at', null);
+
+    const validMemberIds = new Set((validMembers || []).map(m => m.id));
+
+    let added = [];
     let skippedAlreadyPresent = 0;
+    let skippedInvalidMember = 0;
 
-    for (const p of data.participants) {
-      const { data: memberCheck } = await supabaseAdmin.from('workspace_members').select('id').eq('id', p.workspace_member_id).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
-      if (!memberCheck) continue;
+    for (const p of payload.participants) {
+      // Skip if member doesn't exist in workspace
+      if (!validMemberIds.has(p.workspace_member_id)) {
+        skippedInvalidMember++;
+        continue;
+      }
 
       const moneyEnabled = container.enable_money ? (p.money_enabled ?? false) : false;
+      const tasksEnabled = container.enable_tasks ? (p.tasks_enabled ?? false) : false;
 
-      const { data: inserted } = await supabaseAdmin
+      const { data: inserted, error: insertError } = await supabaseAdmin
         .from('container_participants')
-        .upsert({ container_id: containerId, workspace_member_id: p.workspace_member_id, money_enabled: moneyEnabled, tasks_enabled: p.tasks_enabled ?? false, role: p.role || null, notes: p.notes || null, added_by: req.member.id }, { onConflict: 'container_id,workspace_member_id', ignoreDuplicates: true })
+        .upsert({ 
+          container_id: containerId, 
+          workspace_member_id: p.workspace_member_id, 
+          money_enabled: moneyEnabled, 
+          tasks_enabled: tasksEnabled, 
+          role: p.role || null, 
+          notes: p.notes || null, 
+          added_by: req.member.id 
+        }, { 
+          onConflict: 'container_id,workspace_member_id', 
+          ignoreDuplicates: true 
+        })
         .select()
         .maybeSingle();
 
-      if (!inserted) { skippedAlreadyPresent++; continue; }
+      if (!inserted) { 
+        skippedAlreadyPresent++; 
+        continue; 
+      }
 
-      if (p.target && container.enable_money) {
-        await supabaseAdmin.from('contributor_targets').insert({ container_participant_id: inserted.id, container_id: containerId, workspace_member_id: p.workspace_member_id, target_amount: p.target.amount, target_currency: p.target.currency, due_date: p.target.due_date || null, set_by: req.member.id });
+      // Create target if provided and money tracking is enabled
+      if (p.target && container.enable_money && p.target.amount > 0) {
+        const { error: targetError } = await supabaseAdmin
+          .from('contributor_targets')
+          .insert({ 
+            container_participant_id: inserted.id, 
+            container_id: containerId, 
+            workspace_member_id: p.workspace_member_id, 
+            target_amount: p.target.amount, 
+            target_currency: p.target.currency || container.budget_currency || 'USD', 
+            due_date: p.target.due_date || null, 
+            set_by: req.member.id 
+          });
+
+        if (targetError) {
+          // Log but don't fail - participant was added, just no target
+          console.error('Failed to create target:', targetError.message);
+        }
       }
 
       added.push(inserted);
     }
 
-    success(res, { added, skipped_already_present: skippedAlreadyPresent }, 201);
-  } catch (err) { next(err); }
-}
+    // Audit log
+    await audit.log({
+      ...audit.fromReq(req),
+      action: 'container.participants_added',
+      targetType: 'container',
+      targetId: containerId,
+      metadata: { 
+        added_count: added.length,
+        skipped_already_present: skippedAlreadyPresent,
+        skipped_invalid_member: skippedInvalidMember
+      }
+    });
 
+    success(res, { 
+      added, 
+      skipped_already_present: skippedAlreadyPresent,
+      skipped_invalid_member: skippedInvalidMember
+    }, 201);
+  } catch (err) { 
+    next(err); 
+  }
+}
 async function addParticipantsFromGroup(req, res, next) {
   try {
     const data                          = addParticipantsFromGroupSchema.parse(req.body);
