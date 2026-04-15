@@ -27,8 +27,8 @@ const schema = z.object({
   enable_tasks: z.boolean().default(false),
   budget_target: z.coerce.number().positive().optional(),
   budget_currency: z.string().default('USD').optional(),
-  recurrence_cadence: z.enum(['weekly', 'monthly', 'quarterly', 'yearly']).optional(),
-  recurrence_days: z.array(z.number()).optional(),
+  recurrence_cadence: z.enum(['weekly', 'monthly', 'quarterly', 'yearly', 'custom']).optional(),
+  recurrence_days: z.coerce.number().optional(),
   recurrence_start: z.string().optional(),
   recurrence_end: z.string().optional(),
   carry_forward_unpaid: z.boolean().default(false),
@@ -72,7 +72,6 @@ export function CreateContainerModal({ onClose }: Props) {
   
   return (
     <Modal open onClose={onClose} title="Create Event or Pool" size="lg">
-      {/* Scrollable content area with max height */}
       <div className="max-h-[calc(80vh-100px)] overflow-y-auto px-1">
         <form onSubmit={handleSubmit((d) => mutate(d))} className="space-y-4">
           {/* Basic Info */}
@@ -133,33 +132,26 @@ export function CreateContainerModal({ onClose }: Props) {
             <>
               <Select 
                 label="Recurrence Cadence" 
-                options={RECURRENCE_CADENCES.map(c => ({ value: c, label: c.charAt(0).toUpperCase() + c.slice(1) }))} 
+                options={[
+                  { value: 'weekly', label: 'Weekly' },
+                  { value: 'monthly', label: 'Monthly' },
+                  { value: 'quarterly', label: 'Quarterly' },
+                  { value: 'yearly', label: 'Yearly' },
+                  { value: 'custom', label: 'Custom (every X days)' },
+                ]} 
                 placeholder="Select cadence"
                 {...register('recurrence_cadence')} 
               />
               
-              {recurrenceCadence === 'weekly' && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Repeat on days</label>
-                  <div className="flex gap-2 flex-wrap">
-                    {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, index) => (
-                      <label key={day} className="flex items-center gap-1">
-                        <input
-                          type="checkbox"
-                          value={index}
-                          onChange={(e) => {
-                            const current = watch('recurrence_days') || [];
-                            const newValue = e.target.checked
-                              ? [...current, index]
-                              : current.filter(d => d !== index);
-                            setValue('recurrence_days', newValue);
-                          }}
-                        />
-                        <span className="text-sm">{day}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
+              {(recurrenceCadence === 'custom' || recurrenceCadence === 'weekly') && (
+                <Input 
+                  label="Every X days" 
+                  type="number" 
+                  placeholder="e.g., 7, 14, 30"
+                  min="1"
+                  max="365"
+                  {...register('recurrence_days')} 
+                />
               )}
               
               <Input 
@@ -217,7 +209,7 @@ export function CreateContainerModal({ onClose }: Props) {
             )}
           </div>
           
-          {/* Actions - Sticky at bottom */}
+          {/* Actions */}
           <div className="sticky bottom-0 bg-white pt-4 pb-2 border-t border-border mt-4">
             <div className="flex gap-3">
               <Button variant="secondary" fullWidth type="button" onClick={onClose}>

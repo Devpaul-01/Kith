@@ -107,7 +107,7 @@ const createContainerSchema = z
       .default('other'),
     // Recurring
     recurrence_cadence: z
-      .enum(['monthly', 'quarterly', 'yearly', 'custom'])
+      .enum(['monthly', 'weekly', 'quarterly', 'yearly', 'custom'])
       .optional(),
     recurrence_days: z.number().int().min(1).optional(),
     recurrence_start: z.string().date().optional(),

@@ -45,10 +45,12 @@ async function listContainers(req, res, next) {
     success(res, { containers, meta: { total: containers.length, active_count: activeCount } });
   } catch (err) { next(err); }
 }
-
+/**
 async function createContainer(req, res, next) {
   try {
+    console.log("Container begin");
     const data          = createContainerSchema.parse(req.body);
+    console.log("Contsiner aftet");
     const { workspaceId } = req.params;
 
     const { data: container, error } = await supabaseAdmin
@@ -76,6 +78,222 @@ async function createContainer(req, res, next) {
 
     success(res, { container }, 201);
   } catch (err) { next(err); }
+}
+*/
+// src/controllers/container.controller.js
+// ... (keep all existing imports)
+
+async function createContainer(req, res, next) {
+  try {
+    console.log("=== CREATE CONTAINER START ===");
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+    console.log("Workspace ID from params:", req.params.workspaceId);
+    console.log("Member from req:", req.member?.id);
+    
+    const { workspaceId } = req.params;
+    const body = req.body;
+    
+    // ──────────────────────────────────────────────────────────
+    // MANUAL VALIDATION WITH DETAILED LOGGING
+    // ──────────────────────────────────────────────────────────
+    const errors = [];
+    
+    // 1. Validate name
+    if (!body.name) {
+      errors.push({ field: 'name', message: 'Name is required' });
+    } else if (typeof body.name !== 'string') {
+      errors.push({ field: 'name', message: 'Name must be a string' });
+    } else if (body.name.length < 2) {
+      errors.push({ field: 'name', message: 'Name must be at least 2 characters' });
+    } else if (body.name.length > 100) {
+      errors.push({ field: 'name', message: 'Name must not exceed 100 characters' });
+    }
+    
+    // 2. Validate container_type
+    const validContainerTypes = ['event', 'recurring'];
+    if (!body.container_type) {
+      errors.push({ field: 'container_type', message: 'Container type is required' });
+    } else if (!validContainerTypes.includes(body.container_type)) {
+      errors.push({ field: 'container_type', message: `Container type must be one of: ${validContainerTypes.join(', ')}` });
+    }
+    
+    // 3. Validate optional string fields
+    const stringFields = ['subtitle', 'description', 'event_type'];
+    for (const field of stringFields) {
+      if (body[field] !== undefined && body[field] !== null && typeof body[field] !== 'string') {
+        errors.push({ field, message: `${field} must be a string` });
+      }
+      if (body[field] && body[field].length > (field === 'description' ? 2000 : 200)) {
+        errors.push({ field, message: `${field} exceeds maximum length` });
+      }
+    }
+    
+    // 4. Validate booleans
+    const booleanFields = ['enable_money', 'enable_tasks', 'carry_forward_unpaid'];
+    for (const field of booleanFields) {
+      if (body[field] !== undefined && typeof body[field] !== 'boolean') {
+        errors.push({ field, message: `${field} must be a boolean` });
+      }
+    }
+    
+    // Set defaults for booleans
+    const enable_money = body.enable_money === undefined ? false : body.enable_money;
+    const enable_tasks = body.enable_tasks === undefined ? false : body.enable_tasks;
+    const carry_forward_unpaid = body.carry_forward_unpaid === undefined ? false : body.carry_forward_unpaid;
+    
+    // 5. Validate event_date format
+    if (body.event_date !== undefined && body.event_date !== null) {
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(body.event_date)) {
+        errors.push({ field: 'event_date', message: 'event_date must be in YYYY-MM-DD format' });
+      } else {
+        const date = new Date(body.event_date);
+        if (isNaN(date.getTime())) {
+          errors.push({ field: 'event_date', message: 'event_date is invalid' });
+        }
+      }
+    }
+    
+    // 6. Validate event_type_category
+    const validCategories = ['celebration', 'memorial', 'financial', 'logistical', 'other'];
+    if (body.event_type_category && !validCategories.includes(body.event_type_category)) {
+      errors.push({ field: 'event_type_category', message: `event_type_category must be one of: ${validCategories.join(', ')}` });
+    }
+    
+    // 7. Validate budget
+    if (body.budget_target !== undefined && body.budget_target !== null) {
+      if (typeof body.budget_target !== 'number') {
+        errors.push({ field: 'budget_target', message: 'budget_target must be a number' });
+      } else if (body.budget_target <= 0) {
+        errors.push({ field: 'budget_target', message: 'budget_target must be positive' });
+      }
+      
+      if (!enable_money) {
+        errors.push({ field: 'budget_target', message: 'budget_target requires enable_money=true' });
+      }
+    }
+    
+    // 8. Validate budget_currency
+    const SUPPORTED_CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'INR', 'BRL']; // Add your supported currencies
+    if (body.budget_currency !== undefined && body.budget_currency !== null) {
+      if (!SUPPORTED_CURRENCIES.includes(body.budget_currency)) {
+        errors.push({ field: 'budget_currency', message: `Unsupported currency. Must be one of: ${SUPPORTED_CURRENCIES.join(', ')}` });
+      }
+    }
+    
+    // 9. Validate recurring-specific fields
+    if (body.container_type === 'recurring') {
+      const validCadences = ['monthly', 'weekly', 'quarterly', 'yearly', 'custom'];
+      if (!body.recurrence_cadence) {
+        errors.push({ field: 'recurrence_cadence', message: 'recurrence_cadence is required for recurring containers' });
+      } else if (!validCadences.includes(body.recurrence_cadence)) {
+        errors.push({ field: 'recurrence_cadence', message: `recurrence_cadence must be one of: ${validCadences.join(', ')}` });
+      }
+      
+      if (body.recurrence_days !== undefined && body.recurrence_days !== null) {
+        if (typeof body.recurrence_days !== 'number') {
+          errors.push({ field: 'recurrence_days', message: 'recurrence_days must be a number' });
+        } else if (body.recurrence_days < 1) {
+          errors.push({ field: 'recurrence_days', message: 'recurrence_days must be at least 1' });
+        }
+      }
+      
+      if (!body.recurrence_start) {
+        errors.push({ field: 'recurrence_start', message: 'recurrence_start is required for recurring containers' });
+      } else {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(body.recurrence_start)) {
+          errors.push({ field: 'recurrence_start', message: 'recurrence_start must be in YYYY-MM-DD format' });
+        }
+      }
+      
+      if (body.recurrence_end !== undefined && body.recurrence_end !== null) {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(body.recurrence_end)) {
+          errors.push({ field: 'recurrence_end', message: 'recurrence_end must be in YYYY-MM-DD format' });
+        }
+      }
+    }
+    
+    // Log all validation errors
+    if (errors.length > 0) {
+      console.error("Validation errors:", JSON.stringify(errors, null, 2));
+      return res.status(400).json({ 
+        error: 'Validation failed', 
+        details: errors,
+        received_body: body 
+      });
+    }
+    
+    console.log("✅ Manual validation passed");
+    
+    // ──────────────────────────────────────────────────────────
+    // PREPARE DATA FOR DATABASE
+    // ──────────────────────────────────────────────────────────
+    const containerData = {
+      workspace_id: workspaceId,
+      name: body.name,
+      subtitle: body.subtitle || null,
+      description: body.description || null,
+      container_type: body.container_type,
+      enable_money: enable_money,
+      enable_tasks: enable_tasks,
+      event_date: body.event_date || null,
+      event_type: body.event_type || null,
+      event_type_category: body.event_type_category || 'other',
+      recurrence_cadence: body.recurrence_cadence || null,
+      recurrence_days: body.recurrence_days || null,
+      recurrence_start: body.recurrence_start || null,
+      recurrence_end: body.recurrence_end || null,
+      carry_forward_unpaid: carry_forward_unpaid,
+      budget_target: body.budget_target || null,
+      budget_currency: body.budget_currency || null,
+      created_by: req.member.id,
+    };
+    
+    console.log("Inserting container with data:", JSON.stringify(containerData, null, 2));
+    
+    // ──────────────────────────────────────────────────────────
+    // INSERT INTO DATABASE
+    // ──────────────────────────────────────────────────────────
+    const { data: container, error } = await supabaseAdmin
+      .from('containers')
+      .insert(containerData)
+      .select()
+      .single();
+    
+    if (error) {
+      console.error("❌ Supabase insert error:", error);
+      console.error("Error details:", {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint
+      });
+      throw new Error(`Database error: ${error.message}`);
+    }
+    
+    console.log("✅ Container created successfully:", container.id);
+    
+    // ──────────────────────────────────────────────────────────
+    // HANDLE RECURRING QUEUE
+    // ──────────────────────────────────────────────────────────
+    if (container.container_type === 'recurring') {
+      console.log("Adding to cycle-generation-queue for container:", container.id);
+      await getQueue('cycle-generation-queue').add('generate-cycles', 
+        { container_id: container.id, generate_months_ahead: 3 }, 
+        { attempts: 3 }
+      );
+    }
+    
+    console.log("=== CREATE CONTAINER END ===");
+    success(res, { container }, 201);
+    
+  } catch (err) {
+    console.error("❌ Unhandled error in createContainer:", err);
+    console.error("Error stack:", err.stack);
+    next(err);
+  }
 }
 
 async function getContainer(req, res, next) {

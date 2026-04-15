@@ -15,7 +15,7 @@ export interface CreateContainerPayload {
   budget_target?: number | null;
   budget_currency?: string;
   recurrence_cadence?: 'weekly' | 'monthly' | 'quarterly' | 'yearly' | null;
-  recurrence_days?: number[] | null;
+  recurrence_days?: number | null;
   recurrence_start?: string | null;
   recurrence_end?: string | null;
   carry_forward_unpaid?: boolean;
@@ -52,7 +52,7 @@ export interface Container {
   budget_target: number | null;
   budget_currency: string | null;
   recurrence_cadence: string | null;
-  recurrence_days: number[] | null;
+  recurrence_days: number | null;
   recurrence_start: string | null;
   recurrence_end: string | null;
   carry_forward_unpaid: boolean;
@@ -95,8 +95,13 @@ export const containerService = {
   /**
    * Create a new container (event or recurring pool)
    */
-  create: (workspaceId: string, payload: CreateContainerPayload): Promise<{ container: Container }> => {
-    // Ensure default values for optional fields
+  // services/container.service.ts
+// Update the create method to better handle errors
+
+create: async (workspaceId: string, payload: CreateContainerPayload): Promise<{ container: Container }> => {
+  try {
+    console.log('📤 Creating container with payload:', JSON.stringify(payload, null, 2));
+    
     const formattedPayload = {
       ...payload,
       subtitle: payload.subtitle || null,
@@ -115,8 +120,37 @@ export const containerService = {
       carry_forward_unpaid: payload.carry_forward_unpaid || false,
     };
     
-    return api.post(`/v1/workspaces/${workspaceId}/containers`, formattedPayload).then(r => r.data);
-  },
+    console.log('📤 Formatted payload:', JSON.stringify(formattedPayload, null, 2));
+    
+    const response = await api.post(`/v1/workspaces/${workspaceId}/containers`, formattedPayload);
+    console.log('✅ Create container response:', response.data);
+    return response.data;
+  } catch (error: any) {
+    console.error('❌ Create container failed:', error);
+    
+    if (error.response) {
+      // Server responded with error
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+      console.error('Response headers:', error.response.headers);
+      
+      // Throw a more informative error
+      const errorMessage = error.response.data?.details 
+        ? JSON.stringify(error.response.data.details)
+        : error.response.data?.error || error.message;
+      
+      throw new Error(`Create container failed: ${errorMessage}`);
+    } else if (error.request) {
+      // Request was made but no response
+      console.error('No response received:', error.request);
+      throw new Error('Network error - no response from server');
+    } else {
+      // Something else
+      console.error('Error setting up request:', error.message);
+      throw error;
+    }
+  }
+},
 
   /**
    * Update an existing container
