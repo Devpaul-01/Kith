@@ -85,14 +85,34 @@ const participantCount = responseData?.participant_count ?? container?.participa
       </div>
       {(location.pathname === basePath || location.pathname === `${basePath}/`) && (
         <Card>
-          {container.description && <p className="text-sm text-text-secondary mb-4">{container.description}</p>}
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div><p className="text-text-secondary text-xs">Type</p><p className="font-medium text-text-primary capitalize">{container.type}</p></div>
-            {container.category && <div><p className="text-text-secondary text-xs">Category</p><p className="font-medium text-text-primary capitalize">{container.category}</p></div>}
-            <div><p className="text-text-secondary text-xs">Currency</p><p className="font-medium text-text-primary">{container.base_currency}</p></div>
-            <div><p className="text-text-secondary text-xs">Participants</p><p className="font-medium text-text-primary">{container.participant_count ?? 0}</p></div>
-          </div>
-        </Card>
+  {container.description && <p className="text-sm text-text-secondary mb-4">{container.description}</p>}
+  <div className="grid grid-cols-2 gap-4 text-sm">
+    {container.type && (
+      <div>
+        <p className="text-text-secondary text-xs">Type</p>
+        <p className="font-medium text-text-primary capitalize">{container.type}</p>
+      </div>
+    )}
+    {container.category && (
+      <div>
+        <p className="text-text-secondary text-xs">Category</p>
+        <p className="font-medium text-text-primary capitalize">{container.category}</p>
+      </div>
+    )}
+    {container.base_currency && (
+      <div>
+        <p className="text-text-secondary text-xs">Currency</p>
+        <p className="font-medium text-text-primary">{container.base_currency}</p>
+      </div>
+    )}
+    {(container.participant_count !== undefined && container.participant_count !== null) && (
+      <div>
+        <p className="text-text-secondary text-xs">Participants</p>
+        <p className="font-medium text-text-primary">{container.participant_count}</p>
+      </div>
+    )}
+  </div>
+</Card>
       )}
     </div>
   );
