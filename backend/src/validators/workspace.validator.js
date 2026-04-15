@@ -14,7 +14,7 @@ const createWorkspaceSchema = z.object({
 const updateWorkspaceSchema = z.object({
   name: z.string().min(2).max(80).optional(),
   base_currency: z.enum(SUPPORTED_CURRENCIES).optional(),
-  family_type: z.enum(['extended', 'event', 'pool']).optional(),
+  family_type: z.enum(['extended', "nuclear", "blended", "community","other", "association", 'event', 'pool']).optional(),
   description: z.string().max(500).optional().nullable(),
   avatar_url: z.string().url().optional().nullable(),
   visibility: z.enum(['private', 'public']).optional(),

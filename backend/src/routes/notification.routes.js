@@ -11,28 +11,58 @@ const { query } = require('../config/database');
  * This middleware resolves the caller's member id from their active memberships.
  * Optionally scoped to a specific workspace via ?workspace_id=<id>.
  */
+// src/routes/notification.routes.js
 async function resolveMember(req, res, next) {
   try {
-    const workspaceId =
-      req.query.workspace_id ||
-      req.body?.workspace_id ||
+    const { supabaseAdmin } = require('../config/supabase');
+    
+    // Try multiple sources for workspaceId
+    const workspaceId = 
+      req.params.workspaceId ||           // From URL params (if available)
+      req.query.workspace_id ||           // From query string
+      req.body?.workspace_id ||           // From request body
       null;
+    
+    
+    
+    let query = supabaseAdmin
+      .from('workspace_members')
+      .select('id, role, workspace_id, display_name')
+      .eq('user_id', req.user.id)
+      .eq('is_active', true)
+      .is('deleted_at', null);
 
-    let sql    = `SELECT id FROM workspace_members
-                  WHERE user_id=$1 AND is_active=TRUE AND deleted_at IS NULL`;
-    const params = [req.user.id];
-
-    if (workspaceId) {
-      sql += ` AND workspace_id=$2`;
-      params.push(workspaceId);
+    // Only filter by workspaceId if it exists
+    if (workspaceId && workspaceId !== 'undefined' && workspaceId !== 'null') {
+      query = query.eq('workspace_id', workspaceId);
     }
 
-    sql += ` ORDER BY joined_at ASC LIMIT 1`;
+    const { data, error } = await query
+      .order('joined_at', { ascending: false })
+      .limit(1);
 
-    const result = await query(sql, params);
-    req.member = { id: result.rows[0]?.id || null };
+    if (error) {
+      console.error('resolveMember error:', error);
+      return next(error);
+    }
+
+    const member = data?.[0];
+    
+    if (member) {
+      req.member = {
+        id: member.id,
+        role: member.role,
+        workspaceId: member.workspace_id,
+        displayName: member.display_name
+      };
+    } else {
+      req.member = { id: null };
+    }
+    
+    console.log('🔍 resolveMember - result:', req.member);
     next();
   } catch (err) {
+    console.error('resolveMember catch error:', err);
     next(err);
   }
 }

@@ -7,11 +7,31 @@ const { NotFoundError } = require('../utils/errors');
  * Attaches req.member and req.workspace.
  * Returns 404 (never 403) to prevent workspace enumeration.
  */
+ // src/middleware/workspace.js
+
+
+/**
+ * Verifies the caller is an active member of :workspaceId.
+ * Attaches req.member and req.workspace.
+ * Returns 404 (never 403) to prevent workspace enumeration.
+ */
+// src/middleware/workspace.js
+
+
 async function requireMembership(req, res, next) {
-  console.log("Membership called");
   try {
     const workspaceId = req.params.workspaceId;
-    const userId      = req.user.id;
+    const userId = req.user.id;
+
+    if (!workspaceId || workspaceId === 'undefined' || workspaceId === 'null') {
+      throw new NotFoundError('Workspace not found');
+    }
+
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(workspaceId)) {
+      throw new NotFoundError('Workspace not found');
+    }
 
     // Fetch workspace member
     const { data: member, error: memberErr } = await supabaseAdmin
@@ -26,7 +46,7 @@ async function requireMembership(req, res, next) {
     if (memberErr) throw new Error(memberErr.message);
     if (!member) throw new NotFoundError('Workspace not found');
 
-    // Fetch workspace (also confirm it isn't deleted)
+    // Fetch workspace
     const { data: workspace, error: wsErr } = await supabaseAdmin
       .from('workspaces')
       .select('id, name, base_currency, plan, visibility, bank_details')
@@ -60,5 +80,8 @@ async function requireMembership(req, res, next) {
     next(err);
   }
 }
+
+
+
 
 module.exports = { requireMembership };

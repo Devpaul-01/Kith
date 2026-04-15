@@ -1,5 +1,6 @@
 // src/routes/workspace.routes.js
-const router = require('express').Router();
+// ✅ Correct - MERGE params from parent router
+const router = require('express').Router({ mergeParams: true });
 
 const wCtrl  = require('../controllers/workspace.controller');
 const mCtrl  = require('../controllers/member.controller');

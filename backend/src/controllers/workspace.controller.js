@@ -11,7 +11,13 @@ async function listWorkspaces(req, res, next) {
   try {
     const { data, error } = await supabaseAdmin
       .from('workspace_members')
-      .select('role, id, display_name, workspaces!inner(*)')
+      .select(`
+        id,
+        role,
+        display_name,
+        workspace_id,
+        workspaces ( id, name, base_currency, avatar_url, plan, visibility )
+      `)
       .eq('user_id', req.user.id)
       .eq('is_active', true)
       .is('deleted_at', null)
@@ -19,12 +25,24 @@ async function listWorkspaces(req, res, next) {
 
     if (error) throw new Error(error.message);
 
-    const workspaces = (data || []).map((m) => ({
-      ...m.workspaces, role: m.role, member_id: m.id, display_name: m.display_name,
+    // Flatten the nested workspaces join into the same flat shape
+    // that login/getMe already return — frontend reads one consistent type
+    console.log("Total memberships:", data.length);
+    const memberships = (data || []).map((m) => ({
+      member_id:      m.id,
+      role:           m.role,
+      display_name:   m.display_name,
+      workspace_id:   m.workspace_id,
+      workspace_name: m.workspaces?.name   ?? null,
+      base_currency:  m.workspaces?.base_currency ?? null,
+      avatar_url:     m.workspaces?.avatar_url    ?? null,
+      plan:           m.workspaces?.plan          ?? 'free',
     }));
 
-    success(res, { workspaces });
-  } catch (err) { next(err); }
+    success(res, { memberships });
+  } catch (err) {
+    next(err);
+  }
 }
 
 // ── Create workspace ───────────────────────────────────────────────

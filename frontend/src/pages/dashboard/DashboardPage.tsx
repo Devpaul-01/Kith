@@ -16,29 +16,80 @@ import type { DashboardData, LedgerEntry } from '@/types/models';
 import showToast from '@/lib/toast';
 
 export default function DashboardPage() {
+  // 🔍 LOG 1: Component mount
+  console.log('🔍 [DashboardPage] Component rendering');
+  
   const { workspaceId, workspace } = useWorkspace();
+  
+  // 🔍 LOG 2: Check what useWorkspace returned
+  console.log('🔍 [DashboardPage] useWorkspace result:', { 
+    workspaceId, 
+    workspaceIdType: typeof workspaceId,
+    workspaceIdValue: workspaceId,
+    workspaceExists: !!workspace,
+    workspaceName: workspace?.name 
+  });
+  
   const isAdmin = useIsAdmin();
   const nav = useNavigate();
   const qc = useQueryClient();
 
+  // 🔍 LOG 3: Before useQuery
+  console.log('🔍 [DashboardPage] About to call useQuery with:', {
+    workspaceId,
+    enabled: !!workspaceId,
+    queryKey: KEYS.dashboard(workspaceId)
+  });
+
   const { data, isLoading, error } = useQuery<DashboardData>({
     queryKey: KEYS.dashboard(workspaceId),
-    queryFn: () => workspaceService.getDashboard(workspaceId),
+    queryFn: async () => {
+      // 🔍 LOG 4: Inside queryFn - this runs when enabled
+      console.log('🔍 [DashboardPage] queryFn executing with workspaceId:', workspaceId);
+      
+      if (!workspaceId) {
+        console.error('🔴 [DashboardPage] workspaceId is undefined in queryFn!');
+        throw new Error('Workspace ID is required');
+      }
+      
+      console.log('🔍 [DashboardPage] Calling workspaceService.getDashboard with:', workspaceId);
+      const result = await workspaceService.getDashboard(workspaceId);
+      console.log('🔍 [DashboardPage] workspaceService.getDashboard result:', result);
+      return result;
+    },
     staleTime: 60_000,
     refetchOnWindowFocus: true,
     enabled: !!workspaceId, // Don't run if no workspaceId
-    retry: 1, // Only retry once
+    retry: 1,
+  });
+  const confirmMutation = useMutation({
+    mutationFn: ({ cId, eId }: { cId: string; eId: string }) => {
+      console.log('🔍 [DashboardPage] Confirming contribution:', { cId, eId, workspaceId });
+      return ledgerService.confirm(workspaceId, cId, eId);
+    },
+    onSuccess: () => { 
+      console.log('✅ [DashboardPage] Confirmation successful, invalidating dashboard');
+      qc.invalidateQueries({ queryKey: KEYS.dashboard(workspaceId) }); 
+      showToast.success('Contribution confirmed'); 
+    },
+    onError: (err) => {
+      console.error('🔴 [DashboardPage] Confirmation failed:', err);
+      showToast.error('Failed to confirm');
+    },
   });
 
-  // Debug logging
-  console.log("Dashboard query state:", { 
-    workspaceId, 
+
+  // 🔍 LOG 5: After useQuery
+  console.log('🔍 [DashboardPage] useQuery state:', { 
+    workspaceId,
     isLoading, 
     hasData: !!data, 
-    error: error?.message 
+    error: error?.message,
+    errorDetails: error
   });
 
   if (isLoading) {
+    console.log('🔍 [DashboardPage] Showing loading skeleton');
     return (
       <div className="p-4 sm:p-6 space-y-6">
         <div className="grid grid-cols-3 gap-4">
@@ -52,7 +103,7 @@ export default function DashboardPage() {
   }
   
   if (error) {
-    console.error("Dashboard error details:", error);
+    console.error('🔴 [DashboardPage] Error state:', error);
     return (
       <div className="p-4 text-center">
         <div className="bg-danger/10 rounded-lg p-6 max-w-md mx-auto">
@@ -73,7 +124,7 @@ export default function DashboardPage() {
   }
   
   if (!data) {
-    console.warn("No dashboard data received");
+    console.warn('⚠️ [DashboardPage] No dashboard data received');
     return (
       <div className="p-4 text-center">
         <p className="text-text-secondary">No dashboard data available</p>
@@ -86,7 +137,7 @@ export default function DashboardPage() {
 
   // Check if workspace_summary exists
   if (!d.workspace_summary) {
-    console.error("Missing workspace_summary in dashboard data", d);
+    console.error("🔴 [DashboardPage] Missing workspace_summary in dashboard data", d);
     return (
       <div className="p-4 text-center">
         <p className="text-danger">Invalid dashboard data structure</p>
@@ -94,15 +145,13 @@ export default function DashboardPage() {
     );
   }
 
-  const confirmMutation = useMutation({
-    mutationFn: ({ cId, eId }: { cId: string; eId: string }) => ledgerService.confirm(workspaceId, cId, eId),
-    onSuccess: () => { 
-      qc.invalidateQueries({ queryKey: KEYS.dashboard(workspaceId) }); 
-      showToast.success('Contribution confirmed'); 
-    },
-    onError: () => showToast.error('Failed to confirm'),
+  console.log('✅ [DashboardPage] Successfully rendering dashboard with data:', {
+    memberCount: d.workspace_summary.member_count,
+    activeEvents: d.active_events?.length,
+    deadlines: d.upcoming_deadlines?.length
   });
 
+  
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
       <div>
