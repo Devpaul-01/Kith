@@ -19,13 +19,32 @@ export default function ContainerDetailPage() {
   const { workspaceId } = useWorkspace();
   const isAdmin = useIsAdmin();
   const location = useLocation();
-  const { data, isLoading } = useQuery({ queryKey: KEYS.container(workspaceId, id!), queryFn: () => containerService.get(workspaceId, id!) });
-  const container: Container | undefined = (data as { container?: Container })?.container ?? data as Container | undefined;
+  // In ContainerDetailPage.tsx
+const { data, isLoading } = useQuery({ 
+  queryKey: KEYS.container(workspaceId, id!), 
+  queryFn: () => containerService.get(workspaceId, id!) 
+});
+
+// Extract all fields from the response
+const responseData = data as {
+  container?: Container;
+  tasks_enabled?: boolean;
+  money_enabled?: boolean;
+  participant_count?: number;
+  current_cycle?: any;
+  current_user_participation?: any;
+};
+
+const container = responseData?.container;
+const tasksEnabled = responseData?.tasks_enabled ?? container?.enable_tasks ?? false;
+const moneyEnabled = responseData?.money_enabled ?? container?.enable_money ?? false;
+const participantCount = responseData?.participant_count ?? container?.participant_count ?? 0;
+  
 
   const tabs = [
     { id: 'overview',      label: 'Overview',     path: '' },
-    { id: 'ledger',        label: 'Ledger',        path: '/ledger' },
-    { id: 'tasks',         label: 'Tasks',         path: '/tasks' },
+    ...(isAdmin && container.money_enabled?[{ id: 'ledger',        label: 'Ledger',        path: '/ledger' }]: []),
+    ...(isAdmin && container.tasks_enabled? [{ id: 'tasks',         label: 'Tasks',         path: '/tasks' }]: []),
     ...(isAdmin ? [{ id: 'participants', label: 'Participants', path: '/participants' }] : []),
     ...(isAdmin && container?.type === 'recurring' ? [{ id: 'cycles', label: 'Cycles', path: '/cycles' }] : []),
     { id: 'summary',       label: 'Summary',       path: '/summary' },

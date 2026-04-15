@@ -25,6 +25,7 @@ const schema = z.object({
   event_date: z.string().optional(),
   enable_money: z.boolean().default(true),
   enable_tasks: z.boolean().default(false),
+  // ✅ Make budget fields conditional on enable_money
   budget_target: z.coerce.number().positive().optional(),
   budget_currency: z.string().default('USD').optional(),
   recurrence_cadence: z.enum(['weekly', 'monthly', 'quarterly', 'yearly', 'custom']).optional(),
@@ -32,6 +33,24 @@ const schema = z.object({
   recurrence_start: z.string().optional(),
   recurrence_end: z.string().optional(),
   carry_forward_unpaid: z.boolean().default(false),
+}).superRefine((data, ctx) => {
+  // If money is enabled, budget_target is required
+  if (data.enable_money && !data.budget_target) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Budget target is required when money tracking is enabled",
+      path: ["budget_target"],
+    });
+  }
+  
+  // If money is enabled, budget_currency is required
+  if (data.enable_money && !data.budget_currency) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Budget currency is required when money tracking is enabled",
+      path: ["budget_currency"],
+    });
+  }
 });
 
 type Form = z.infer<typeof schema>;

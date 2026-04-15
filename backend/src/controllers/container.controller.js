@@ -336,6 +336,8 @@ async function getContainer(req, res, next) {
     success(res, {
       container: { ...container, container_participants: undefined },
       current_cycle: currentCycle,
+      tasks_enabled: container.enable_tasks,
+      money_enabled: container.enable_money,
       participant_count: participantCount,
       current_user_participation: participation || null,
     });

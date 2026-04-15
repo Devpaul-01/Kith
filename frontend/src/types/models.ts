@@ -14,7 +14,126 @@ export type TaskStatus='pending'|'in_progress'|'completed'|'cancelled';
 export type DisputeStatus='open'|'resolved';
 export type EngagementLevel='active'|'quiet'|'inactive';
 export interface Container{id:string;workspace_id:string;name:string;description?:string;type:ContainerType;status:ContainerStatus;category?:EventCategory;event_date?:string;budget_target?:number;base_currency:string;recurrence_cadence?:RecurrenceCadence;cover_photo_url?:string;public_token?:string;progress_pct?:number;total_confirmed?:number;total_expected?:number;participant_count?:number;created_at:string;updated_at:string;}
-export interface Participant{id:string;container_id:string;member_id:string;display_name:string;target_amount?:number;base_currency:string;is_active:boolean;created_at:string;}
+
+// Updated to match the actual API response from participant_controller.js
+export interface Participant {
+  id: string;
+  container_id: string;
+  workspace_member_id: string;
+  display_name: string;
+  is_proxy?: boolean;
+  member_role?: 'admin' | 'member';
+  money_enabled: boolean;
+  tasks_enabled: boolean;
+  role?: string | null;
+  notes?: string | null;
+  exclude_from_public?: boolean;
+  added_by?: string;
+  created_at: string;
+  // current non-cycle target fields (flattened from contributor_targets)
+  target_amount?: number;
+  target_currency?: string;
+  due_date?: string | null;
+  target_id?: string;
+}
+
+// Target history entry returned by getTargetHistory
+export interface ContributorTarget {
+  id: string;
+  container_participant_id: string;
+  container_id: string;
+  workspace_member_id: string;
+  target_amount: number;
+  target_currency: string;
+  due_date: string | null;
+  is_current: boolean;
+  cycle_id: string | null;
+  set_at: string;
+  set_by: string;
+  set_by_name?: string;
+  superseded_at: string | null;
+  superseded_by: string | null;
+}
+// types/models.ts
+
+
+
+export interface Container {
+  // Primary identifiers
+  id: string;
+  workspace_id: string;
+  
+  // Basic info
+  name: string;
+  subtitle: string | null;
+  description: string | null;
+  cover_photos: any[]; // JSONB array
+  
+  // Type & status
+  container_type: ContainerType;
+  status: ContainerStatus;
+  
+  // Feature flags
+  enable_money: boolean;
+  enable_tasks: boolean;
+  
+  // Event fields
+  event_date: string | null;  // DATE type
+  event_type: string | null;
+  event_type_category: EventTypeCategory;
+  
+  // Recurring fields
+  recurrence_cadence: RecurrenceCadence;
+  recurrence_days: number | null;
+  recurrence_start: string | null;  // DATE type
+  recurrence_end: string | null;    // DATE type
+  carry_forward_unpaid: boolean;
+  auto_generate_cycles: boolean;
+  
+  // Money/Budget
+  budget_target: number | null;  // NUMERIC(15,2)
+  budget_currency: string | null;
+  
+  // Public sharing
+  public_token: string | null;
+  public_show_names: boolean;
+  
+  // Outcome
+  outcome_details: string | null;
+  outcome_files: any[];  // JSONB array
+  
+  // Relations
+  converted_from_id: string | null;
+  created_by: string;  // UUID (workspace_members.id)
+  
+  // Timestamps
+  created_at: string;   // TIMESTAMPTZ
+  updated_at: string;   // TIMESTAMPTZ
+  completed_at: string | null;
+  deleted_at: string | null;
+}
+
+// For API responses that include aggregated data
+
+
+// Single row returned inside cycle_targets array by getCycleTargets
+export interface CycleTargetEntry {
+  cycle: {
+    id: string;
+    cycle_number: number;
+    cycle_start: string;
+    cycle_end: string;
+    status: string;
+  };
+  target: {
+    id: string;
+    amount: number;
+    currency: string;
+  } | null;
+  confirmed_paid_base: number;
+  status: 'pending' | 'partial' | 'paid' | 'overdue' | 'skipped';
+}
+
 export interface LedgerEntry{id:string;container_id:string;contributor_id:string;contributor_name:string;amount:number;currency:string;amount_base:number;entry_type:EntryType;status:LedgerStatus;notes?:string;proof_url?:string;proof_filename?:string;confirmed_at?:string;created_at:string;updated_at:string;}
 export interface Dispute{id:string;ledger_entry_id:string;workspace_id:string;raised_by_member_id:string;raised_by_name:string;reason:string;status:DisputeStatus;resolution_note?:string;resolved_by_name?:string;resolved_at?:string;created_at:string;notes?:DisputeNote[];}
 export interface DisputeNote{id:string;dispute_id:string;member_id:string;member_name:string;note:string;created_at:string;}
