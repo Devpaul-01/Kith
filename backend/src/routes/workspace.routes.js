@@ -151,7 +151,7 @@ router.patch(
 );
 router.patch(
   '/containers/:containerId/tasks/:taskId/status',
-  requireAdmin, tCtrl.overrideTaskStatus
+   tCtrl.overrideTaskStatus
 );
 router.post(
   '/containers/:containerId/tasks/:taskId/confirm',

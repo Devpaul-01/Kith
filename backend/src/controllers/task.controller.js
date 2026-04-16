@@ -50,6 +50,7 @@ function shapeTask(t) {
 async function listTasks(req, res, next) {
   try {
     const { containerId }  = req.params;
+    const isAdmin          = req.member.role === 'admin';
     const assignedFilter   = req.query['filter[assigned_to]'];
     const statusFilter     = req.query['filter[status]'];
     const sort             = req.query.sort || 'sort_order';
@@ -69,8 +70,16 @@ async function listTasks(req, res, next) {
       .is('deleted_at', null)
       .order(safeSort, { ascending });
 
-    if (assignedFilter) query = query.eq('assigned_to', assignedFilter);
-    if (statusFilter)   query = query.eq('status', statusFilter);
+    // Members only ever see tasks assigned to them — prevents 403s from
+    // attempting to act on tasks they have no permission to touch.
+    if (!isAdmin) {
+      query = query.eq('assigned_to', req.member.id);
+    } else {
+      // Admin: respect optional filter param (e.g. filter by specific member)
+      if (assignedFilter) query = query.eq('assigned_to', assignedFilter);
+    }
+
+    if (statusFilter) query = query.eq('status', statusFilter);
 
     const { data, error } = await query;
     if (error) throw new Error(error.message);
@@ -79,6 +88,7 @@ async function listTasks(req, res, next) {
     success(res, { tasks });
   } catch (err) { next(err); }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET SINGLE TASK (full detail — admin sees everything; member only their own)

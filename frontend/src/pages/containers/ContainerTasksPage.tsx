@@ -89,21 +89,23 @@ function TaskStatusChip({ task }: { task: Task }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface TaskCardProps {
-  task:         Task;
-  isAdmin:      boolean;
-  onDelete:     (t: Task) => void;
-  onReassign:   (t: Task) => void;
-  onConfirm:    (t: Task) => void;
-  onViewDetail: (t: Task) => void;
-  onComplete:   (t: Task) => void;
+  task:            Task;
+  isAdmin:         boolean;
+  currentMemberId: string;
+  onDelete:        (t: Task) => void;
+  onReassign:      (t: Task) => void;
+  onConfirm:       (t: Task) => void;
+  onViewDetail:    (t: Task) => void;
+  onComplete:      (t: Task) => void;
 }
 
 function TaskCard({
-  task, isAdmin,
+  task, isAdmin, currentMemberId,
   onDelete, onReassign, onConfirm, onViewDetail, onComplete,
 }: TaskCardProps) {
-  const hasProofs   = Array.isArray(task.proofs) && task.proofs.length > 0;
+  const hasProofs    = Array.isArray(task.proofs) && task.proofs.length > 0;
   const needsConfirm = task.status === 'completed' && !task.admin_confirmed_at;
+  const isMyTask     = task.assigned_to === currentMemberId;
 
   return (
     <div className="bg-white border border-border rounded-xl p-4 flex items-start justify-between gap-3">
@@ -166,9 +168,9 @@ function TaskCard({
             </button>
           </div>
         ) : (
-          /* Member actions */
+          /* Member actions — only shown for tasks assigned to this member */
           <div className="flex items-center gap-2">
-            {task.status === 'pending' && (
+            {isMyTask && task.status === 'pending' && (
               <button
                 className="text-xs text-primary font-semibold hover:underline"
                 onClick={() => onComplete(task)}
@@ -176,7 +178,7 @@ function TaskCard({
                 Start
               </button>
             )}
-            {task.status === 'in_progress' && (
+            {isMyTask && task.status === 'in_progress' && (
               <button
                 className="text-xs text-success font-semibold hover:underline"
                 onClick={() => onComplete(task)}
@@ -197,8 +199,9 @@ function TaskCard({
 
 export default function ContainerTasksPage() {
   const { id: containerId } = useParams<{ id: string }>();
-  const { workspaceId }     = useWorkspace();
-  const isAdmin             = useIsAdmin();
+  const { workspaceId, member } = useWorkspace();
+  const currentMemberId         = member?.id ?? '';
+  const isAdmin                 = useIsAdmin();
   const qc                  = useQueryClient();
 
   // ── Modal visibility state ───────────────────────────────────────────────
@@ -420,6 +423,7 @@ export default function ContainerTasksPage() {
             key={t.id}
             task={t}
             isAdmin={isAdmin}
+            currentMemberId={currentMemberId}
             onDelete={handleDelete}
             onReassign={(task) => { setReassignTask(task); setReassignMemberId(task.assigned_to ?? ''); }}
             onConfirm={(task) => { setConfirmTask(task); confirmForm.reset(); }}
