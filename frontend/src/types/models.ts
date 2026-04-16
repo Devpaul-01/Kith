@@ -134,7 +134,41 @@ export interface CycleTargetEntry {
   status: 'pending' | 'partial' | 'paid' | 'overdue' | 'skipped';
 }
 
-export interface LedgerEntry{id:string;container_id:string;contributor_id:string;contributor_name:string;amount:number;currency:string;amount_base:number;entry_type:EntryType;status:LedgerStatus;notes?:string;proof_url?:string;proof_filename?:string;confirmed_at?:string;created_at:string;updated_at:string;}
+export interface LedgerProofFile {
+  url: string;
+  name: string;
+  size: number;
+  mime_type: string;
+  uploaded_by: string;
+  uploaded_at: string;
+}
+
+export interface LedgerEntry {
+  id: string;
+  workspace_id: string;
+  container_id: string;
+  cycle_id?: string | null;
+  entry_type: EntryType;
+  contributor_id: string;
+  contributor_name?: string;
+  original_amount: number;
+  original_currency: string;
+  base_amount: number;
+  payment_method?: string | null;
+  note?: string | null;
+  is_crypto: boolean;
+  status: LedgerStatus;
+  proofs?: LedgerProofFile[];
+  corrects_entry_id?: string | null;
+  recorded_by?: string;
+  recorded_by_name?: string;
+  confirmed_at?: string | null;
+  confirmed_by?: string | null;
+  confirmed_by_name?: string;
+  recorded_at: string;
+  created_at: string;
+  updated_at: string;
+}
 export interface Dispute{id:string;ledger_entry_id:string;workspace_id:string;raised_by_member_id:string;raised_by_name:string;reason:string;status:DisputeStatus;resolution_note?:string;resolved_by_name?:string;resolved_at?:string;created_at:string;notes?:DisputeNote[];}
 export interface DisputeNote{id:string;dispute_id:string;member_id:string;member_name:string;note:string;created_at:string;}
 
