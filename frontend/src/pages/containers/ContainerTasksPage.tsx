@@ -312,47 +312,80 @@ export default function ContainerTasksPage() {
     setCompleteTask(task);
     setProofFile(null);
   }
+async function handleSubmitComplete() {
+  if (!completeTask) return;
+  setProofUploading(true);
 
-  async function handleSubmitComplete() {
-    if (!completeTask) return;
-    setProofUploading(true);
+  try {
+    // 1. Upload proof if selected
+    if (proofFile) {
+      console.log("Step 1: Getting upload URL for:", proofFile.name);
+      
+      // ✅ Fix: Pass the file object correctly
+      const result = await taskService.getProofUploadUrl(
+        workspaceId, 
+        containerId!, 
+        completeTask.id,
+        {
+          filename: proofFile.name,
+          content_type: proofFile.type,
+          file_size: proofFile.size
+        }
+      );
+      
+      console.log("Step 2: Upload URL received:", result);
+      
+      const { upload_url, file_path } = result;
 
-    try {
-      // 1. Upload proof if selected
-      if (proofFile) {
-        const { upload_url, file_path } = await taskService.getProofUploadUrl(
-          workspaceId, containerId!, completeTask.id,
-          { filename: proofFile.name, content_type: proofFile.type, file_size: proofFile.size }
-        ) as { upload_url: string; file_path: string };
+      // Step 3: Upload file to the pre-signed URL
+      console.log("Step 3: Uploading file to:", upload_url);
+      const uploadResponse = await fetch(upload_url, {
+        method: 'PUT',
+        body: proofFile,
+        headers: { 
+          'Content-Type': proofFile.type,
+          'Content-Length': proofFile.size.toString()
+        },
+      });
 
-        await fetch(upload_url, {
-          method:  'PUT',
-          body:    proofFile,
-          headers: { 'Content-Type': proofFile.type },
-        });
-
-        await taskService.confirmProof(workspaceId, containerId!, completeTask.id, {
-          file_path,
-          name:      proofFile.name,
-          size:      proofFile.size,
-          mime_type: proofFile.type,
-        });
+      if (!uploadResponse.ok) {
+        throw new Error(`Upload failed: ${uploadResponse.status}`);
       }
+      
+      console.log("Step 4: Upload successful, confirming proof...");
 
-      // 2. Advance status
-      const nextStatus = completeTask.status === 'pending' ? 'in_progress' : 'completed';
-      await taskService.update(workspaceId, containerId!, completeTask.id, { status: nextStatus });
-
-      invalidateTasks();
-      showToast.success(nextStatus === 'completed' ? 'Task marked complete' : 'Task started');
-      setCompleteTask(null);
-      setProofFile(null);
-    } catch {
-      showToast.error('Failed to update task');
-    } finally {
-      setProofUploading(false);
+      // Step 4: Confirm proof with backend
+      await taskService.confirmProof(workspaceId, containerId!, completeTask.id, {
+        file_path,
+        name: proofFile.name,
+        size: proofFile.size,
+        mime_type: proofFile.type,
+      });
+      
+      console.log("Step 5: Proof confirmed!");
     }
+
+    // 2. Advance status
+    const nextStatus = completeTask.status === 'pending' ? 'in_progress' : 'completed';
+    console.log("Step 6: Updating task status to:", nextStatus);
+    
+    await taskService.update(workspaceId, containerId!, completeTask.id, { 
+      status: nextStatus,
+      ...(nextStatus === 'completed' && { completion_note: 'Task completed with proof' })
+    });
+
+    invalidateTasks();
+    showToast.success(nextStatus === 'completed' ? 'Task marked complete' : 'Task started');
+    setCompleteTask(null);
+    setProofFile(null);
+  } catch (error: any) {
+    console.error('Complete task error:', error);
+    showToast.error(error?.message || 'Failed to update task');
+  } finally {
+    setProofUploading(false);
   }
+}
+  
 
   async function handleExport() {
     try {
@@ -370,6 +403,15 @@ export default function ContainerTasksPage() {
 
   return (
     <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-5">
+      {/* Hidden file input hoisted to component root so the ref is always mounted
+          and proofInputRef.current?.click() never fires on a null ref */}
+      <input
+        ref={proofInputRef}
+        type="file"
+        accept="image/*,application/pdf"
+        className="hidden"
+        onChange={(e) => setProofFile(e.target.files?.[0] ?? null)}
+      />
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
@@ -788,13 +830,6 @@ export default function ContainerTasksPage() {
                 <p className="text-xs font-medium text-text-secondary mb-2">
                   Proof of completion (optional)
                 </p>
-                <input
-                  ref={proofInputRef}
-                  type="file"
-                  accept="image/*,application/pdf"
-                  className="hidden"
-                  onChange={(e) => setProofFile(e.target.files?.[0] ?? null)}
-                />
                 {proofFile ? (
                   <div className="flex items-center justify-between border border-border rounded-lg px-3 py-2 bg-surface-alt">
                     <span className="text-xs truncate text-text-primary">{proofFile.name}</span>

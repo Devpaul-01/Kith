@@ -272,6 +272,11 @@ async function reassignTask(req, res, next) {
 
     const prev = await fetchTask(containerId, taskId);
     if (!prev) throw new NotFoundError('Task not found');
+    if (['in_progress', 'completed'].includes(prev.status)) {
+  throw new BusinessRuleError(
+    `Cannot reassign a task that is already '${prev.status}'...`
+  );
+}
 
     const { data: task, error } = await supabaseAdmin
       .from('container_tasks')
@@ -498,6 +503,7 @@ async function exportTasks(req, res, next) {
 // Admin can get upload URL for any task; member only for their own
 // ─────────────────────────────────────────────────────────────────────────────
 async function getTaskProofUploadUrl(req, res, next) {
+  console.log('Backend called to get prooof url');
   try {
     const data                                = uploadFileSchema.parse(req.body);
     const { workspaceId, containerId, taskId } = req.params;
