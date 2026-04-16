@@ -207,8 +207,8 @@ export default function ContainerDetailPage() {
 
   const tabs = [
     { id: 'overview',     label: 'Overview',     path: '' },
-    ...(isAdmin && moneyEnabled  ? [{ id: 'ledger',       label: 'Ledger',       path: '/ledger' }]        : []),
-    ...(isAdmin && tasksEnabled  ? [{ id: 'tasks',        label: 'Tasks',        path: '/tasks' }]         : []),
+    ...(moneyEnabled  ? [{ id: 'ledger',       label: 'Ledger',       path: '/ledger' }]        : []),
+    ...(tasksEnabled  ? [{ id: 'tasks',        label: 'Tasks',        path: '/tasks' }]         : []),
     ...(isAdmin                  ? [{ id: 'participants', label: 'Participants', path: '/participants' }]   : []),
     ...(isAdmin && containerType === 'recurring' ? [{ id: 'cycles', label: 'Cycles', path: '/cycles' }]    : []),
     { id: 'summary', label: 'Summary', path: '/summary' },

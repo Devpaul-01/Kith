@@ -24,7 +24,7 @@ router.use(requireAuth, loadDbUser, requireMembership);
 // ── Workspace ──────────────────────────────────────────────────────
 router.get('/',          wCtrl.getWorkspace);
 router.patch('/',        requireAdmin, wCtrl.updateWorkspace);
-router.delete('/',       requireAdmin, wCtrl.deleteWorkspace);        // 9.5 — Danger Zone
+router.delete('/',       requireAdmin, wCtrl.deleteWorkspace);
 router.get('/dashboard', wCtrl.getDashboard);
 router.get('/settings',  requireAdmin, wCtrl.getSettings);
 router.patch('/settings',requireAdmin, wCtrl.updateSettings);
@@ -45,7 +45,7 @@ router.get('/invites',               requireAdmin, iCtrl.listInvites);
 router.delete('/invites/:inviteId',  requireAdmin, iCtrl.revokeInvite);
 
 // ── Groups ─────────────────────────────────────────────────────────
-router.get('/groups',                           gCtrl.listGroups);   // all members can read
+router.get('/groups',                           gCtrl.listGroups);
 router.post('/groups',                          requireAdmin, gCtrl.createGroup);
 router.get('/groups/:groupId',                  requireAdmin, gCtrl.getGroup);
 router.patch('/groups/:groupId',                requireAdmin, gCtrl.updateGroup);
@@ -88,7 +88,6 @@ router.get('/containers/:containerId/participants/:participantId/cycle-targets',
 router.post('/containers/:containerId/cycles/:cycleId/override', requireAdmin, pCtrl.overrideCycle);
 
 // ── Ledger ─────────────────────────────────────────────────────────
-// GET supports filter[contributor_id] for admins (9.7)
 router.get('/containers/:containerId/ledger',                       lCtrl.listEntries);
 router.post('/containers/:containerId/ledger',                      lCtrl.createEntry);
 router.patch('/containers/:containerId/ledger/:entryId',            lCtrl.updateEntry);
@@ -107,16 +106,67 @@ router.post('/disputes/:disputeId/note',                       dCtrl.addDisputeN
 router.post('/disputes/:disputeId/resolve',      requireAdmin, dCtrl.resolveDispute);
 
 // ── Tasks ──────────────────────────────────────────────────────────
-router.get('/containers/:containerId/tasks',                              tCtrl.listTasks);
-router.post('/containers/:containerId/tasks',              requireAdmin,  tCtrl.createTask);
-router.post('/containers/:containerId/tasks/bulk',         requireAdmin,  tCtrl.bulkCreateTasks);
-router.get('/containers/:containerId/tasks/export',        requireAdmin,  tCtrl.exportTasks);
-router.patch('/containers/:containerId/tasks/:taskId',                    tCtrl.updateTask);
-router.patch('/containers/:containerId/tasks/:taskId/reassign',requireAdmin, tCtrl.reassignTask);
-router.patch('/containers/:containerId/tasks/:taskId/status', requireAdmin, tCtrl.overrideTaskStatus);
-router.post('/containers/:containerId/tasks/:taskId/upload-proof', uploadLimiter, tCtrl.getTaskProofUploadUrl);
-router.post('/containers/:containerId/tasks/:taskId/confirm-proof',           tCtrl.confirmTaskProof);
-router.delete('/containers/:containerId/tasks/:taskId',    requireAdmin,  tCtrl.deleteTask);
+// NOTE: static sub-paths (/export, /bulk) MUST be declared before /:taskId
+// to prevent Express matching them as taskId values.
+
+// Collection routes
+router.get(
+  '/containers/:containerId/tasks',
+  tCtrl.listTasks                           // admin: all | member: all (filtered in UI)
+);
+router.post(
+  '/containers/:containerId/tasks',
+  requireAdmin, tCtrl.createTask            // admin only; supports assigned_to on create
+);
+router.post(
+  '/containers/:containerId/tasks/bulk',
+  requireAdmin, tCtrl.bulkCreateTasks       // admin only
+);
+
+// Export — no requireAdmin: controller enforces per-role filtering
+// Admin → all tasks CSV | Member → their tasks CSV
+router.get(
+  '/containers/:containerId/tasks/export',
+  tCtrl.exportTasks
+);
+
+// Single-task routes
+router.get(
+  '/containers/:containerId/tasks/:taskId',
+  tCtrl.getTask                             // admin: any task | member: own task
+);
+router.patch(
+  '/containers/:containerId/tasks/:taskId',
+  tCtrl.updateTask                          // admin: all fields | member: status + note
+);
+router.delete(
+  '/containers/:containerId/tasks/:taskId',
+  requireAdmin, tCtrl.deleteTask            // admin only — soft delete
+);
+
+// Admin-only task actions
+router.patch(
+  '/containers/:containerId/tasks/:taskId/reassign',
+  requireAdmin, tCtrl.reassignTask
+);
+router.patch(
+  '/containers/:containerId/tasks/:taskId/status',
+  requireAdmin, tCtrl.overrideTaskStatus
+);
+router.post(
+  '/containers/:containerId/tasks/:taskId/confirm',
+  requireAdmin, tCtrl.adminConfirmTask      // admin confirms after member completes
+);
+
+// Proof upload — available to admin and the assigned member (enforced in controller)
+router.post(
+  '/containers/:containerId/tasks/:taskId/upload-proof',
+  uploadLimiter, tCtrl.getTaskProofUploadUrl
+);
+router.post(
+  '/containers/:containerId/tasks/:taskId/confirm-proof',
+  tCtrl.confirmTaskProof
+);
 
 // ── Timeline + Milestones ──────────────────────────────────────────
 router.get('/timeline',                                          msCtrl.getTimeline);

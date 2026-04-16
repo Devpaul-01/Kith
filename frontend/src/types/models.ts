@@ -137,7 +137,7 @@ export interface CycleTargetEntry {
 export interface LedgerEntry{id:string;container_id:string;contributor_id:string;contributor_name:string;amount:number;currency:string;amount_base:number;entry_type:EntryType;status:LedgerStatus;notes?:string;proof_url?:string;proof_filename?:string;confirmed_at?:string;created_at:string;updated_at:string;}
 export interface Dispute{id:string;ledger_entry_id:string;workspace_id:string;raised_by_member_id:string;raised_by_name:string;reason:string;status:DisputeStatus;resolution_note?:string;resolved_by_name?:string;resolved_at?:string;created_at:string;notes?:DisputeNote[];}
 export interface DisputeNote{id:string;dispute_id:string;member_id:string;member_name:string;note:string;created_at:string;}
-export interface Task{id:string;container_id:string;workspace_id:string;title:string;description?:string;status:TaskStatus;assigned_to_member_id?:string;assigned_to_name?:string;due_date?:string;proof_url?:string;created_at:string;updated_at:string;}
+
 export interface Milestone{id:string;workspace_id:string;container_id?:string;title:string;description?:string;milestone_date:string;photo_url?:string;created_at:string;}
 export interface Notification{id:string;user_id:string;workspace_id?:string;type:string;title:string;body:string;is_read:boolean;reference_type?:'ledger_entry'|'task'|'dispute'|'container'|'workspace';reference_id?:string;created_at:string;}
 export interface Invite{id:string;workspace_id:string;token:string;email?:string;role:'admin'|'member';invited_by_name:string;expires_at:string;accepted_at?:string;created_at:string;}
@@ -149,3 +149,61 @@ export interface RecurringPool{id:string;name:string;current_cycle_status?:strin
 export interface Deadline{contributor_name:string;container_name:string;container_id:string;due_date:string;days_remaining:number;amount?:number;}
 export interface DashboardData{workspace_summary:{member_count:number;admin_count:number;proxy_count:number};active_events:ActiveEvent[];recurring_pools:RecurringPool[];upcoming_deadlines:Deadline[];pending_confirmations:LedgerEntry[];recent_activity:AuditEntry[];unread_notification_count:number;unread_activity_count:number;}
 export interface ContainerSummary{container:Container;total_confirmed:number;total_expected:number;total_pending:number;progress_pct:number;participant_count:number;confirmed_count:number;pending_count:number;currency:string;}
+// ─────────────────────────────────────────────────────────────────────────────
+// REPLACE the existing one-liner Task interface in models.ts with this block.
+// Everything else in models.ts stays untouched.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TaskProofFile {
+  url:         string;
+  name:        string;
+  size:        number;
+  mime_type:   string;
+  uploaded_by: string;   // workspace_member id
+  uploaded_at: string;   // ISO timestamp
+}
+
+export interface Task {
+  // Identifiers
+  id:           string;
+  container_id: string;
+  workspace_id?: string;
+
+  // Content
+  title:            string;
+  description?:     string;
+  completion_note?: string;
+
+  // Status lifecycle
+  status: TaskStatus;   // 'pending' | 'in_progress' | 'completed' | 'cancelled'
+
+  // Assignment
+  assigned_to?:      string;   // workspace_member id
+  assigned_to_name?: string;   // display_name — populated by API join
+
+  // Ordering & scheduling
+  sort_order?: number;
+  due_date?:   string;   // DATE string YYYY-MM-DD
+
+  // Proof uploads (JSONB array)
+  proofs?: TaskProofFile[];
+
+  // Completion tracking (set when status → 'completed')
+  completed_at?: string;
+  completed_by?: string;   // workspace_member id
+
+  // Admin confirmation
+  // ⚠️  Requires DB migration — see task_controller.js adminConfirmTask comment
+  admin_confirmed_at?: string;
+  admin_confirmed_by?: string;   // workspace_member id
+  admin_note?:         string;
+
+  // Authorship
+  created_by?:      string;
+  created_by_name?: string;   // populated by API join
+
+  // Timestamps
+  created_at: string;
+  updated_at: string;
+}
+
