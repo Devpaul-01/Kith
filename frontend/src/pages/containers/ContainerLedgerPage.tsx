@@ -78,7 +78,7 @@ export default function ContainerLedgerPage() {
   // ── Forms ──
   const createForm = useForm<CreateForm>({
     resolver: zodResolver(createSchema),
-    defaultValues: { original_currency: baseCurrency ?? 'USD' },
+    defaultValues: { original_currency: 'USD' },
   });
   const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) });
   const corrForm = useForm<CorrectionForm>({ resolver: zodResolver(correctionSchema) });
