@@ -89,26 +89,33 @@ async function requireAuth(req, res, next) {
     };
     
     
-    supabaseAdmin
-      .from('users')
-      .update({ last_seen_at: new Date().toISOString() })
-      .eq('id', user.id)
-      .then(({ error: updateError, data }) => {
-        if (updateError) {
-          console.log(`[${requestId}] ⚠️ Failed to update last_seen_at: ${updateError.message}`);
-          logger.warn('Failed to update last_seen_at', { 
-            requestId, 
-            userId: user.id, 
-            error: updateError.message 
-          });
-        } else {
-          console.log(`[${requestId}] ✅ last_seen_at updated successfully`);
-        }
-      })
-      .catch(err => {
-        console.log(`[${requestId}] ⚠️ Error updating last_seen_at:`, err.message);
+    // In auth.js, right after the supabaseAdmin.from(...) call (around line 66)
+console.log(`[${requestId}] 🔄 About to call fire-and-forget update`);
+
+supabaseAdmin
+  .from('users')
+  .update({ last_seen_at: new Date().toISOString() })
+  .eq('id', user.id)
+  .then(({ error: updateError, data }) => {
+    console.log(`[${requestId}] 📞 THEN callback executed`);
+    if (updateError) {
+      console.log(`[${requestId}] ⚠️ Failed to update last_seen_at: ${updateError.message}`);
+      logger.warn('Failed to update last_seen_at', { 
+        requestId, 
+        userId: user.id, 
+        error: updateError.message 
       });
-    
+    } else {
+      console.log(`[${requestId}] ✅ last_seen_at updated successfully`);
+    }
+  })
+  .catch(err => {
+    console.log(`[${requestId}] 💥 CATCH callback executed:`, err.message);
+    console.log(`[${requestId}] ⚠️ Error updating last_seen_at:`, err.message);
+  });
+
+console.log(`[${requestId}] ✅ Fire-and-forget call initiated (non-blocking)`);
+
     const totalDuration = Date.now() - startTime;
     console.log(`[${requestId}] ⏱️ requireAuth completed successfully in ${totalDuration}ms`);
     

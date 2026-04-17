@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ledgerService } from '@/services/ledger.service';
+import { participantService } from '@/services/participant.service';
 import { KEYS } from '@/constants/queryKeys';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { useIsAdmin } from '@/hooks/useIsAdmin';
@@ -17,7 +18,7 @@ import { Textarea } from '@/components/ui/Textarea';
 import showToast from '@/lib/toast';
 import { timeAgo } from '@/utils/date';
 import { Plus, Receipt, Download, Pencil, Upload, Eye, GitBranch } from 'lucide-react';
-import type { LedgerEntry } from '@/types/models';
+import type { LedgerEntry, Participant } from '@/types/models';
 import { LEDGER_STATUSES } from '@/constants/enums';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -27,6 +28,7 @@ import type { ApiError } from '@/types/api';
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
 const createSchema = z.object({
+  contributor_id:    z.string().min(1, 'Contributor required'),
   original_amount:   z.coerce.number().positive('Must be positive'),
   original_currency: z.string().min(1, 'Currency required'),
   note:              z.string().optional(),
@@ -55,35 +57,39 @@ type CorrectionForm = z.infer<typeof correctionSchema>;
 export default function ContainerLedgerPage() {
   const { id: containerId } = useParams<{ id: string }>();
   // TODO: confirm useWorkspace exposes memberId and baseCurrency alongside workspaceId.
-  // memberId is needed as contributor_id when creating an entry.
-  const { workspaceId, member } = useWorkspace();
-  
-  const memberId = member?.id ?? null;
+  const { workspaceId, memberId, baseCurrency } = useWorkspace() as {
+    workspaceId: string;
+    memberId: string;
+    baseCurrency?: string;
+  };
   const isAdmin = useIsAdmin();
   const qc      = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
 
   // ── UI state ──
-  const [page, setPage]               = useState(1);
-  const [filterStatus, setFilter]     = useState('');
-  const [showAdd, setShowAdd]         = useState(false);
-  const [showDupe, setShowDupe]       = useState(false);
-  const [pendingCreate, setPending]   = useState<CreateForm | null>(null);
-  const [editEntry, setEditEntry]     = useState<LedgerEntry | null>(null);
-  const [proofEntry, setProofEntry]   = useState<LedgerEntry | null>(null);
-  const [corrEntry, setCorrEntry]     = useState<LedgerEntry | null>(null);
-  const [uploadFile, setUploadFile]   = useState<File | null>(null);
-  const [isUploading, setUploading]   = useState(false);
+  const [page, setPage]             = useState(1);
+  const [filterStatus, setFilter]   = useState('');
+  const [showAdd, setShowAdd]       = useState(false);
+  const [showDupe, setShowDupe]     = useState(false);
+  const [pendingCreate, setPending] = useState<CreateForm | null>(null);
+  const [editEntry, setEditEntry]   = useState<LedgerEntry | null>(null);
+  const [proofEntry, setProofEntry] = useState<LedgerEntry | null>(null);
+  const [corrEntry, setCorrEntry]   = useState<LedgerEntry | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [isUploading, setUploading] = useState(false);
 
   // ── Forms ──
   const createForm = useForm<CreateForm>({
     resolver: zodResolver(createSchema),
-    defaultValues: { original_currency: 'USD' },
+    defaultValues: {
+      contributor_id:    memberId,
+      original_currency: baseCurrency ?? 'USD',
+    },
   });
   const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) });
   const corrForm = useForm<CorrectionForm>({ resolver: zodResolver(correctionSchema) });
 
-  // ── Query ──
+  // ── Ledger query ──
   const { data, isLoading } = useQuery({
     queryKey: [...KEYS.ledger(workspaceId, containerId!), { page, filterStatus }],
     queryFn: () =>
@@ -95,6 +101,14 @@ export default function ContainerLedgerPage() {
   });
   const entries: LedgerEntry[] = (data as any)?.entries ?? [];
   const meta                   = (data as any)?.meta;
+
+  // ── Participants query (admin only — populates contributor picker) ──
+  const { data: participantsData } = useQuery({
+    queryKey: [...KEYS.participants(workspaceId, containerId!)],
+    queryFn:  () => participantService.list(workspaceId, containerId!),
+    enabled:  isAdmin,
+  });
+  const participants: Participant[] = (participantsData as any)?.participants ?? [];
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: KEYS.ledger(workspaceId, containerId!) });
@@ -108,10 +122,13 @@ export default function ContainerLedgerPage() {
         workspaceId,
         containerId!,
         {
-          ...payload,
-          entry_type:    'contribution',
-          contributor_id: memberId,           // always own ID for non-admin; admin can extend later
-          base_amount:   payload.original_amount, // TODO: apply FX rate if original_currency ≠ baseCurrency
+          original_amount:   payload.original_amount,
+          original_currency: payload.original_currency,
+          note:              payload.note,
+          payment_method:    payload.payment_method,
+          entry_type:        'contribution',
+          contributor_id:    payload.contributor_id,
+          base_amount:       payload.original_amount, // TODO: apply FX if original_currency !== baseCurrency
         },
         force,
       ),
@@ -119,7 +136,7 @@ export default function ContainerLedgerPage() {
       invalidate();
       showToast.success(isAdmin ? 'Contribution confirmed' : 'Submitted — awaiting confirmation');
       setShowAdd(false);
-      createForm.reset();
+      createForm.reset({ contributor_id: memberId, original_currency: baseCurrency ?? 'USD' });
     },
     onError: (e: unknown) => {
       const err = e as ApiError;
@@ -131,12 +148,8 @@ export default function ContainerLedgerPage() {
   const updateMutation = useMutation({
     mutationFn: ({ entryId, payload }: { entryId: string; payload: EditForm }) =>
       ledgerService.update(workspaceId, containerId!, entryId, payload),
-    onSuccess: () => {
-      invalidate();
-      showToast.success('Entry updated');
-      setEditEntry(null);
-    },
-    onError: () => showToast.error('Failed to update entry'),
+    onSuccess: () => { invalidate(); showToast.success('Entry updated'); setEditEntry(null); },
+    onError:   () => showToast.error('Failed to update entry'),
   });
 
   const confirmMutation = useMutation({
@@ -166,11 +179,7 @@ export default function ContainerLedgerPage() {
         workspaceId, containerId!, proofEntry.id,
         { filename: uploadFile.name, content_type: uploadFile.type, file_size: uploadFile.size },
       );
-      await fetch(upload_url, {
-        method:  'PUT',
-        headers: { 'Content-Type': uploadFile.type },
-        body:    uploadFile,
-      });
+      await fetch(upload_url, { method: 'PUT', headers: { 'Content-Type': uploadFile.type }, body: uploadFile });
       await ledgerService.confirmProof(workspaceId, containerId!, proofEntry.id, {
         file_path,
         name:      uploadFile.name,
@@ -198,7 +207,7 @@ export default function ContainerLedgerPage() {
     }
   };
 
-  // ── Export ──
+  // ── Export CSV ──
   const handleExport = async () => {
     try {
       const csv = await ledgerService.export(workspaceId, { container_id: containerId });
@@ -228,24 +237,28 @@ export default function ContainerLedgerPage() {
   return (
     <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-5">
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold text-text-primary">Ledger</h2>
+      {/* Header — tight toolbar: filter | icon-only export | add */}
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-bold text-text-primary shrink-0">Ledger</h2>
         <div className="flex items-center gap-2">
           <select
-            className="text-sm border border-border rounded-xl px-3 py-2 focus:outline-none bg-white"
+            className="text-xs border border-border rounded-lg px-2 py-1.5 focus:outline-none bg-white max-w-[110px]"
             value={filterStatus}
             onChange={e => setFilter(e.target.value)}
           >
-            <option value="">All status</option>
+            <option value="">All</option>
             {LEDGER_STATUSES.map(s => (
               <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
             ))}
           </select>
           {isAdmin && (
-            <Button size="sm" variant="secondary" onClick={handleExport}>
-              <Download size={14} /> Export
-            </Button>
+            <button
+              title="Export CSV"
+              onClick={handleExport}
+              className="p-1.5 rounded-lg border border-border text-text-secondary hover:text-primary hover:border-primary transition-colors"
+            >
+              <Download size={14} />
+            </button>
           )}
           <Button size="sm" onClick={() => setShowAdd(true)}>
             <Plus size={14} /> Add
@@ -287,7 +300,6 @@ export default function ContainerLedgerPage() {
               <div className="flex items-center gap-2 flex-shrink-0">
                 <Badge status={entry.status} />
 
-                {/* Admin: confirm pending/proof_uploaded */}
                 {isAdmin && (entry.status === 'pending' || entry.status === 'proof_uploaded') && (
                   <button
                     onClick={() => confirmMutation.mutate(entry.id)}
@@ -298,32 +310,23 @@ export default function ContainerLedgerPage() {
                   </button>
                 )}
 
-                {/* Edit — own pending entries (admin: any pending) */}
                 {canEdit && (
-                  <button
-                    title="Edit entry"
-                    onClick={() => openEdit(entry)}
-                    className="text-text-secondary hover:text-primary transition-colors"
-                  >
+                  <button title="Edit entry" onClick={() => openEdit(entry)}
+                    className="text-text-secondary hover:text-primary transition-colors">
                     <Pencil size={14} />
                   </button>
                 )}
 
-                {/* Upload proof */}
                 {canUploadProof && (
-                  <button
-                    title="Upload proof"
-                    onClick={() => { setProofEntry(entry); setUploadFile(null); }}
-                    className="text-text-secondary hover:text-primary transition-colors"
-                  >
+                  <button title="Upload proof" onClick={() => { setProofEntry(entry); setUploadFile(null); }}
+                    className="text-text-secondary hover:text-primary transition-colors">
                     <Upload size={14} />
                   </button>
                 )}
 
-                {/* View proof */}
                 {hasProofs && (
                   <button
-                    title={`View proof${(entry.proofs!.length > 1) ? ` (${entry.proofs!.length} files)` : ''}`}
+                    title={`View proof${entry.proofs!.length > 1 ? ` (${entry.proofs!.length} files)` : ''}`}
                     onClick={() => handleViewProof(entry)}
                     className="text-text-secondary hover:text-primary transition-colors"
                   >
@@ -331,16 +334,10 @@ export default function ContainerLedgerPage() {
                   </button>
                 )}
 
-                {/* Admin: add correction */}
                 {isAdmin && (
-                  <button
-                    title="Add correction"
-                    onClick={() => {
-                      corrForm.reset({ original_currency: entry.original_currency });
-                      setCorrEntry(entry);
-                    }}
-                    className="text-text-secondary hover:text-primary transition-colors"
-                  >
+                  <button title="Add correction"
+                    onClick={() => { corrForm.reset({ original_currency: entry.original_currency }); setCorrEntry(entry); }}
+                    className="text-text-secondary hover:text-primary transition-colors">
                     <GitBranch size={14} />
                   </button>
                 )}
@@ -356,19 +353,40 @@ export default function ContainerLedgerPage() {
         onPageChange={setPage}
       />
 
-      {/* ── Add Modal ─────────────────────────────────────────────────────── */}
+      {/* ── Add Modal ──────────────────────────────────────────────────────── */}
       <Modal
         open={showAdd}
-        onClose={() => { setShowAdd(false); createForm.reset(); }}
+        onClose={() => { setShowAdd(false); createForm.reset({ contributor_id: memberId, original_currency: baseCurrency ?? 'USD' }); }}
         title="Record Contribution"
       >
         <form
-          onSubmit={createForm.handleSubmit(p => {
-            setPending(p);
-            createMutation.mutate({ payload: p });
-          })}
+          onSubmit={createForm.handleSubmit(p => { setPending(p); createMutation.mutate({ payload: p }); })}
           className="space-y-4"
         >
+          {/* Contributor picker — admin only */}
+          {isAdmin && (
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-text-secondary">Recording for</label>
+              {participants.length === 0 ? (
+                <p className="text-xs text-text-secondary italic">Loading participants…</p>
+              ) : (
+                <select
+                  className="text-sm border border-border rounded-xl px-3 py-2 focus:outline-none bg-white w-full"
+                  {...createForm.register('contributor_id')}
+                >
+                  {participants.map(p => (
+                    <option key={p.workspace_member_id} value={p.workspace_member_id}>
+                      {p.display_name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {createForm.formState.errors.contributor_id && (
+                <p className="text-xs text-destructive">{createForm.formState.errors.contributor_id.message}</p>
+              )}
+            </div>
+          )}
+
           <Input
             label="Amount"
             type="number"
@@ -394,12 +412,8 @@ export default function ContainerLedgerPage() {
             {...createForm.register('note')}
           />
           <div className="flex gap-3 pt-2">
-            <Button
-              variant="secondary"
-              fullWidth
-              type="button"
-              onClick={() => { setShowAdd(false); createForm.reset(); }}
-            >
+            <Button variant="secondary" fullWidth type="button"
+              onClick={() => { setShowAdd(false); createForm.reset({ contributor_id: memberId, original_currency: baseCurrency ?? 'USD' }); }}>
               Cancel
             </Button>
             <Button fullWidth type="submit" loading={createMutation.isPending}>Submit</Button>
@@ -407,7 +421,7 @@ export default function ContainerLedgerPage() {
         </form>
       </Modal>
 
-      {/* ── Duplicate Modal ───────────────────────────────────────────────── */}
+      {/* ── Duplicate Modal ────────────────────────────────────────────────── */}
       <Modal
         open={showDupe}
         onClose={() => setShowDupe(false)}
@@ -416,78 +430,47 @@ export default function ContainerLedgerPage() {
       >
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" fullWidth onClick={() => setShowDupe(false)}>Cancel</Button>
-          <Button
-            variant="danger"
-            fullWidth
-            onClick={() => {
-              if (pendingCreate) {
-                createMutation.mutate({ payload: pendingCreate, force: true });
-                setShowDupe(false);
-              }
-            }}
-          >
+          <Button variant="danger" fullWidth
+            onClick={() => { if (pendingCreate) { createMutation.mutate({ payload: pendingCreate, force: true }); setShowDupe(false); } }}>
             Submit anyway
           </Button>
         </div>
       </Modal>
 
-      {/* ── Edit Modal ────────────────────────────────────────────────────── */}
-      <Modal
-        open={!!editEntry}
-        onClose={() => setEditEntry(null)}
-        title="Edit Entry"
-      >
+      {/* ── Edit Modal ─────────────────────────────────────────────────────── */}
+      <Modal open={!!editEntry} onClose={() => setEditEntry(null)} title="Edit Entry">
         <form
-          onSubmit={editForm.handleSubmit(p =>
-            editEntry && updateMutation.mutate({ entryId: editEntry.id, payload: p }),
-          )}
+          onSubmit={editForm.handleSubmit(p => editEntry && updateMutation.mutate({ entryId: editEntry.id, payload: p }))}
           className="space-y-4"
         >
-          <Input
-            label="Amount"
-            type="number"
+          <Input label="Amount" type="number"
             error={editForm.formState.errors.original_amount?.message}
-            {...editForm.register('original_amount')}
-          />
-          <Input
-            label="Currency"
+            {...editForm.register('original_amount')} />
+          <Input label="Currency"
             error={editForm.formState.errors.original_currency?.message}
-            {...editForm.register('original_currency')}
-          />
+            {...editForm.register('original_currency')} />
           <Input label="Payment method (optional)" {...editForm.register('payment_method')} />
           <Textarea label="Notes (optional)" rows={2} {...editForm.register('note')} />
           <div className="flex gap-3 pt-2">
-            <Button variant="secondary" fullWidth type="button" onClick={() => setEditEntry(null)}>
-              Cancel
-            </Button>
+            <Button variant="secondary" fullWidth type="button" onClick={() => setEditEntry(null)}>Cancel</Button>
             <Button fullWidth type="submit" loading={updateMutation.isPending}>Save</Button>
           </div>
         </form>
       </Modal>
 
-      {/* ── Upload Proof Modal ────────────────────────────────────────────── */}
+      {/* ── Upload Proof Modal ─────────────────────────────────────────────── */}
       <Modal
         open={!!proofEntry}
         onClose={() => { setProofEntry(null); setUploadFile(null); }}
         title="Upload Proof"
       >
         <div className="space-y-4">
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*,application/pdf"
-            className="hidden"
-            onChange={e => setUploadFile(e.target.files?.[0] ?? null)}
-          />
+          <input ref={fileRef} type="file" accept="image/*,application/pdf" className="hidden"
+            onChange={e => setUploadFile(e.target.files?.[0] ?? null)} />
           {uploadFile ? (
             <div className="text-sm text-text-secondary border border-border rounded-lg px-3 py-2 flex items-center justify-between">
               <span className="truncate">{uploadFile.name}</span>
-              <button
-                onClick={() => setUploadFile(null)}
-                className="text-xs text-destructive ml-2 shrink-0"
-              >
-                Remove
-              </button>
+              <button onClick={() => setUploadFile(null)} className="text-xs text-destructive ml-2 shrink-0">Remove</button>
             </div>
           ) : (
             <Button variant="secondary" fullWidth onClick={() => fileRef.current?.click()}>
@@ -495,75 +478,41 @@ export default function ContainerLedgerPage() {
             </Button>
           )}
           <div className="flex gap-3 pt-2">
-            <Button
-              variant="secondary"
-              fullWidth
-              onClick={() => { setProofEntry(null); setUploadFile(null); }}
-            >
-              Cancel
-            </Button>
-            <Button
-              fullWidth
-              onClick={handleProofUpload}
-              loading={isUploading}
-              disabled={!uploadFile}
-            >
-              Upload
-            </Button>
+            <Button variant="secondary" fullWidth onClick={() => { setProofEntry(null); setUploadFile(null); }}>Cancel</Button>
+            <Button fullWidth onClick={handleProofUpload} loading={isUploading} disabled={!uploadFile}>Upload</Button>
           </div>
         </div>
       </Modal>
 
-      {/* ── Add Correction Modal (admin only) ─────────────────────────────── */}
+      {/* ── Add Correction Modal (admin only) ──────────────────────────────── */}
       <Modal
         open={!!corrEntry}
         onClose={() => { setCorrEntry(null); corrForm.reset(); }}
         title="Add Correction"
       >
         <form
-          onSubmit={corrForm.handleSubmit(p =>
-            corrEntry && corrMutation.mutate({ entryId: corrEntry.id, payload: p }),
-          )}
+          onSubmit={corrForm.handleSubmit(p => corrEntry && corrMutation.mutate({ entryId: corrEntry.id, payload: p }))}
           className="space-y-4"
         >
           <p className="text-xs text-text-secondary">
             Use a negative amount to reduce the balance. The correction will be auto-confirmed.
           </p>
-          <Input
-            label="Correction amount"
-            type="number"
+          <Input label="Correction amount" type="number"
             error={corrForm.formState.errors.original_amount?.message}
-            {...corrForm.register('original_amount')}
-          />
-          <Input
-            label="Currency"
+            {...corrForm.register('original_amount')} />
+          <Input label="Currency"
             error={corrForm.formState.errors.original_currency?.message}
-            {...corrForm.register('original_currency')}
-          />
-          <Input
-            label="Base amount"
-            type="number"
+            {...corrForm.register('original_currency')} />
+          <Input label="Base amount" type="number"
             error={corrForm.formState.errors.base_amount?.message}
-            {...corrForm.register('base_amount')}
-          />
-          <Textarea
-            label="Reason (required)"
-            rows={2}
+            {...corrForm.register('base_amount')} />
+          <Textarea label="Reason (required)" rows={2}
             error={corrForm.formState.errors.note?.message}
-            {...corrForm.register('note')}
-          />
+            {...corrForm.register('note')} />
           <div className="flex gap-3 pt-2">
-            <Button
-              variant="secondary"
-              fullWidth
-              type="button"
-              onClick={() => { setCorrEntry(null); corrForm.reset(); }}
-            >
-              Cancel
-            </Button>
-            <Button fullWidth type="submit" loading={corrMutation.isPending}>
-              Apply correction
-            </Button>
+            <Button variant="secondary" fullWidth type="button"
+              onClick={() => { setCorrEntry(null); corrForm.reset(); }}>Cancel</Button>
+            <Button fullWidth type="submit" loading={corrMutation.isPending}>Apply correction</Button>
           </div>
         </form>
       </Modal>
