@@ -7,22 +7,7 @@ const {createSupabaseMock} = require('../helpers/mocks.js');
 
 const supabaseAdmin = createSupabaseMock();
 
-/*
-jest.mock('../../src/config/supabase', () => ({
-  supabaseAdmin: {
-    auth: {
-      getUser: jest.fn(),
-    },
-    from: jest.fn().mockReturnThis(),
-    update: jest.fn().mockReturnThis(),
-    eq: jest.fn().mockReturnThis(),
-    then: jest.fn().mockResolvedValue({}),
-    catch: jest.fn(),
-  },
-}));
 
-const { supabaseAdmin } = require('../../src/config/supabase');
-*/
 
 
 describe('requireAuth middleware', () => {

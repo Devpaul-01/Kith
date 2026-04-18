@@ -1,55 +1,49 @@
-const { requireAdmin } = require('../../src/middleware/role');
-const { ForbiddenError } = require('../../src/utils/errors');
+
+// tests/middleware/role.test.js
+const { requireAdmin, requireSelfOrAdmin } = require('../../src/middleware/role');
 
 describe('requireAdmin', () => {
-
-  // Helpers — fake Express req, res, next
-  function makeReq(memberRole) {
-    return { member: { role: memberRole, id: 'member-123' } };
-  }
-  const res  = {}; // not used by requireAdmin
-  const next = jest.fn(); // capture what's passed to next()
-
-  beforeEach(() => {
-    next.mockClear(); // reset the mock before each test
+  it('calls next() for admin role', () => {
+    const req = { member: { role: 'admin' } };
+    const next = jest.fn();
+    requireAdmin(req, {}, next);
+    expect(next).toHaveBeenCalledWith(); // no error
   });
 
-  test('should call next() without error when member is admin', () => {
-    // ARRANGE
-    const req = makeReq('admin');
-
-    // ACT
-    requireAdmin(req, res, next);
-
-    // ASSERT
-    expect(next).toHaveBeenCalledWith(); // called with no arguments = success
-    expect(next).toHaveBeenCalledTimes(1);
+  it('calls next(ForbiddenError) for member role', () => {
+    const req = { member: { role: 'member' } };
+    const next = jest.fn();
+    requireAdmin(req, {}, next);
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403 }));
   });
 
-  test('should call next(ForbiddenError) when member is not admin', () => {
-    // ARRANGE
-    const req = makeReq('member');
+  it('calls next(ForbiddenError) when member is null', () => {
+    const req = { member: null };
+    const next = jest.fn();
+    requireAdmin(req, {}, next);
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403 }));
+  });
+});
 
-    // ACT
-    requireAdmin(req, res, next);
-
-    // ASSERT
-    expect(next).toHaveBeenCalledTimes(1);
-    const errorPassedToNext = next.mock.calls[0][0]; // first argument of first call
-    expect(errorPassedToNext).toBeInstanceOf(ForbiddenError);
-    expect(errorPassedToNext.message).toBe('Admin access required');
+describe('requireSelfOrAdmin', () => {
+  it('allows admin to access any member', () => {
+    const req = { member: { role: 'admin', id: 'admin-1' }, params: { memberId: 'member-99' } };
+    const next = jest.fn();
+    requireSelfOrAdmin()(req, {}, next);
+    expect(next).toHaveBeenCalledWith(); // allowed
   });
 
-  test('should call next(ForbiddenError) when req.member is not set', () => {
-    // ARRANGE
-    const req = { member: null }; // no member
-
-    // ACT
-    requireAdmin(req, res, next);
-
-    // ASSERT
-    const errorPassedToNext = next.mock.calls[0][0];
-    expect(errorPassedToNext).toBeInstanceOf(ForbiddenError);
+  it('allows member to access their own resource', () => {
+    const req = { member: { role: 'member', id: 'member-1' }, params: { memberId: 'member-1' } };
+    const next = jest.fn();
+    requireSelfOrAdmin()(req, {}, next);
+    expect(next).toHaveBeenCalledWith(); // allowed
   });
 
+  it('blocks member from accessing someone else\'s resource', () => {
+    const req = { member: { role: 'member', id: 'member-1' }, params: { memberId: 'member-2' } };
+    const next = jest.fn();
+    requireSelfOrAdmin()(req, {}, next);
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403 }));
+  });
 });

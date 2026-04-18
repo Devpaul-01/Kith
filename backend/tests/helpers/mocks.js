@@ -1,47 +1,52 @@
 function createSupabaseMock() {
-  function makeChain() {
-    const chain = {
-      select:      jest.fn().mockReturnThis(),
-      insert:      jest.fn().mockReturnThis(),
-      update:      jest.fn().mockReturnThis(),
-      upsert:      jest.fn().mockReturnThis(),
-      delete:      jest.fn().mockReturnThis(),
-      eq:          jest.fn().mockReturnThis(),
-      neq:         jest.fn().mockReturnThis(),
-      is:          jest.fn().mockReturnThis(),
-      in:          jest.fn().mockReturnThis(),
-      lt:          jest.fn().mockReturnThis(),
-      lte:         jest.fn().mockReturnThis(),
-      gte:         jest.fn().mockReturnThis(),
-      not:         jest.fn().mockReturnThis(),
-      or:          jest.fn().mockReturnThis(),
-      order:       jest.fn().mockReturnThis(),
-      limit:       jest.fn().mockReturnThis(),
-      range:       jest.fn().mockReturnThis(),
-      single:      jest.fn().mockResolvedValue({ data: null, error: null }),
-      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
-      // Fire-and-forget chains (e.g. auth middleware last_seen_at update)
-      then:        jest.fn().mockResolvedValue({ }),
-      catch:       jest.fn().mockReturnThis(),
-    };
-    return chain;
-  }
+  // Create a single chainable object
+  const chainable = {
+    // Query methods
+    select: jest.fn().mockReturnThis(),
+    insert: jest.fn().mockReturnThis(),
+    update: jest.fn().mockReturnThis(),
+    upsert: jest.fn().mockReturnThis(),
+    delete: jest.fn().mockReturnThis(),
+    
+    // Filter methods
+    eq: jest.fn().mockReturnThis(),
+    neq: jest.fn().mockReturnThis(),
+    is: jest.fn().mockReturnThis(),
+    in: jest.fn().mockReturnThis(),
+    lt: jest.fn().mockReturnThis(),
+    lte: jest.fn().mockReturnThis(),
+    gte: jest.fn().mockReturnThis(),
+    not: jest.fn().mockReturnThis(),
+    or: jest.fn().mockReturnThis(),
+    
+    // Pagination
+    order: jest.fn().mockReturnThis(),
+    limit: jest.fn().mockReturnThis(),
+    range: jest.fn().mockReturnThis(),
+    
+    // Single row methods
+    single: jest.fn().mockResolvedValue({ data: null, error: null }),
+    maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    
+    // Promise methods (this is the key!)
+    then: jest.fn().mockResolvedValue({ data: null, error: null }),
+    catch: jest.fn().mockReturnThis(),
+  };
 
-  const supabaseMock = {
-    from: jest.fn().mockImplementation(() => makeChain()),
+  return {
+    from: jest.fn().mockReturnValue(chainable),
     auth: {
       getUser: jest.fn(),
       admin: {
-        getUserById:    jest.fn(),
-        signOut:        jest.fn(),
+        getUserById: jest.fn(),
+        signOut: jest.fn(),
         updateUserById: jest.fn(),
       },
     },
     rpc: jest.fn(),
   };
-
-  return supabaseMock;
 }
+
 
 /** Minimal Express req object — override what you need */
 function buildReq(overrides = {}) {

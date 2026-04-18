@@ -3,9 +3,35 @@ const { AppError } = require('../utils/errors');
 const { ZodError } = require('zod');
 const logger = require('../utils/logger');
 
-// eslint-disable-next-line no-unused-vars
+// errorHandler.js - add this at the VERY TOP of the errorHandler function
 function errorHandler(err, req, res, next) {
-  // Zod validation errors
+  // ============================================
+  // 🚨 TERMUX / BACKEND CONSOLE LOGGING
+  // ============================================
+  console.log('\n╔════════════════════════════════════════════════════╗');
+  console.log('║           🚨 ERROR HANDLER TRIGGERED              ║');
+  console.log('╚════════════════════════════════════════════════════╝');
+  
+  // Log error type and message
+  console.log('📌 Error Type:', err.constructor.name);
+  console.log('📌 Error Message:', err.message);
+  
+  // Log request details
+  console.log('📌 Request:', req.method, req.originalUrl);
+  console.log('📌 Workspace ID:', req.params?.workspaceId || 'N/A');
+  console.log('📌 User ID:', req.user?.id || req.member?.id || 'N/A');
+  
+  // Log request body (if POST/PUT/PATCH)
+  if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    console.log('📌 Request Body:', JSON.stringify(req.body, null, 2));
+  }
+  
+  // Log stack trace for unexpected errors
+  if (!(err instanceof AppError) && !(err instanceof ZodError)) {
+    console.log('📌 Stack Trace:\n', err.stack);
+  }
+  
+  console.log('══════════════════════════════════════════════════════\n');
   if (err instanceof ZodError) {
     const firstError = err.errors[0];
     return res.status(400).json({

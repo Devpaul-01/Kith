@@ -22,27 +22,47 @@ async function listEntries(req, res, next) {
     let query = supabaseAdmin
       .from('ledger_entries')
       .select(`
-        *, contributor:workspace_members!contributor_id(display_name),
+        *, 
+        contributor:workspace_members!contributor_id(display_name),
         recorded_by_member:workspace_members!recorded_by(display_name),
         confirmed_by_member:workspace_members!confirmed_by(display_name)
       `, { count: 'exact' })
       .eq('workspace_id', workspaceId)
       .eq('container_id', containerId);
 
+    // ✅ FIX: Apply filters correctly
     if (!isAdmin) {
+      // Non-admins can only see their own entries
       query = query.eq('contributor_id', callerId);
     } else {
-      const contributorFilter = req.query['filter[contributor_id]'];
-      if (contributorFilter) query = query.eq('contributor_id', contributorFilter);
+      // Admins can filter by contributor_id if provided
+      const contributorFilter = req.query.contributor_id || req.query['filter[contributor_id]'];
+      if (contributorFilter) {
+        query = query.eq('contributor_id', contributorFilter);
+      }
     }
 
-    const statusFilter = req.query['filter[status]'];
-    if (statusFilter) query = query.eq('status', statusFilter);
+    // ✅ Status filter (works for both admin and non-admin)
+    const statusFilter = req.query.status || req.query['filter[status]'];
+    if (statusFilter) {
+      query = query.eq('status', statusFilter);
+    }
 
+    // ✅ Date range filter (optional - add this if you need it)
+    const fromDate = req.query.from;
+    const toDate = req.query.to;
+    if (fromDate) {
+      query = query.gte('recorded_at', fromDate);
+    }
+    if (toDate) {
+      query = query.lte('recorded_at', toDate);
+    }
+
+    // Sort
     const sortParam = req.query.sort || '-recorded_at';
     const ascending = !sortParam.startsWith('-');
     const sortField = sortParam.replace('-', '');
-    const safeSort  = ['recorded_at','base_amount','status'].includes(sortField) ? sortField : 'recorded_at';
+    const safeSort  = ['recorded_at', 'base_amount', 'status', 'original_amount'].includes(sortField) ? sortField : 'recorded_at';
 
     query = query.order(safeSort, { ascending }).range(offset, offset + perPage - 1);
 
@@ -54,48 +74,94 @@ async function listEntries(req, res, next) {
       contributor_name:   le.contributor?.display_name,
       recorded_by_name:   le.recorded_by_member?.display_name,
       confirmed_by_name:  le.confirmed_by_member?.display_name,
-      contributor: undefined, recorded_by_member: undefined, confirmed_by_member: undefined,
+      contributor: undefined, 
+      recorded_by_member: undefined, 
+      confirmed_by_member: undefined,
     }));
 
-    success(res, { entries }, 200, { pagination: { page, per_page: perPage, total: count || 0 } });
-  } catch (err) { next(err); }
+    success(res, { entries }, 200, { 
+      pagination: { 
+        page, 
+        per_page: perPage, 
+        total: count || 0 
+      } 
+    });
+  } catch (err) { 
+    next(err); 
+  }
 }
 
 // ── Create entry ──────────────────────────────────────────────────
 
 async function createEntry(req, res, next) {
   try {
-    const data                         = createLedgerEntrySchema.parse(req.body);
+    const data = createLedgerEntrySchema.parse(req.body);
     const { workspaceId, containerId } = req.params;
-    const isAdmin    = req.member.role === 'admin';
-    const callerId   = req.member.id;
-    const force      = req.query.force === 'true';
+    const isAdmin = req.member.role === 'admin';
+    const callerId = req.member.id;
+    const force = req.query.force === 'true';
 
-    if (!isAdmin && data.contributor_id !== callerId) throw new ForbiddenError('You can only record contributions for yourself');
+    // 🔒 SECURITY: Non-admins ALWAYS contribute as themselves
+    // Ignore whatever they sent in the request body
+    const contributorId = isAdmin ? data.contributor_id : callerId;
 
+    // Validate that contributor_id exists (for admins)
+    if (isAdmin && !contributorId) {
+      throw new BusinessRuleError('Contributor ID is required');
+    }
+
+    // Get participant (using the determined contributorId)
     const { data: participant, error: pErr } = await supabaseAdmin
       .from('container_participants')
-      .select('*, workspace_members!inner(is_proxy)')
+      .select('*, workspace_member_id')
       .eq('container_id', containerId)
-      .eq('workspace_member_id', data.contributor_id)
+      .eq('workspace_member_id', contributorId)
       .maybeSingle();
 
     if (pErr) throw new Error(pErr.message);
     if (!participant) throw new BusinessRuleError('Contributor is not a participant in this container');
-    if (participant.workspace_members?.is_proxy && !isAdmin) throw new ForbiddenError('Only admins can record contributions for proxy members');
 
+    // Get member details separately
+    const { data: member, error: mErr } = await supabaseAdmin
+      .from('workspace_members')
+      .select('is_proxy')
+      .eq('id', participant.workspace_member_id)
+      .maybeSingle();
+
+    if (mErr) throw new Error(mErr.message);
+
+    // Check proxy restriction
+    if (member?.is_proxy && !isAdmin) {
+      throw new ForbiddenError('Only admins can record contributions for proxy members');
+    }
+
+    // Check money tracking is enabled
+    if (!participant.money_enabled) {
+      throw new BusinessRuleError(
+        'Money tracking is not enabled for this participant. ' +
+        'Enable it from the Participants tab before recording a ledger entry.'
+      );
+    }
+
+    // Check cycle if provided
     if (data.cycle_id) {
-      const { data: cycle } = await supabaseAdmin.from('container_cycles').select('id').eq('id', data.cycle_id).eq('container_id', containerId).maybeSingle();
+      const { data: cycle } = await supabaseAdmin
+        .from('container_cycles')
+        .select('id')
+        .eq('id', data.cycle_id)
+        .eq('container_id', containerId)
+        .maybeSingle();
       if (!cycle) throw new BusinessRuleError('Cycle does not belong to this container');
     }
 
+    // Check for duplicates
     if (!force) {
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
       const { data: dup } = await supabaseAdmin
         .from('ledger_entries')
         .select('id')
         .eq('container_id', containerId)
-        .eq('contributor_id', data.contributor_id)
+        .eq('contributor_id', contributorId)
         .eq('original_amount', data.original_amount)
         .gte('recorded_at', tenMinutesAgo)
         .maybeSingle();
@@ -103,17 +169,26 @@ async function createEntry(req, res, next) {
       if (dup) throw new ConflictError('Possible duplicate contribution detected within the last 10 minutes. Use ?force=true to override.', { existing_entry_id: dup.id });
     }
 
-    const now    = new Date().toISOString();
+    // Create the ledger entry
+    const now = new Date().toISOString();
     const status = isAdmin ? 'confirmed' : 'pending';
 
     const { data: entry, error: entryErr } = await supabaseAdmin
       .from('ledger_entries')
       .insert({
-        workspace_id: workspaceId, container_id: containerId, cycle_id: data.cycle_id || null,
-        entry_type: data.entry_type, contributor_id: data.contributor_id,
-        original_amount: data.original_amount, original_currency: data.original_currency,
-        base_amount: data.base_amount, payment_method: data.payment_method || null,
-        note: data.note || null, is_crypto: data.is_crypto, status, recorded_by: callerId,
+        workspace_id: workspaceId,
+        container_id: containerId,
+        cycle_id: data.cycle_id || null,
+        entry_type: data.entry_type,
+        contributor_id: contributorId,  // ← Use the determined ID
+        original_amount: data.original_amount,
+        original_currency: data.original_currency,
+        base_amount: data.base_amount,
+        payment_method: data.payment_method || null,
+        note: data.note || null,
+        is_crypto: data.is_crypto || false,
+        status,
+        recorded_by: callerId,
         confirmed_at: status === 'confirmed' ? now : null,
         confirmed_by: status === 'confirmed' ? callerId : null,
       })
@@ -123,23 +198,51 @@ async function createEntry(req, res, next) {
     if (entryErr) throw new Error(entryErr.message);
 
     // Log proxy action
-    if (participant.workspace_members?.is_proxy) {
+    if (member?.is_proxy) {
       await supabaseAdmin.from('proxy_actions').insert({
-        workspace_id: workspaceId, proxy_member_id: data.contributor_id, managed_by_id: callerId,
-        action_type: 'ledger_entry', target_id: entry.id,
+        workspace_id: workspaceId,
+        proxy_member_id: contributorId,
+        managed_by_id: callerId,
+        action_type: 'ledger_entry',
+        target_id: entry.id,
         action_details: { amount: data.original_amount, currency: data.original_currency },
       });
     }
 
+    // Send notifications for pending entries
     if (status === 'pending') {
-      const { data: admins } = await supabaseAdmin.from('workspace_members').select('id').eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true);
-      await notification.send({ type: 'contribution_submitted', workspaceId, recipientIds: (admins || []).map((a) => a.id), referenceType: 'ledger_entry', referenceId: entry.id, variables: { actor: req.member.displayName, amount: `${data.original_amount} ${data.original_currency}`, container: containerId } });
+      const { data: admins } = await supabaseAdmin
+        .from('workspace_members')
+        .select('id')
+        .eq('workspace_id', workspaceId)
+        .eq('role', 'admin')
+        .eq('is_active', true);
+
+      await notification.send({
+        type: 'contribution_submitted',
+        workspaceId,
+        recipientIds: (admins || []).map((a) => a.id),
+        referenceType: 'ledger_entry',
+        referenceId: entry.id,
+        variables: {
+          actor: req.member.displayName,
+          amount: `${data.original_amount} ${data.original_currency}`,
+          container: containerId
+        }
+      });
     }
 
-    await audit.log({ ...audit.fromReq(req), action: status === 'confirmed' ? 'ledger.confirmed' : 'ledger.submitted', targetType: 'ledger_entry', targetId: entry.id });
+    await audit.log({
+      ...audit.fromReq(req),
+      action: status === 'confirmed' ? 'ledger.confirmed' : 'ledger.submitted',
+      targetType: 'ledger_entry',
+      targetId: entry.id
+    });
 
     success(res, { entry }, 201);
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 }
 
 // ── Update entry ──────────────────────────────────────────────────
@@ -264,6 +367,21 @@ async function addCorrection(req, res, next) {
 
     const { data: source } = await supabaseAdmin.from('ledger_entries').select('*').eq('id', entryId).eq('container_id', containerId).maybeSingle();
     if (!source) throw new NotFoundError('Entry not found');
+
+
+    // ✅ NEW: verify money is still enabled for the contributor
+    const { data: corrParticipant } = await supabaseAdmin
+      .from('container_participants')
+      .select('money_enabled')
+      .eq('container_id', containerId)
+      .eq('workspace_member_id', source.contributor_id)
+      .maybeSingle();
+
+    if (!corrParticipant?.money_enabled) {
+      throw new BusinessRuleError(
+        'Cannot add a correction: money tracking is not enabled for this participant.',
+      );
+    }
 
     const now = new Date().toISOString();
     const { data: correction, error } = await supabaseAdmin

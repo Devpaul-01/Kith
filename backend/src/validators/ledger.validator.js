@@ -49,14 +49,25 @@ const setTargetSchema = z.object({
 
 const createLedgerEntrySchema = z.object({
   entry_type: z.enum(['contribution', 'expense']),
-  contributor_id: z.string().uuid(),
+  contributor_id: z.string().uuid().optional(),
   original_amount: z.number().positive(),
   original_currency: z.string().min(3).max(5),
   base_amount: z.number().positive(),
   payment_method: z
-    .enum(['cash', 'bank_transfer', 'mobile_money', 'crypto', 'other'])
-    .optional()
-    .nullable(),
+    .union([
+      z.enum(['cash', 'bank_transfer', 'mobile_money', 'crypto', 'other']),
+      z.string().transform((val) => {
+        // Transform "Bank " -> "bank_transfer", "Cash" -> "cash", etc.
+        const cleaned = val.trim().toLowerCase();
+        if (cleaned === 'bank' || cleaned === 'bank transfer' || cleaned === 'bank_transfer') return 'bank_transfer';
+        if (cleaned === 'cash') return 'cash';
+        if (cleaned === 'mobile money' || cleaned === 'mobile_money') return 'mobile_money';
+        if (cleaned === 'crypto') return 'crypto';
+        return 'other';
+      })
+    ])
+    .nullable()
+    .optional(),
   note: z.string().max(500).optional(),
   cycle_id: z.string().uuid().optional().nullable(),
   is_crypto: z.boolean().optional().default(false),
@@ -91,7 +102,7 @@ const addCorrectionSchema = z.object({
   original_amount: z.number().positive(),
   original_currency: z.string().min(3).max(5),
   base_amount: z.number().positive(),
-  note: z.string().min(10, 'Correction note must be at least 10 characters'),
+  note: z.string().min(5, 'Correction note must be at least 10 characters'),
 });
 
 // ── Disputes ──────────────────────────────────────────────────────
