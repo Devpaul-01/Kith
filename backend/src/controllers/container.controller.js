@@ -530,34 +530,101 @@ async function deleteContainer(req, res, next) {
 
 async function getSummary(req, res, next) {
   try {
+    console.log('\n========== GET SUMMARY START ==========');
     const { workspaceId, containerId } = req.params;
-    const isAdmin    = req.member.role === 'admin';
-    const callerId   = req.member.id;
+    const isAdmin = req.member.role === 'admin';
+    const callerId = req.member.id;
 
+    console.log('📋 Request params:', { workspaceId, containerId, isAdmin, callerId });
+
+    // 1. Fetch container
+    console.log('🔍 Fetching container...');
     const { data: container, error: cErr } = await supabaseAdmin
-      .from('containers').select('id, name, status, budget_target, budget_currency, enable_money').eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
+      .from('containers')
+      .select('id, name, status, budget_target, budget_currency, enable_money')
+      .eq('id', containerId)
+      .eq('workspace_id', workspaceId)
+      .is('deleted_at', null)
+      .maybeSingle();
 
-    if (cErr) throw new Error(cErr.message);
-    if (!container) throw new NotFoundError('Container not found');
+    if (cErr) {
+      console.error('❌ Container fetch error:', cErr);
+      throw new Error(cErr.message);
+    }
+    if (!container) {
+      console.error('❌ Container not found');
+      throw new NotFoundError('Container not found');
+    }
+    console.log('✅ Container found:', { id: container.id, name: container.name, enable_money: container.enable_money });
 
-    // Participants + targets + ledger (computed in JS)
-    const { data: participants } = await supabaseAdmin
+    // 2. Fetch participants - FIXED: Specify the correct foreign key relationship
+    console.log('🔍 Fetching participants for container:', containerId);
+    const { data: participants, error: pErr } = await supabaseAdmin
       .from('container_participants')
-      .select('id, role, money_enabled, workspace_member_id, workspace_members(display_name, is_proxy), contributor_targets(target_amount, target_currency, due_date, is_current, cycle_id)')
+      .select(`
+        id, 
+        role, 
+        money_enabled, 
+        workspace_member_id,
+        added_by,
+        workspace_members!container_participants_workspace_member_id_fkey (
+          display_name, 
+          is_proxy
+        ),
+        contributor_targets(
+          target_amount, 
+          target_currency, 
+          due_date, 
+          is_current, 
+          cycle_id
+        )
+      `)
       .eq('container_id', containerId);
 
-    const { data: ledger } = await supabaseAdmin
+    if (pErr) {
+      console.error('❌ Participants fetch error:', pErr);
+      throw new Error(pErr.message);
+    }
+    
+    console.log(`📊 Participants found: ${participants?.length || 0}`);
+    if (participants && participants.length > 0) {
+      console.log('📝 First participant sample:', JSON.stringify(participants[0], null, 2));
+    } else {
+      console.warn('⚠️ NO participants found for this container!');
+    }
+
+    // 3. Fetch ledger entries
+    console.log('🔍 Fetching ledger entries for container:', containerId);
+    const { data: ledger, error: lErr } = await supabaseAdmin
       .from('ledger_entries')
       .select('contributor_id, base_amount, status')
       .eq('container_id', containerId);
 
+    if (lErr) {
+      console.error('❌ Ledger fetch error:', lErr);
+      throw new Error(lErr.message);
+    }
+    
+    console.log(`📊 Ledger entries found: ${ledger?.length || 0}`);
+    if (ledger && ledger.length > 0) {
+      console.log('📝 Ledger summary:', {
+        total_entries: ledger.length,
+        confirmed_count: ledger.filter(l => l.status === 'confirmed').length,
+        total_base_amount: ledger.reduce((sum, l) => sum + parseFloat(l.base_amount || 0), 0)
+      });
+    } else {
+      console.warn('⚠️ NO ledger entries found for this container!');
+    }
+
+    // 4. Shape participants
+    console.log('🔄 Shaping participants data...');
     const shapedParticipants = (participants || []).map((p) => {
-      const member     = p.workspace_members;
+      const member = p.workspace_members;
       const currentTarget = (p.contributor_targets || []).find((t) => t.is_current && t.cycle_id === null);
-      const entries    = (ledger || []).filter((le) => le.contributor_id === p.workspace_member_id);
-      const confirmed  = entries.filter((le) => le.status === 'confirmed').reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
-      const pending    = entries.filter((le) => ['pending','proof_uploaded'].includes(le.status)).reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
-      const target     = parseFloat(currentTarget?.target_amount || 0);
+      const entries = (ledger || []).filter((le) => le.contributor_id === p.workspace_member_id);
+      const confirmed = entries.filter((le) => le.status === 'confirmed').reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
+      const pending = entries.filter((le) => ['pending', 'proof_uploaded'].includes(le.status)).reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
+      const target = parseFloat(currentTarget?.target_amount || 0);
       const outstanding = Math.max(0, target - confirmed);
 
       let status = 'no_target';
@@ -568,28 +635,88 @@ async function getSummary(req, res, next) {
         else status = 'pending';
       }
 
+      console.log(`  📝 Participant ${member?.display_name}:`, {
+        workspace_member_id: p.workspace_member_id,
+        has_target: !!currentTarget,
+        target_amount: target,
+        confirmed_amount: confirmed,
+        pending_amount: pending,
+        status,
+        is_admin_view: isAdmin,
+        is_owner: p.workspace_member_id === callerId
+      });
+
       const full = {
-        member_id: p.workspace_member_id, display_name: member?.display_name, is_proxy: member?.is_proxy,
-        role: p.role, status,
-        current_target: currentTarget ? { amount: currentTarget.target_amount, currency: currentTarget.target_currency, due_date: currentTarget.due_date } : null,
-        confirmed_paid_base: confirmed, pending_paid_base: pending, outstanding_base: outstanding,
+        member_id: p.workspace_member_id,
+        display_name: member?.display_name,
+        is_proxy: member?.is_proxy,
+        role: p.role,
+        status,
+        current_target: currentTarget ? {
+          amount: currentTarget.target_amount,
+          currency: currentTarget.target_currency,
+          due_date: currentTarget.due_date
+        } : null,
+        confirmed_paid_base: confirmed,
+        pending_paid_base: pending,
+        outstanding_base: outstanding,
       };
 
+      // For non-admins, only show limited info for other members
       if (!isAdmin && p.workspace_member_id !== callerId) {
-        return { member_id: p.workspace_member_id, display_name: member?.display_name, is_proxy: member?.is_proxy, role: p.role, status };
+        console.log(`    🔒 Limited view for non-admin user`);
+        return {
+          member_id: p.workspace_member_id,
+          display_name: member?.display_name,
+          is_proxy: member?.is_proxy,
+          role: p.role,
+          status
+        };
       }
       return full;
     });
 
-    const totalExpected  = shapedParticipants.reduce((s, p) => s + parseFloat(p.current_target?.amount || 0), 0);
+    console.log(`✅ Shaped ${shapedParticipants.length} participants`);
+
+    // 5. Calculate totals
+    const totalExpected = shapedParticipants.reduce((s, p) => s + parseFloat(p.current_target?.amount || 0), 0);
     const totalConfirmed = shapedParticipants.reduce((s, p) => s + (p.confirmed_paid_base || 0), 0);
-    const totalPending   = shapedParticipants.reduce((s, p) => s + (p.pending_paid_base || 0), 0);
-    const progressPct    = totalExpected > 0 ? Math.round((totalConfirmed / totalExpected) * 100) : null;
+    const totalPending = shapedParticipants.reduce((s, p) => s + (p.pending_paid_base || 0), 0);
+    const progressPct = totalExpected > 0 ? Math.round((totalConfirmed / totalExpected) * 100) : null;
 
-    success(res, { container, total_expected_base: totalExpected, total_confirmed_base: totalConfirmed, total_pending_base: totalPending, progress_pct: progressPct, participants: shapedParticipants });
-  } catch (err) { next(err); }
+    console.log('📊 Calculated totals:', {
+      totalExpected,
+      totalConfirmed,
+      totalPending,
+      progressPct,
+      participantCount: shapedParticipants.length
+    });
+
+    // 6. Prepare response
+    const response = {
+      container,
+      total_expected_base: totalExpected,
+      total_confirmed_base: totalConfirmed,
+      total_pending_base: totalPending,
+      progress_pct: progressPct,
+      participants: shapedParticipants
+    };
+
+    console.log('📤 Response summary:', {
+      has_container: !!response.container,
+      participants_count: response.participants.length,
+      total_confirmed: response.total_confirmed_base,
+      total_expected: response.total_expected_base
+    });
+    console.log('========== GET SUMMARY END ==========\n');
+
+    success(res, response);
+  } catch (err) {
+    console.error('💥 GetSummary error:', err);
+    console.error('Stack trace:', err.stack);
+    next(err);
+  }
 }
-
 async function listCycles(req, res, next) {
   try {
     const { containerId } = req.params;
@@ -671,5 +798,46 @@ async function getPublicContainer(req, res, next) {
     success(res, response);
   } catch (err) { next(err); }
 }
+// Add this temporary debug endpoint in container.controller.js
+async function debugContainerData(req, res, next) {
+  try {
+    const { workspaceId, containerId } = req.params;
+    
+    // Get participants count
+    const { data: participants, error: pErr } = await supabaseAdmin
+      .from('container_participants')
+      .select('id, workspace_member_id')
+      .eq('container_id', containerId);
+    
+    // Get ledger entries count and total
+    const { data: ledger, error: lErr } = await supabaseAdmin
+      .from('ledger_entries')
+      .select('contributor_id, status, base_amount')
+      .eq('container_id', containerId);
+    
+    // Get workspace members that have contributed
+    const contributorIds = [...new Set((ledger || []).map(l => l.contributor_id))];
+    const { data: members } = await supabaseAdmin
+      .from('workspace_members')
+      .select('id, display_name')
+      .in('id', contributorIds);
+    
+    res.json({
+      container_id: containerId,
+      participants_count: participants?.length || 0,
+      participants_list: participants,
+      ledger_count: ledger?.length || 0,
+      ledger_confirmed_count: ledger?.filter(l => l.status === 'confirmed').length || 0,
+      ledger_total_base: ledger?.reduce((sum, l) => sum + parseFloat(l.base_amount || 0), 0) || 0,
+      unique_contributors: contributorIds.length,
+      contributor_details: members,
+      has_missing_participants: contributorIds.length > (participants?.length || 0)
+    });
+  } catch (err) {
+    next(err);
+  }
+}
 
-module.exports = { listContainers, createContainer, getContainer, updateContainer, completeContainer, convertToRecurring, archiveContainer, generatePublicLink, deleteContainer, getSummary, listCycles, generateOutcomeFileUploadUrl, generateCoverPhotoUploadUrl, getPublicContainer };
+// Add to exports
+
+module.exports = { listContainers, createContainer, getContainer, updateContainer, completeContainer, convertToRecurring, archiveContainer, generatePublicLink, deleteContainer, getSummary, listCycles, generateOutcomeFileUploadUrl,debugContainerData, generateCoverPhotoUploadUrl, getPublicContainer };

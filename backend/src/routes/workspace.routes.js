@@ -63,7 +63,7 @@ router.post('/containers/:containerId/complete',             requireAdmin, cCtrl
 router.post('/containers/:containerId/convert-to-recurring', requireAdmin, cCtrl.convertToRecurring);
 router.post('/containers/:containerId/archive',              requireAdmin, cCtrl.archiveContainer);
 router.post('/containers/:containerId/generate-public-link', requireAdmin, cCtrl.generatePublicLink);
-router.get('/containers/:containerId/summary',               cCtrl.getSummary);
+router.get('/containers/:containerId/summary',               cCtrl.getSummary, cCtrl.debugContainerData);
 router.get('/containers/:containerId/cycles',                requireAdmin, cCtrl.listCycles);
 router.post(
   '/containers/:containerId/outcome-files/upload-url',
