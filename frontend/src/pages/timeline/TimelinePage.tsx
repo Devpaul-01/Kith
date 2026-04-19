@@ -1,65 +1,146 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { milestoneService } from '@/services/milestone.service';
+import { useQuery } from '@tanstack/react-query';
+import { milestoneService, type TimelineItem } from '@/services/milestone.service';
 import { KEYS } from '@/constants/queryKeys';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { useIsAdmin } from '@/hooks/useIsAdmin';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Spinner } from '@/components/ui/Spinner';
-import { Modal } from '@/components/ui/Modal';
-import { Input } from '@/components/ui/Input';
-import { Textarea } from '@/components/ui/Textarea';
-import { Clock, Plus, Trash2 } from 'lucide-react';
-import showToast from '@/lib/toast';
-import { formatDate } from '@/utils/date';
-import type { Milestone } from '@/types/models';
-import { useForm } from 'react-hook-form';
-import { z } from 'zod';
-import { zodResolver } from '@hookform/resolvers/zod';
+import { MilestoneCard } from '@/components/milestones/MilestoneCard';
+import { ContainerCompletedCard } from '@/components/milestones/ContainerCompletedCard';
+import { CreateMilestoneModal } from '@/components/milestones/CreateMilestoneModal';
+import { Tabs } from '@/components/ui/Tabs';
+import { Clock, Calendar, CheckCircle } from 'lucide-react';
 
-const schema = z.object({ title: z.string().min(1), description: z.string().optional(), milestone_date: z.string().min(1, 'Required') });
-type Form = z.infer<typeof schema>;
+type FilterType = 'all' | 'milestones' | 'completed';
 
 export default function TimelinePage() {
   const { workspaceId } = useWorkspace();
   const isAdmin = useIsAdmin();
-  const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<Form>({ resolver: zodResolver(schema) });
-  const { data, isLoading } = useQuery({ queryKey: KEYS.timeline(workspaceId), queryFn: () => milestoneService.getTimeline(workspaceId), staleTime: 300_000 });
-  const milestones: Milestone[] = (data as { milestones?: Milestone[] })?.milestones ?? [];
-  const createMutation = useMutation({ mutationFn: (d: Form) => milestoneService.create(workspaceId, d), onSuccess: () => { qc.invalidateQueries({ queryKey: KEYS.timeline(workspaceId) }); showToast.success('Milestone created'); setShowCreate(false); reset(); }, onError: () => showToast.error('Failed') });
-  const deleteMutation = useMutation({ mutationFn: (id: string) => milestoneService.delete(workspaceId, id), onSuccess: () => { qc.invalidateQueries({ queryKey: KEYS.timeline(workspaceId) }); showToast.success('Deleted'); }, onError: () => showToast.error('Failed') });
+  const [filter, setFilter] = useState<FilterType>('all');
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: KEYS.timeline(workspaceId),
+    queryFn: () => milestoneService.getTimeline(workspaceId),
+    staleTime: 300_000,
+  });
+
+  const items: TimelineItem[] = (data as { items?: TimelineItem[] })?.items ?? [];
+
+  const filteredItems = items.filter(item => {
+    if (filter === 'milestones') return item.type === 'milestone';
+    if (filter === 'completed') return item.type === 'container_completed';
+    return true;
+  });
+
+  const tabs = [
+    { id: 'all', label: 'All Events' },
+    { id: 'milestones', label: 'Milestones' },
+    { id: 'completed', label: 'Completed Events' },
+  ];
+
+  const stats = {
+    total: items.length,
+    milestones: items.filter(i => i.type === 'milestone').length,
+    completed: items.filter(i => i.type === 'container_completed').length,
+  };
+
   return (
     <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-5">
-      <div className="flex items-center justify-between"><h1 className="text-xl font-bold text-text-primary">Timeline</h1>{isAdmin && <Button size="sm" onClick={() => setShowCreate(true)}><Plus size={14} />Add Milestone</Button>}</div>
-      {isLoading && <div className="flex justify-center py-8"><Spinner /></div>}
-      {!isLoading && milestones.length === 0 && <EmptyState icon={<Clock size={36} />} title="No milestones yet" />}
-      <div className="relative">
-        {milestones.length > 0 && <div className="absolute left-5 top-0 bottom-0 w-0.5 bg-border" />}
-        <div className="space-y-6">
-          {milestones.map(m => (
-            <div key={m.id} className="relative pl-12">
-              <div className="absolute left-3.5 top-2 w-3 h-3 rounded-full bg-primary border-2 border-white ring-2 ring-primary-light" />
-              <div className="bg-white border border-border rounded-xl p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1"><p className="font-semibold text-text-primary">{m.title}</p><p className="text-xs text-primary font-medium mt-0.5">{formatDate(m.milestone_date)}</p>{m.description && <p className="text-sm text-text-secondary mt-2">{m.description}</p>}</div>
-                  {isAdmin && <button onClick={() => deleteMutation.mutate(m.id)} className="p-1.5 rounded-lg text-slate-300 hover:text-danger hover:bg-red-50 transition-colors flex-shrink-0"><Trash2 size={14} /></button>}
-                </div>
-              </div>
-            </div>
-          ))}
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-text-primary">Timeline</h1>
+          <div className="flex items-center gap-3 mt-1 text-xs text-text-secondary">
+            <span className="flex items-center gap-1">
+              <Calendar size={12} /> {stats.total} total events
+            </span>
+            <span className="flex items-center gap-1">
+              <Clock size={12} /> {stats.milestones} milestones
+            </span>
+            <span className="flex items-center gap-1">
+              <CheckCircle size={12} /> {stats.completed} completed
+            </span>
+          </div>
         </div>
+        {isAdmin && (
+          <Button size="sm" onClick={() => setShowCreate(true)}>
+            <Clock size={14} /> Add Milestone
+          </Button>
+        )}
       </div>
-      <Modal open={showCreate} onClose={() => { setShowCreate(false); reset(); }} title="Add Milestone">
-        <form onSubmit={handleSubmit(d => createMutation.mutate(d))} className="space-y-4">
-          <Input label="Title" placeholder="Family reunion 2025" error={errors.title?.message} {...register('title')} />
-          <Input label="Date" type="date" error={errors.milestone_date?.message} {...register('milestone_date')} />
-          <Textarea label="Description" placeholder="Details..." rows={3} {...register('description')} />
-          <div className="flex gap-3 pt-2"><Button variant="secondary" fullWidth type="button" onClick={() => { setShowCreate(false); reset(); }}>Cancel</Button><Button fullWidth type="submit" loading={createMutation.isPending}>Create</Button></div>
-        </form>
-      </Modal>
+
+      {/* Tabs */}
+      <Tabs tabs={tabs} activeTab={filter} onChange={(id) => setFilter(id as FilterType)} />
+
+      {/* Loading */}
+      {isLoading && (
+        <div className="flex justify-center py-16">
+          <Spinner size="lg" />
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!isLoading && filteredItems.length === 0 && (
+        <EmptyState
+          icon={<Clock size={36} />}
+          title={filter === 'all' ? 'No timeline events yet' : filter === 'milestones' ? 'No milestones yet' : 'No completed events yet'}
+          description={
+            filter === 'all'
+              ? 'Complete containers or add milestones to build your family timeline.'
+              : filter === 'milestones'
+              ? 'Click "Add Milestone" to document important family moments.'
+              : 'Complete containers to see them appear here.'
+          }
+          action={
+            isAdmin && filter === 'milestones' ? (
+              <Button size="sm" onClick={() => setShowCreate(true)}>
+                <Clock size={14} /> Add Milestone
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
+
+      {/* Timeline List */}
+      {!isLoading && filteredItems.length > 0 && (
+        <div className="relative">
+          <div className="absolute left-5 top-0 bottom-0 w-0.5 bg-border" />
+          <div className="space-y-6">
+            {filteredItems.map((item, idx) => (
+              item.type === 'milestone' ? (
+                <MilestoneCard
+                  key={`${item.reference_type}-${item.reference_id}-${idx}`}
+                  milestone={{
+                    id: item.reference_id,
+                    workspace_id: workspaceId,
+                    title: item.title,
+                    description: item.description || undefined,
+                    milestone_date: item.date.split('T')[0],
+                    photos: item.photos || [],
+                    created_at: item.date,
+                    updated_at: item.date,
+                  }}
+                  workspaceId={workspaceId}
+                  isAdmin={isAdmin}
+                  onUpdate={() => refetch()}
+                />
+              ) : (
+                <ContainerCompletedCard key={`${item.reference_type}-${item.reference_id}-${idx}`} item={item} />
+              )
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Create Milestone Modal */}
+      <CreateMilestoneModal
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        workspaceId={workspaceId}
+      />
     </div>
   );
 }

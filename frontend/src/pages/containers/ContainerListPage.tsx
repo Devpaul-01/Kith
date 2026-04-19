@@ -67,45 +67,48 @@ export default function ContainerListPage() {
         />
       )}
       <div className="grid sm:grid-cols-2 gap-4">
-        {filtered.map(c => (
-          <Card key={c.id} hover onClick={() => nav(`/app/containers/${c.id}`)} className="space-y-3">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex-1 min-w-0">
-                <p className="font-semibold text-text-primary truncate">{c.name}</p>
-                {/* FIX: event_date is correct in the new schema */}
-                {c.event_date && (
-                  <p className="text-xs text-text-secondary mt-0.5">📅 {formatDate(c.event_date)}</p>
-                )}
-              </div>
-              <Badge status={c.status} />
-            </div>
-            {c.budget_target && (
-              <div className="space-y-1.5">
-                <ProgressBar value={c.progress_pct ?? 0} />
-                <div className="flex justify-between text-xs text-text-secondary">
-                  {/* FIX: c.base_currency → c.budget_currency */}
-                  <span>{formatCurrency(c.total_confirmed ?? 0, c.budget_currency ?? 'USD')} collected</span>
-                  <span>{c.progress_pct ?? 0}%</span>
-                </div>
-              </div>
-            )}
-            <div className="flex items-center gap-2 flex-wrap">
-              {/* FIX: c.type → c.container_type */}
-              <span className="text-xs bg-slate-100 text-text-secondary px-2 py-0.5 rounded-full capitalize">
-                {c.container_type}
-              </span>
-              {/* FIX: c.category → c.event_type_category */}
-              {c.event_type_category && (
-                <span className="text-xs bg-slate-100 text-text-secondary px-2 py-0.5 rounded-full capitalize">
-                  {c.event_type_category}
-                </span>
-              )}
-              <span className="text-xs text-text-secondary ml-auto">
-                {c.participant_count ?? 0} participants
-              </span>
-            </div>
-          </Card>
-        ))}
+        {filtered.map(c => {
+  const totalConfirmed = (c as any).total_confirmed_base ?? 0;
+  const progressPct = c.budget_target && totalConfirmed 
+    ? Math.round((totalConfirmed / c.budget_target) * 100)
+    : 0;
+  
+  return (
+    <Card key={c.id} hover onClick={() => nav(`/app/containers/${c.id}`)} className="space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-text-primary truncate">{c.name}</p>
+          {c.event_date && (
+            <p className="text-xs text-text-secondary mt-0.5">📅 {formatDate(c.event_date)}</p>
+          )}
+        </div>
+        <Badge status={c.status} />
+      </div>
+      {c.budget_target && (
+        <div className="space-y-1.5">
+          <ProgressBar value={progressPct} />
+          <div className="flex justify-between text-xs text-text-secondary">
+            <span>{formatCurrency(totalConfirmed, c.budget_currency ?? 'USD')} collected</span>
+            <span>{progressPct}%</span>
+          </div>
+        </div>
+      )}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs bg-slate-100 text-text-secondary px-2 py-0.5 rounded-full capitalize">
+          {c.container_type}
+        </span>
+        {c.event_type_category && (
+          <span className="text-xs bg-slate-100 text-text-secondary px-2 py-0.5 rounded-full capitalize">
+            {c.event_type_category}
+          </span>
+        )}
+        <span className="text-xs text-text-secondary ml-auto">
+          {c.participant_count ?? 0} participants
+        </span>
+      </div>
+    </Card>
+  );
+})}
       </div>
       {showCreate && <CreateContainerModal onClose={() => setShowCreate(false)} />}
     </div>

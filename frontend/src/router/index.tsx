@@ -18,6 +18,7 @@ const ResetPasswordPage=lazy(()=>import('@/pages/auth/ResetPasswordPage'));
 const CallbackPage=lazy(()=>import('@/pages/auth/CallbackPage'));
 const RegisterPage=lazy(()=>import('@/pages/auth/RegisterPage'));
 const InvitePage=lazy(()=>import('@/pages/public/InvitePage'));
+const MemberEngagementPage = lazy(() => import('@/pages/members/MemberEngagementPage'));
 const PublicContainerPage=lazy(()=>import('@/pages/public/PublicContainerPage'));
 const WorkspaceSelectPage=lazy(()=>import('@/pages/workspace/WorkspaceSelectPage'));
 const CreateWorkspacePage=lazy(()=>import('@/pages/workspace/CreateWorkspacePage'));
@@ -56,6 +57,7 @@ export const router=createBrowserRouter([
       {path:'/app/containers/:id/ledger',element:S(ContainerLedgerPage)},{path:'/app/containers/:id/tasks',element:S(ContainerTasksPage)},
       {path:'/app/containers/:id/summary',element:S(ContainerSummaryPage)},
       {path:'/app/members',element:S(MemberListPage)},{path:'/app/members/:id',element:S(MemberDetailPage)},
+  { path: '/app/members/engagement', element: <MemberEngagementPage /> },
       {path:'/app/timeline',element:S(TimelinePage)},{path:'/app/notifications',element:S(NotificationsPage)},
       {path:'/app/settings',element:S(ProfileSettingsPage)},{path:'/app/settings/notifications',element:S(NotifSettingsPage)},
       {element:<AdminRoute/>,children:[

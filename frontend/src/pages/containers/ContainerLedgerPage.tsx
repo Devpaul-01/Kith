@@ -150,15 +150,16 @@ export default function ContainerLedgerPage() {
   const totalCount: number =
     (data?.pages[0] as any)?.meta?.pagination?.total ?? 0;
 
+
+  
   // ── Participants query (admin only) ───────────────────────────────────────
-  const { data: participantsData } = useQuery({
-    queryKey: [...KEYS.participants(workspaceId, containerId!)],
-    queryFn:  () => participantService.list(workspaceId, containerId!),
-    enabled:  isAdmin,
-  });
-  const participants: Participant[] =
-    (participantsData as any)?.participants ?? [];
-  const moneyEnabledParticipants = participants.filter(p => p.money_enabled);
+const { data: participantsData, isLoading: participantsLoading } = useQuery({
+  queryKey: [...KEYS.participants(workspaceId, containerId!)],
+  queryFn: () => participantService.list(workspaceId, containerId!),
+  enabled: isAdmin,
+});
+const participants: Participant[] = (participantsData as any)?.participants ?? [];
+const moneyEnabledParticipants = participants.filter(p => p.money_enabled);
 
   // ── FIX (admin): sync contributor_id to first valid participant ───────────
   useEffect(() => {
@@ -556,28 +557,33 @@ export default function ContainerLedgerPage() {
           className="space-y-4"
         >
           {isAdmin && (
-            <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-text-secondary">Recording for</label>
-              {moneyEnabledParticipants.length === 0 ? (
-                <p className="text-xs text-text-secondary italic">
-                  {participants.length === 0
-                    ? 'Loading participants…'
-                    : 'No participants have money tracking enabled.'}
-                </p>
-              ) : (
-                <select
-                  className="text-sm border border-border rounded-xl px-3 py-2 focus:outline-none bg-white w-full"
-                  {...createForm.register('contributor_id')}
-                >
-                  {moneyEnabledParticipants.map(p => (
-                    <option key={p.workspace_member_id} value={p.workspace_member_id}>
-                      {p.display_name}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-          )}
+  <div className="flex flex-col gap-1">
+    <label className="text-xs font-medium text-text-secondary">Recording for</label>
+    {participantsLoading ? (
+      <div className="flex items-center justify-center py-2">
+        <Spinner size="sm" />
+      </div>
+    ) : moneyEnabledParticipants.length === 0 ? (
+      <div className="text-sm text-text-secondary bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+        ⚠️ No participants with money tracking enabled. 
+        <Link to={`/app/containers/${containerId}/participants`} className="text-primary underline ml-1">
+          Add participants first
+        </Link>
+      </div>
+    ) : (
+      <select
+        className="text-sm border border-border rounded-xl px-3 py-2 focus:outline-none bg-white w-full"
+        {...createForm.register('contributor_id')}
+      >
+        {moneyEnabledParticipants.map(p => (
+          <option key={p.workspace_member_id} value={p.workspace_member_id}>
+            {p.display_name}
+          </option>
+        ))}
+      </select>
+    )}
+  </div>
+)}
 
           <Input 
             label="Amount" 

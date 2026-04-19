@@ -4,10 +4,13 @@ export const KEYS={
   workspace:(w:string)=>['workspaces',w] as const,
   dashboard:(w:string)=>['workspaces',w,'dashboard'] as const,
   settings:(w:string)=>['workspaces',w,'settings'] as const,
-  members:(w:string)=>['workspaces',w,'members'] as const,
-  member:(w:string,m:string)=>['workspaces',w,'members',m] as const,
-  engagement:(w:string)=>['workspaces',w,'members','engagement'] as const,
-  contribution:(w:string,m:string)=>['workspaces',w,'members',m,'contribution'] as const,
+
+  members: (workspaceId: string) => ['members', workspaceId],
+  member: (workspaceId: string, memberId: string) => ['members', workspaceId, memberId],
+  engagement: (workspaceId: string) => ['engagement', workspaceId],
+  contribution: (workspaceId: string, memberId: string) => ['contribution', workspaceId, memberId],
+  profileHistory: (workspaceId: string, memberId: string) => ['profile-history', workspaceId, memberId],
+
   invites:(w:string)=>['workspaces',w,'invites'] as const,
   invitePreview:(t:string)=>['invites','preview',t] as const,
   groups:(w:string)=>['workspaces',w,'groups'] as const,

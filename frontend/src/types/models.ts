@@ -174,7 +174,28 @@ export interface LedgerEntry {
 export interface Dispute{id:string;ledger_entry_id:string;workspace_id:string;raised_by_member_id:string;raised_by_name:string;reason:string;status:DisputeStatus;resolution_note?:string;resolved_by_name?:string;resolved_at?:string;created_at:string;notes?:DisputeNote[];}
 export interface DisputeNote{id:string;dispute_id:string;member_id:string;member_name:string;note:string;created_at:string;}
 
-export interface Milestone{id:string;workspace_id:string;container_id?:string;title:string;description?:string;milestone_date:string;photo_url?:string;created_at:string;}
+// In models.ts - replace the existing Milestone interface
+export interface Milestone {
+  id: string;
+  workspace_id: string;
+  container_id?: string;
+  title: string;
+  description?: string;
+  milestone_date: string;
+  milestone_type?: 'birth' | 'graduation' | 'wedding' | 'death' | 'migration' | 'achievement' | 'custom';
+  photos?: Array<{
+    url: string;
+    name: string;
+    size: number;
+    mime_type: string;
+    uploaded_by: string;
+    uploaded_at: string;
+  }>;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string;
+}
 export interface Notification{id:string;user_id:string;workspace_id?:string;type:string;title:string;body:string;is_read:boolean;reference_type?:'ledger_entry'|'task'|'dispute'|'container'|'workspace';reference_id?:string;created_at:string;}
 export interface Invite{id:string;workspace_id:string;token:string;email?:string;role:'admin'|'member';invited_by_name:string;expires_at:string;accepted_at?:string;created_at:string;}
 
