@@ -8,19 +8,53 @@ async function listGroups(req, res, next) {
   try {
     const { workspaceId } = req.params;
 
-    const { data: groups, error } = await supabaseAdmin
+    // First, get all groups
+    const { data: groups, error: groupsError } = await supabaseAdmin
       .from('groups')
-      .select('id, name, description, created_at, group_members(id, workspace_members!inner(id, display_name, role, is_proxy))')
+      .select('id, name, description, created_at')
       .eq('workspace_id', workspaceId)
       .order('name', { ascending: true });
 
-    if (error) throw new Error(error.message);
+    if (groupsError) throw new Error(groupsError.message);
 
-    const result = (groups || []).map((g) => ({
-      ...g,
-      member_count: (g.group_members || []).length,
-      members:      (g.group_members || []).map((gm) => gm.workspace_members),
-      group_members: undefined,
+    if (!groups || groups.length === 0) {
+      return success(res, { groups: [] });
+    }
+
+    // Then, get all group members for these groups
+    const groupIds = groups.map(g => g.id);
+    
+    const { data: groupMembers, error: membersError } = await supabaseAdmin
+      .from('group_members')
+      .select(`
+        id,
+        group_id,
+        workspace_member_id,
+        workspace_members!inner (
+          id,
+          display_name,
+          role,
+          is_proxy
+        )
+      `)
+      .in('group_id', groupIds);
+
+    if (membersError) throw new Error(membersError.message);
+
+    // Group members by group_id
+    const membersByGroup = {};
+    (groupMembers || []).forEach(gm => {
+      if (!membersByGroup[gm.group_id]) {
+        membersByGroup[gm.group_id] = [];
+      }
+      membersByGroup[gm.group_id].push(gm.workspace_members);
+    });
+
+    // Build the result
+    const result = groups.map(group => ({
+      ...group,
+      member_count: (membersByGroup[group.id] || []).length,
+      members: membersByGroup[group.id] || []
     }));
 
     success(res, { groups: result });
