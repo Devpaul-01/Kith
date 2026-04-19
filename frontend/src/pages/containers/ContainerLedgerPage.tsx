@@ -834,8 +834,9 @@ export default function ContainerLedgerPage() {
           className="space-y-4"
         >
           <p className="text-xs text-text-secondary bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-            Use a <strong>negative</strong> amount to reduce the balance.
+            Enter a <strong>positive</strong> amount representing the corrected value.
             Corrections are auto-confirmed and permanently linked to the original entry.
+            To offset an over-payment, enter the excess amount as a correction with a descriptive note.
           </p>
 
           <Input 

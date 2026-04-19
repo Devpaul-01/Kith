@@ -7,13 +7,75 @@ export interface Group{id:string;workspace_id:string;name:string;description?:st
 export type ContainerType='event'|'recurring';
 export type ContainerStatus='active'|'completed'|'archived';
 export type EventCategory='celebration'|'memorial'|'financial'|'logistical'|'other';
-export type RecurrenceCadence='monthly'|'quarterly'|'yearly'|'custom';
+export type EventTypeCategory='celebration'|'memorial'|'financial'|'logistical'|'other';
+export type RecurrenceCadence='monthly'|'quarterly'|'yearly'|'custom'|'weekly';
 export type LedgerStatus='pending'|'proof_uploaded'|'confirmed'|'disputed'|'resolved';
 export type EntryType='contribution'|'correction'|'adjustment';
 export type TaskStatus='pending'|'in_progress'|'completed'|'cancelled';
 export type DisputeStatus='open'|'resolved';
 export type EngagementLevel='active'|'quiet'|'inactive';
-export interface Container{id:string;workspace_id:string;name:string;description?:string;type:ContainerType;status:ContainerStatus;category?:EventCategory;event_date?:string;budget_target?:number;base_currency:string;recurrence_cadence?:RecurrenceCadence;cover_photo_url?:string;public_token?:string;progress_pct?:number;total_confirmed?:number;total_expected?:number;participant_count?:number;created_at:string;updated_at:string;}
+
+// ── Container ─────────────────────────────────────────────────────────────────
+export interface Container {
+  // Primary identifiers
+  id: string;
+  workspace_id: string;
+
+  // Basic info
+  name: string;
+  subtitle: string | null;
+  description: string | null;
+  cover_photos: Array<{ url: string; path: string; uploaded_at?: string }>;
+
+  // Type & status
+  container_type: ContainerType;
+  status: ContainerStatus;
+
+  // Feature flags
+  enable_money: boolean;
+  enable_tasks: boolean;
+
+  // Event fields
+  event_date: string | null;
+  event_type: string | null;
+  event_type_category: EventTypeCategory;
+
+  // Recurring fields
+  recurrence_cadence: RecurrenceCadence | null;
+  recurrence_days: number | null;
+  recurrence_start: string | null;
+  recurrence_end: string | null;
+  carry_forward_unpaid: boolean;
+  auto_generate_cycles: boolean;
+
+  // Money/Budget
+  budget_target: number | null;
+  budget_currency: string | null;
+
+  // Public sharing
+  public_token: string | null;
+  public_show_names: boolean;
+
+  // Outcome
+  outcome_details: string | null;
+  outcome_files: any[];
+
+  // Relations
+  converted_from_id: string | null;
+  created_by: string;
+
+  // Timestamps
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  deleted_at: string | null;
+
+  // Computed/aggregated fields returned by list & detail endpoints
+  progress_pct?: number;
+  total_confirmed?: number;
+  total_expected?: number;
+  participant_count?: number;
+}
 
 // Updated to match the actual API response from participant_controller.js
 export interface Participant {
@@ -54,67 +116,6 @@ export interface ContributorTarget {
   superseded_at: string | null;
   superseded_by: string | null;
 }
-// types/models.ts
-
-
-
-export interface Container {
-  // Primary identifiers
-  id: string;
-  workspace_id: string;
-  
-  // Basic info
-  name: string;
-  subtitle: string | null;
-  description: string | null;
-  cover_photos: any[]; // JSONB array
-  
-  // Type & status
-  container_type: ContainerType;
-  status: ContainerStatus;
-  
-  // Feature flags
-  enable_money: boolean;
-  enable_tasks: boolean;
-  
-  // Event fields
-  event_date: string | null;  // DATE type
-  event_type: string | null;
-  event_type_category: EventTypeCategory;
-  
-  // Recurring fields
-  recurrence_cadence: RecurrenceCadence;
-  recurrence_days: number | null;
-  recurrence_start: string | null;  // DATE type
-  recurrence_end: string | null;    // DATE type
-  carry_forward_unpaid: boolean;
-  auto_generate_cycles: boolean;
-  
-  // Money/Budget
-  budget_target: number | null;  // NUMERIC(15,2)
-  budget_currency: string | null;
-  
-  // Public sharing
-  public_token: string | null;
-  public_show_names: boolean;
-  
-  // Outcome
-  outcome_details: string | null;
-  outcome_files: any[];  // JSONB array
-  
-  // Relations
-  converted_from_id: string | null;
-  created_by: string;  // UUID (workspace_members.id)
-  
-  // Timestamps
-  created_at: string;   // TIMESTAMPTZ
-  updated_at: string;   // TIMESTAMPTZ
-  completed_at: string | null;
-  deleted_at: string | null;
-}
-
-// For API responses that include aggregated data
-
 
 // Single row returned inside cycle_targets array by getCycleTargets
 export interface CycleTargetEntry {
@@ -169,13 +170,27 @@ export interface LedgerEntry {
   created_at: string;
   updated_at: string;
 }
+
 export interface Dispute{id:string;ledger_entry_id:string;workspace_id:string;raised_by_member_id:string;raised_by_name:string;reason:string;status:DisputeStatus;resolution_note?:string;resolved_by_name?:string;resolved_at?:string;created_at:string;notes?:DisputeNote[];}
 export interface DisputeNote{id:string;dispute_id:string;member_id:string;member_name:string;note:string;created_at:string;}
 
 export interface Milestone{id:string;workspace_id:string;container_id?:string;title:string;description?:string;milestone_date:string;photo_url?:string;created_at:string;}
 export interface Notification{id:string;user_id:string;workspace_id?:string;type:string;title:string;body:string;is_read:boolean;reference_type?:'ledger_entry'|'task'|'dispute'|'container'|'workspace';reference_id?:string;created_at:string;}
 export interface Invite{id:string;workspace_id:string;token:string;email?:string;role:'admin'|'member';invited_by_name:string;expires_at:string;accepted_at?:string;created_at:string;}
-export interface Cycle{id:string;container_id:string;cycle_number:number;start_date:string;end_date:string;status:'active'|'closed'|'upcoming';total_expected:number;total_collected:number;}
+
+// ── Cycle ─────────────────────────────────────────────────────────────────────
+// NOTE: DB columns are cycle_start / cycle_end (not start_date / end_date)
+export interface Cycle {
+  id: string;
+  container_id: string;
+  cycle_number: number;
+  cycle_start: string;   // DB column name
+  cycle_end: string;     // DB column name
+  status: 'active' | 'open' | 'upcoming' | 'closed' | 'skipped';
+  total_expected: number;
+  total_collected: number;
+}
+
 export interface AuditEntry{id:string;action:string;actor_name:string;description:string;created_at:string;}
 export interface FileInfo{filename:string;content_type:string;file_size:number;}
 export interface ActiveEvent{id:string;name:string;event_date?:string;status:ContainerStatus;progress_pct:number;days_until?:number;total_confirmed?:number;budget_target?:number;}
@@ -183,61 +198,36 @@ export interface RecurringPool{id:string;name:string;current_cycle_status?:strin
 export interface Deadline{contributor_name:string;container_name:string;container_id:string;due_date:string;days_remaining:number;amount?:number;}
 export interface DashboardData{workspace_summary:{member_count:number;admin_count:number;proxy_count:number};active_events:ActiveEvent[];recurring_pools:RecurringPool[];upcoming_deadlines:Deadline[];pending_confirmations:LedgerEntry[];recent_activity:AuditEntry[];unread_notification_count:number;unread_activity_count:number;}
 export interface ContainerSummary{container:Container;total_confirmed:number;total_expected:number;total_pending:number;progress_pct:number;participant_count:number;confirmed_count:number;pending_count:number;currency:string;}
-// ─────────────────────────────────────────────────────────────────────────────
-// REPLACE the existing one-liner Task interface in models.ts with this block.
-// Everything else in models.ts stays untouched.
-// ─────────────────────────────────────────────────────────────────────────────
 
 export interface TaskProofFile {
   url:         string;
   name:        string;
   size:        number;
   mime_type:   string;
-  uploaded_by: string;   // workspace_member id
-  uploaded_at: string;   // ISO timestamp
+  uploaded_by: string;
+  uploaded_at: string;
 }
 
 export interface Task {
-  // Identifiers
   id:           string;
   container_id: string;
   workspace_id?: string;
-
-  // Content
   title:            string;
   description?:     string;
   completion_note?: string;
-
-  // Status lifecycle
-  status: TaskStatus;   // 'pending' | 'in_progress' | 'completed' | 'cancelled'
-
-  // Assignment
-  assigned_to?:      string;   // workspace_member id
-  assigned_to_name?: string;   // display_name — populated by API join
-
-  // Ordering & scheduling
+  status: TaskStatus;
+  assigned_to?:      string;
+  assigned_to_name?: string;
   sort_order?: number;
-  due_date?:   string;   // DATE string YYYY-MM-DD
-
-  // Proof uploads (JSONB array)
+  due_date?:   string;
   proofs?: TaskProofFile[];
-
-  // Completion tracking (set when status → 'completed')
   completed_at?: string;
-  completed_by?: string;   // workspace_member id
-
-  // Admin confirmation
-  // ⚠️  Requires DB migration — see task_controller.js adminConfirmTask comment
+  completed_by?: string;
   admin_confirmed_at?: string;
-  admin_confirmed_by?: string;   // workspace_member id
+  admin_confirmed_by?: string;
   admin_note?:         string;
-
-  // Authorship
   created_by?:      string;
-  created_by_name?: string;   // populated by API join
-
-  // Timestamps
+  created_by_name?: string;
   created_at: string;
   updated_at: string;
 }
-

@@ -147,6 +147,11 @@ const updateContainerSchema = z.object({
   recurrence_end: z.string().date().optional().nullable(),
   enable_tasks: z.boolean().optional(),
   enable_money: z.boolean().optional(),
+  cover_photos: z.array(z.object({
+    url: z.string().url(),
+    path: z.string(),
+    uploaded_at: z.string().datetime().optional(),
+  })).optional(),
 });
 
 const completeContainerSchema = z.object({

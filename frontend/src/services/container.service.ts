@@ -35,6 +35,7 @@ export interface UpdateContainerPayload {
   carry_forward_unpaid?: boolean;
   recurrence_end?: string | null;
   public_show_names?: boolean;
+  cover_photos?: Array<{ url: string; path: string; uploaded_at?: string }>; // Add this
 }
 
 export interface Container {

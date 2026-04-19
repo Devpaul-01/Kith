@@ -408,8 +408,15 @@ async function updateContainer(req, res, next) {
       if (count > 0) throw new BusinessRuleError('Cannot disable money tracking — ledger entries exist');
     }
 
-    const allowedFields = ['name','subtitle','description','event_date','event_type','event_type_category','budget_target','budget_currency','public_show_names','carry_forward_unpaid','recurrence_end','enable_tasks','enable_money'];
-    const updates       = {};
+    // ✅ Add cover_photos to allowed fields
+    const allowedFields = [
+      'name', 'subtitle', 'description', 'event_date', 'event_type', 
+      'event_type_category', 'budget_target', 'budget_currency', 
+      'public_show_names', 'carry_forward_unpaid', 'recurrence_end', 
+      'enable_tasks', 'enable_money', 'cover_photos'  // ← Add this
+    ];
+    
+    const updates = {};
     for (const field of allowedFields) {
       if (data[field] !== undefined) updates[field] = data[field];
     }

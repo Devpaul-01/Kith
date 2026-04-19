@@ -1,6 +1,8 @@
 import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { participantService, type ParticipantInput } from '@/services/participant.service';
+import { AddFromGroupModal } from '@/components/participants/AddFromGroupModal';
+
 import { memberService } from '@/services/member.service';
 import { containerService } from '@/services/container.service';
 import { KEYS } from '@/constants/queryKeys';
@@ -15,7 +17,7 @@ import { EditParticipantModal } from '@/components/participants/EditParticipantM
 import { TargetHistoryModal } from '@/components/participants/TargetHistoryModal';
 import { CycleTargetsModal } from '@/components/participants/CycleTargetsModal';
 import { useState, useEffect } from 'react';
-import { Plus, Users, MoreVertical } from 'lucide-react';
+import { Plus, Users,UsersRound, MoreVertical } from 'lucide-react';
 import showToast from '@/lib/toast';
 import type { Participant, WorkspaceMember } from '@/types/models';
 
@@ -29,6 +31,7 @@ export default function ContainerParticipantsPage() {
   const [editParticipant, setEditParticipant] = useState<Participant | null>(null);
   const [historyParticipant, setHistoryParticipant] = useState<Participant | null>(null);
   const [cycleParticipant, setCycleParticipant] = useState<Participant | null>(null);
+  const [showAddFromGroup, setShowAddFromGroup] = useState(false);
 
   // Close dropdown when clicking anywhere outside
   useEffect(() => {
@@ -100,13 +103,18 @@ export default function ContainerParticipantsPage() {
   return (
     <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold text-text-primary">Participants</h2>
-        {isActive && (
-          <Button size="sm" onClick={() => setShowAdd(true)}>
-            <Plus size={14} />Add
-          </Button>
-        )}
-      </div>
+  <h2 className="text-lg font-bold text-text-primary">Participants</h2>
+  {isActive && (
+    <div className="flex items-center gap-2">
+      <Button size="sm" variant="secondary" onClick={() => setShowAddFromGroup(true)}>
+        <UsersRound size={14} /> Add from Group
+      </Button>
+      <Button size="sm" onClick={() => setShowAdd(true)}>
+        <Plus size={14} /> Add
+      </Button>
+    </div>
+  )}
+</div>
 
       {isLoading && <div className="flex justify-center py-8"><Spinner /></div>}
 
@@ -239,6 +247,18 @@ export default function ContainerParticipantsPage() {
           containerId={id!}
         />
       )}
+      {/* Add from Group Modal */}
+<AddFromGroupModal
+  open={showAddFromGroup}
+  onClose={() => setShowAddFromGroup(false)}
+  workspaceId={workspaceId}
+  containerId={id!}
+  enableMoney={enableMoney}
+  enableTasks={enableTasks}
+  onSuccess={() => {
+    qc.invalidateQueries({ queryKey: KEYS.participants(workspaceId, id!) });
+  }}
+/>
     </div>
   );
 }
