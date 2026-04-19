@@ -211,35 +211,38 @@ export const containerService = {
    * Returns { upload_url, file_url, file_key }.
    * Use file_url (not a manually constructed URL) when saving to cover_photos.
    */
-  getCoverPhotoUploadUrl: (
-    workspaceId: string,
-    containerId: string,
-    fileData: { filename: string; content_type: string; file_size: number },
-  ): Promise<{ upload_url: string; file_url: string; file_key: string }> =>
-    api
-      .post(
-        `/v1/workspaces/${workspaceId}/containers/${containerId}/cover-photos/upload-url`,
-        fileData,
-      )
-      .then(r => r.data),
+  // In container.service.ts - fix the return type for getOutcomeFileUploadUrl
 
-  /**
-   * Step 1 of outcome file upload — get a presigned URL from the backend.
-   * Returns { upload_url, file_url, file_key }.
-   * After PUT-ing the file to upload_url, pass an OutcomeFilePayload built
-   * from file_url/name/size/mime_type to containerService.complete().
-   */
-  getOutcomeFileUploadUrl: (
-    workspaceId: string,
-    containerId: string,
-    fileData: { filename: string; content_type: string; file_size: number },
-  ): Promise<{ upload_url: string; file_url: string; file_key: string }> =>
-    api
-      .post(
-        `/v1/workspaces/${workspaceId}/containers/${containerId}/outcome-files/upload-url`,
-        fileData,
-      )
-      .then(r => r.data),
+/**
+ * Step 1 of outcome file upload — get a presigned URL from the backend.
+ * Returns { upload_url, file_path, expires_in }.
+ * After PUT-ing the file to upload_url, construct the public URL using:
+ * `${SUPABASE_URL}/storage/v1/object/public/kith-files/${file_path}`
+ */
+getOutcomeFileUploadUrl: (
+  workspaceId: string,
+  containerId: string,
+  fileData: { filename: string; content_type: string; file_size: number },
+): Promise<{ upload_url: string; file_path: string; expires_in: number }> =>
+  api
+    .post(
+      `/v1/workspaces/${workspaceId}/containers/${containerId}/outcome-files/upload-url`,
+      fileData,
+    )
+    .then(r => r.data),
+
+// Also fix getCoverPhotoUploadUrl to match actual backend response
+getCoverPhotoUploadUrl: (
+  workspaceId: string,
+  containerId: string,
+  fileData: { filename: string; content_type: string; file_size: number },
+): Promise<{ upload_url: string; file_path: string; expires_in: number }> =>
+  api
+    .post(
+      `/v1/workspaces/${workspaceId}/containers/${containerId}/cover-photos/upload-url`,
+      fileData,
+    )
+    .then(r => r.data),
 
   /** Convert an event container to a recurring pool */
   convertToRecurring: (

@@ -375,86 +375,91 @@ function CompleteContainerModal({
   };
 
   const handleComplete = async () => {
-    setIsSubmitting(true);
+  setIsSubmitting(true);
 
-    try {
-      const uploadedFiles: OutcomeFile[] = [];
+  try {
+    const uploadedFiles: OutcomeFile[] = [];
+    
+    // Get Supabase URL from environment
+    const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+    const BUCKET = 'kith-files'; // Your storage bucket name
 
-      // Upload each pending file sequentially
-      for (let i = 0; i < pendingFiles.length; i++) {
-        const pf = pendingFiles[i];
-        if (pf.status === 'done' && pf.result) {
-          // Already uploaded in a previous attempt
-          uploadedFiles.push(pf.result);
-          continue;
-        }
-
-        // Mark as uploading
-        setPendingFiles(prev =>
-          prev.map((f, idx) => idx === i ? { ...f, status: 'uploading' } : f)
-        );
-
-        try {
-          // Step 1: Get presigned upload URL from backend
-          const { upload_url, file_url, file_key } =
-            await containerService.getOutcomeFileUploadUrl(workspaceId, containerId, {
-              filename:     pf.file.name,
-              content_type: pf.file.type,
-              file_size:    pf.file.size,
-            });
-
-          // Step 2: PUT the file to the presigned URL
-          const uploadRes = await fetch(upload_url, {
-            method:  'PUT',
-            body:    pf.file,
-            headers: { 'Content-Type': pf.file.type },
-          });
-          if (!uploadRes.ok) throw new Error(`Storage upload failed (${uploadRes.status})`);
-
-          // Step 3: Collect the outcome file object
-          const outcomeFile: OutcomeFile = {
-            url:       file_url,
-            name:      pf.file.name,
-            size:      pf.file.size,
-            mime_type: pf.file.type,
-          };
-
-          uploadedFiles.push(outcomeFile);
-
-          // Mark as done
-          setPendingFiles(prev =>
-            prev.map((f, idx) =>
-              idx === i ? { ...f, status: 'done', result: outcomeFile } : f
-            )
-          );
-        } catch (err: any) {
-          setPendingFiles(prev =>
-            prev.map((f, idx) => idx === i ? { ...f, status: 'error' } : f)
-          );
-          throw new Error(`Failed to upload "${pf.file.name}": ${err.message}`);
-        }
+    // Upload each pending file sequentially
+    for (let i = 0; i < pendingFiles.length; i++) {
+      const pf = pendingFiles[i];
+      if (pf.status === 'done' && pf.result) {
+        // Already uploaded in a previous attempt
+        uploadedFiles.push(pf.result);
+        continue;
       }
 
-      // Step 4: Call the complete endpoint with notes + all uploaded file objects
-      // Using api directly because containerService.complete() has the wrong
-      // outcome_files type (string[] vs OutcomeFile[]) — see container_service.ts fix
-      await api.post(
-        `/v1/workspaces/${workspaceId}/containers/${containerId}/complete`,
-        {
-          outcome_details: outcomeNotes || undefined,
-          outcome_files:   uploadedFiles,
-        },
+      // Mark as uploading
+      setPendingFiles(prev =>
+        prev.map((f, idx) => idx === i ? { ...f, status: 'uploading' } : f)
       );
 
-      showToast.success('Container marked as completed');
-      handleClose();
-      onSuccess();
-    } catch (err: any) {
-      showToast.error(err?.message || 'Failed to complete container');
-    } finally {
-      setIsSubmitting(false);
+      try {
+        // Step 1: Get presigned upload URL from backend
+        // ✅ FIX: Use file_path, not file_url (backend returns file_path)
+        const { upload_url, file_path } =
+          await containerService.getOutcomeFileUploadUrl(workspaceId, containerId, {
+            filename:     pf.file.name,
+            content_type: pf.file.type,
+            file_size:    pf.file.size,
+          });
+
+        // Step 2: PUT the file to the presigned URL
+        const uploadRes = await fetch(upload_url, {
+          method:  'PUT',
+          body:    pf.file,
+          headers: { 'Content-Type': pf.file.type },
+        });
+        if (!uploadRes.ok) throw new Error(`Storage upload failed (${uploadRes.status})`);
+
+        // Step 3: Construct the public URL from file_path
+        const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${file_path}`;
+
+        // Step 4: Collect the outcome file object
+        const outcomeFile: OutcomeFile = {
+          url:       publicUrl,  // ✅ Use constructed URL
+          name:      pf.file.name,
+          size:      pf.file.size,
+          mime_type: pf.file.type,
+        };
+
+        uploadedFiles.push(outcomeFile);
+
+        // Mark as done
+        setPendingFiles(prev =>
+          prev.map((f, idx) =>
+            idx === i ? { ...f, status: 'done', result: outcomeFile } : f
+          )
+        );
+      } catch (err: any) {
+        setPendingFiles(prev =>
+          prev.map((f, idx) => idx === i ? { ...f, status: 'error' } : f
+        ));
+        throw new Error(`Failed to upload "${pf.file.name}": ${err.message}`);
+      }
     }
-  };
+
+    // Step 5: Call the complete endpoint with notes + all uploaded file objects
+    await containerService.complete(
+      workspaceId,
+      containerId,
+      outcomeNotes || undefined,
+      uploadedFiles
+    );
+
+    showToast.success('Container marked as completed');
+    handleClose();
+    onSuccess();
+  } catch (err: any) {
+    showToast.error(err?.message || 'Failed to complete container');
+  } finally {
+    setIsSubmitting(false);
+  }
+};
 
   const handleClose = () => {
     if (isSubmitting) return;
