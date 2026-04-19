@@ -302,7 +302,39 @@ async function getContainer(req, res, next) {
 
     const { data: container, error } = await supabaseAdmin
       .from('containers')
-      .select('*, container_participants(id)')
+      .select(`
+        id,
+        workspace_id,
+        name,
+        subtitle,
+        description,
+        container_type,
+        status,
+        enable_money,
+        enable_tasks,
+        event_date,
+        event_type,
+        event_type_category,
+        budget_target,
+        budget_currency,
+        recurrence_cadence,
+        recurrence_days,
+        recurrence_start,
+        recurrence_end,
+        carry_forward_unpaid,
+        auto_generate_cycles,
+        public_token,
+        public_show_names,
+        outcome_details,
+        outcome_files,
+        converted_from_id,
+        created_by,
+        created_at,
+        updated_at,
+        completed_at,
+        deleted_at,
+        container_participants(id)
+      `)
       .eq('id', containerId)
       .eq('workspace_id', workspaceId)
       .is('deleted_at', null)
@@ -310,6 +342,16 @@ async function getContainer(req, res, next) {
 
     if (error) throw new Error(error.message);
     if (!container) throw new NotFoundError('Container not found');
+
+    // Log what we're returning for debugging
+    console.log('📦 getContainer response:', {
+      id: container.id,
+      name: container.name,
+      budget_currency: container.budget_currency,
+      event_type_category: container.event_type_category,
+      enable_money: container.enable_money,
+      enable_tasks: container.enable_tasks
+    });
 
     const participantCount = (container.container_participants || []).length;
 
@@ -319,7 +361,7 @@ async function getContainer(req, res, next) {
         .from('container_cycles')
         .select('*')
         .eq('container_id', containerId)
-        .in('status', ['open','upcoming'])
+        .in('status', ['open', 'upcoming'])
         .order('cycle_start', { ascending: true })
         .limit(1)
         .maybeSingle();
@@ -333,15 +375,21 @@ async function getContainer(req, res, next) {
       .eq('workspace_member_id', req.member.id)
       .maybeSingle();
 
+    // Remove container_participants from the response
+    const { container_participants, ...cleanContainer } = container;
+
     success(res, {
-      container: { ...container, container_participants: undefined },
+      container: cleanContainer,
       current_cycle: currentCycle,
       tasks_enabled: container.enable_tasks,
       money_enabled: container.enable_money,
       participant_count: participantCount,
       current_user_participation: participation || null,
     });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    console.error('❌ getContainer error:', err);
+    next(err); 
+  }
 }
 
 async function updateContainer(req, res, next) {

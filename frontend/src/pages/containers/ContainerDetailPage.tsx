@@ -30,7 +30,7 @@ const editSchema = z.object({
   subtitle:      z.string().max(200).optional(),
   description:   z.string().max(2000).optional(),
   event_date:    z.string().optional(),
-  budget_target: z.string().optional(),   // string → converted to number on submit
+  budget_target: z.string().optional(),
   enable_money:  z.boolean(),
   enable_tasks:  z.boolean(),
 });
@@ -46,14 +46,13 @@ function EditContainerModal({
 }: {
   open: boolean;
   onClose: () => void;
-  container: any;       // use any to bridge the type/container_type mismatch
+  container: any;
   workspaceId: string;
   containerId: string;
 }) {
   const qc = useQueryClient();
 
-  const isEvent =
-    container?.type === 'event' || container?.container_type === 'event';
+  const isEvent = container?.container_type === 'event' || container?.type === 'event';
 
   const {
     register,
@@ -66,9 +65,7 @@ function EditContainerModal({
       subtitle:      container?.subtitle ?? '',
       description:   container?.description ?? '',
       event_date:    container?.event_date ?? '',
-      budget_target: container?.budget_target != null
-        ? String(container.budget_target)
-        : '',
+      budget_target: container?.budget_target != null ? String(container.budget_target) : '',
       enable_money:  container?.enable_money ?? true,
       enable_tasks:  container?.enable_tasks ?? false,
     },
@@ -94,7 +91,6 @@ function EditContainerModal({
       enable_tasks: d.enable_tasks,
       budget_target: d.budget_target ? Number(d.budget_target) : null,
     };
-    // Only include event_date for event containers
     if (isEvent) {
       payload.event_date = d.event_date || null;
     }
@@ -104,49 +100,16 @@ function EditContainerModal({
   return (
     <Modal open={open} onClose={onClose} title="Edit Container">
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        {/* Name */}
-        <Input
-          label="Name"
-          placeholder="Container name"
-          error={errors.name?.message}
-          {...register('name')}
-        />
-
-        {/* Subtitle */}
-        <Input
-          label="Subtitle (optional)"
-          placeholder="Short tagline or subtitle"
-          {...register('subtitle')}
-        />
-
-        {/* Description */}
-        <Textarea
-          label="Description (optional)"
-          placeholder="What is this container about?"
-          rows={3}
-          {...register('description')}
-        />
-
-        {/* Event date — only shown for event-type containers */}
+        <Input label="Name" placeholder="Container name" error={errors.name?.message} {...register('name')} />
+        <Input label="Subtitle (optional)" placeholder="Short tagline or subtitle" {...register('subtitle')} />
+        <Textarea label="Description (optional)" placeholder="What is this container about?" rows={3} {...register('description')} />
+        
         {isEvent && (
-          <Input
-            label="Event date (optional)"
-            type="date"
-            {...register('event_date')}
-          />
+          <Input label="Event date (optional)" type="date" {...register('event_date')} />
         )}
-
-        {/* Budget target */}
-        <Input
-          label="Budget target (optional)"
-          type="number"
-          min="0"
-          step="0.01"
-          placeholder="0.00"
-          {...register('budget_target')}
-        />
-
-        {/* Feature toggles */}
+        
+        <Input label="Budget target (optional)" type="number" min="0" step="0.01" placeholder="0.00" {...register('budget_target')} />
+        
         <div className="space-y-2">
           <p className="text-xs font-medium text-text-secondary uppercase tracking-wide">Features</p>
           <label className="flex items-center gap-3 cursor-pointer select-none">
@@ -160,12 +123,8 @@ function EditContainerModal({
         </div>
 
         <div className="flex gap-3 pt-2">
-          <Button variant="secondary" fullWidth type="button" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button fullWidth type="submit" loading={mutation.isPending}>
-            Save changes
-          </Button>
+          <Button variant="secondary" fullWidth type="button" onClick={onClose}>Cancel</Button>
+          <Button fullWidth type="submit" loading={mutation.isPending}>Save changes</Button>
         </div>
       </form>
     </Modal>
@@ -185,6 +144,9 @@ export default function ContainerDetailPage() {
     queryFn: () => containerService.get(workspaceId, id!),
   });
 
+  // Log the actual response for debugging
+  console.log('🔍 Container API Response:', data);
+
   const responseData = data as {
     container?: Container;
     tasks_enabled?: boolean;
@@ -194,23 +156,29 @@ export default function ContainerDetailPage() {
     current_user_participation?: any;
   };
 
-  const container       = responseData?.container;
-  const tasksEnabled    = responseData?.tasks_enabled    ?? (container as any)?.enable_tasks  ?? false;
-  const moneyEnabled    = responseData?.money_enabled    ?? (container as any)?.enable_money  ?? false;
-  // participant_count lives at the response root, not inside container
+  const container = responseData?.container;
+  const tasksEnabled = responseData?.tasks_enabled ?? container?.enable_tasks ?? false;
+  const moneyEnabled = responseData?.money_enabled ?? container?.enable_money ?? false;
   const participantCount = responseData?.participant_count ?? 0;
 
   if (isLoading) return <div className="flex justify-center py-16"><Spinner size="lg" /></div>;
   if (!container) return <div className="p-6 text-center text-text-secondary">Container not found.</div>;
 
-  const containerType = (container as any).type ?? (container as any).container_type;
+  const containerType = container.container_type;
+  const isEvent = containerType === 'event';
+  
+  // Get the currency - try multiple possible field names
+  const currency = container.budget_currency || (container as any).base_currency || 'USD';
+  
+  // For progress, we need to fetch summary data or calculate from available data
+  // For now, we'll show a simplified view without progress if not available
 
   const tabs = [
-    { id: 'overview',     label: 'Overview',     path: '' },
-    ...(moneyEnabled  ? [{ id: 'ledger',       label: 'Ledger',       path: '/ledger' }]        : []),
-    ...(tasksEnabled  ? [{ id: 'tasks',        label: 'Tasks',        path: '/tasks' }]         : []),
-    ...(isAdmin                  ? [{ id: 'participants', label: 'Participants', path: '/participants' }]   : []),
-    ...(isAdmin && containerType === 'recurring' ? [{ id: 'cycles', label: 'Cycles', path: '/cycles' }]    : []),
+    { id: 'overview', label: 'Overview', path: '' },
+    ...(moneyEnabled ? [{ id: 'ledger', label: 'Ledger', path: '/ledger' }] : []),
+    ...(tasksEnabled ? [{ id: 'tasks', label: 'Tasks', path: '/tasks' }] : []),
+    ...(isAdmin ? [{ id: 'participants', label: 'Participants', path: '/participants' }] : []),
+    ...(isAdmin && containerType === 'recurring' ? [{ id: 'cycles', label: 'Cycles', path: '/cycles' }] : []),
     { id: 'summary', label: 'Summary', path: '/summary' },
   ];
 
@@ -222,12 +190,14 @@ export default function ContainerDetailPage() {
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <h1 className="text-xl font-bold text-text-primary truncate">{container.name}</h1>
-          {container.event_date && (
+          {container.subtitle && (
+            <p className="text-sm text-text-secondary mt-0.5">{container.subtitle}</p>
+          )}
+          {isEvent && container.event_date && (
             <p className="text-sm text-text-secondary mt-0.5">📅 {formatDate(container.event_date)}</p>
           )}
         </div>
 
-        {/* Badge + edit button side-by-side */}
         <div className="flex items-center gap-2 flex-shrink-0">
           {isAdmin && (
             <button
@@ -242,29 +212,9 @@ export default function ContainerDetailPage() {
         </div>
       </div>
 
-      {/* ── Progress card ────────────────────────────────────────────────── */}
-      {(container as any).budget_target && (
-        <Card padding="sm">
-          <div className="flex justify-between text-sm mb-2">
-            <span className="text-text-secondary">Progress</span>
-            <span className="font-bold text-text-primary">
-              <CurrencyAmount
-                amount={(container as any).total_confirmed ?? 0}
-                currency={(container as any).base_currency ?? (container as any).budget_currency}
-              />
-              {' '}
-              <span className="font-normal text-text-secondary">
-                of{' '}
-                <CurrencyAmount
-                  amount={(container as any).budget_target}
-                  currency={(container as any).base_currency ?? (container as any).budget_currency}
-                />
-              </span>
-            </span>
-          </div>
-          <ProgressBar value={(container as any).progress_pct ?? 0} showLabel />
-        </Card>
-      )}
+      {/* ── Progress card - Only show if budget target exists and we have summary data ── */}
+      {/* For now, we'll skip the progress card here since it needs summary data */}
+      {/* The Summary tab will show full progress details */}
 
       {/* ── Tabs ─────────────────────────────────────────────────────────── */}
       <div className="flex gap-0 border-b border-border overflow-x-auto">
@@ -296,36 +246,56 @@ export default function ContainerDetailPage() {
             <div>
               <p className="text-text-secondary text-xs">Type</p>
               <p className="font-medium text-text-primary capitalize">
-                {containerType ?? (
-                  <span className="text-text-secondary text-xs font-normal">Not specified</span>
-                )}
+                {containerType || 'Not specified'}
               </p>
             </div>
 
-            {/* Category */}
-            <div>
-              <p className="text-text-secondary text-xs">Category</p>
-              <p className="font-medium text-text-primary capitalize">
-                {(container as any).category ?? (container as any).event_type_category ?? (
-                  <span className="text-text-secondary text-xs font-normal">Not specified</span>
-                )}
-              </p>
-            </div>
+            {/* Category - only for events */}
+            {isEvent && (
+              <div>
+                <p className="text-text-secondary text-xs">Category</p>
+                <p className="font-medium text-text-primary capitalize">
+                  {container.event_type_category || 'Not specified'}
+                </p>
+              </div>
+            )}
+
+            {/* Recurring cadence - only for recurring */}
+            {!isEvent && container.recurrence_cadence && (
+              <div>
+                <p className="text-text-secondary text-xs">Cadence</p>
+                <p className="font-medium text-text-primary capitalize">
+                  {container.recurrence_cadence}
+                </p>
+              </div>
+            )}
 
             {/* Currency */}
             <div>
               <p className="text-text-secondary text-xs">Currency</p>
-              <p className="font-medium text-text-primary">
-                {(container as any).base_currency ?? (container as any).budget_currency ?? (
-                  <span className="text-text-secondary text-xs font-normal">Not specified</span>
-                )}
-              </p>
+              <p className="font-medium text-text-primary">{currency}</p>
             </div>
 
-            {/* Participants — uses the response-level participant_count */}
+            {/* Budget Target */}
+            {container.budget_target && (
+              <div>
+                <p className="text-text-secondary text-xs">Budget Target</p>
+                <p className="font-medium text-text-primary">
+                  <CurrencyAmount amount={container.budget_target} currency={currency} />
+                </p>
+              </div>
+            )}
+
+            {/* Participants */}
             <div>
               <p className="text-text-secondary text-xs">Participants</p>
               <p className="font-medium text-text-primary">{participantCount}</p>
+            </div>
+
+            {/* Created At */}
+            <div>
+              <p className="text-text-secondary text-xs">Created</p>
+              <p className="font-medium text-text-primary">{formatDate(container.created_at)}</p>
             </div>
           </div>
         </Card>
