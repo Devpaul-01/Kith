@@ -3,7 +3,26 @@ export interface Membership{member_id:string;role:'admin'|'member';workspace_id:
 export interface Workspace{id:string;name:string;description?:string;base_currency:string;family_type?:string;avatar_url?:string;created_at:string;updated_at:string;}
 export interface WorkspaceMember{id:string;user_id:string|null;workspace_id:string;display_name:string;role:'admin'|'member';is_proxy:boolean;is_active:boolean;engagement_level?:EngagementLevel;email?:string;avatar_url?:string;created_at:string;updated_at:string;}
 export interface WorkspaceSettings{reminder_days_before:number;overdue_notify_after_days:number;weekly_digest_enabled:boolean;reminder_template?:string;invite_message_template?:string;}
-export interface Group{id:string;workspace_id:string;name:string;description?:string;created_at:string;member_count?:number;}
+// In models.ts - replace the existing Group interface
+export interface Group {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  member_count: number;
+  members?: GroupMember[];
+  created_at: string;
+  created_by?: string;
+}
+
+export interface GroupMember {
+  id: string;
+  display_name: string;
+  role: 'admin' | 'member';
+  is_proxy: boolean;
+  relationship_to_head?: string;
+  relationship_category?: string;
+}
 export type ContainerType='event'|'recurring';
 export type ContainerStatus='active'|'completed'|'archived';
 export type EventCategory='celebration'|'memorial'|'financial'|'logistical'|'other';

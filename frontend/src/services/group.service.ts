@@ -1,2 +1,56 @@
-import{api}from'@/lib/axios';
-export const groupService={list:(w:string)=>api.get(`/v1/workspaces/${w}/groups`).then(r=>r.data),get:(w:string,g:string)=>api.get(`/v1/workspaces/${w}/groups/${g}`).then(r=>r.data),create:(w:string,p:{name:string;description?:string})=>api.post(`/v1/workspaces/${w}/groups`,p).then(r=>r.data),update:(w:string,g:string,p:{name?:string;description?:string})=>api.patch(`/v1/workspaces/${w}/groups/${g}`,p).then(r=>r.data),delete:(w:string,g:string)=>api.delete(`/v1/workspaces/${w}/groups/${g}`).then(r=>r.data),addMembers:(w:string,g:string,ids:string[])=>api.post(`/v1/workspaces/${w}/groups/${g}/members`,{member_ids:ids}).then(r=>r.data),removeMember:(w:string,g:string,m:string)=>api.delete(`/v1/workspaces/${w}/groups/${g}/members/${m}`).then(r=>r.data)};
+// services/group.service.ts
+import { api } from '@/lib/axios';
+
+export interface Group {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  member_count: number;
+  members?: GroupMember[];
+  created_at: string;
+  created_by?: string;
+}
+
+export interface GroupMember {
+  id: string;
+  display_name: string;
+  role: 'admin' | 'member';
+  is_proxy: boolean;
+  relationship_to_head?: string;
+  relationship_category?: string;
+}
+
+export interface CreateGroupPayload {
+  name: string;
+  description?: string;
+  member_ids?: string[];
+}
+
+export interface UpdateGroupPayload {
+  name?: string;
+  description?: string | null;
+}
+
+export const groupService = {
+  list: (workspaceId: string): Promise<{ groups: Group[] }> =>
+    api.get(`/v1/workspaces/${workspaceId}/groups`).then(r => r.data),
+
+  get: (workspaceId: string, groupId: string): Promise<{ group: Group; members: GroupMember[] }> =>
+    api.get(`/v1/workspaces/${workspaceId}/groups/${groupId}`).then(r => r.data),
+
+  create: (workspaceId: string, payload: CreateGroupPayload) =>
+    api.post(`/v1/workspaces/${workspaceId}/groups`, payload).then(r => r.data),
+
+  update: (workspaceId: string, groupId: string, payload: UpdateGroupPayload) =>
+    api.patch(`/v1/workspaces/${workspaceId}/groups/${groupId}`, payload).then(r => r.data),
+
+  delete: (workspaceId: string, groupId: string) =>
+    api.delete(`/v1/workspaces/${workspaceId}/groups/${groupId}`).then(r => r.data),
+
+  addMembers: (workspaceId: string, groupId: string, memberIds: string[]) =>
+    api.post(`/v1/workspaces/${workspaceId}/groups/${groupId}/members`, { member_ids: memberIds }).then(r => r.data),
+
+  removeMember: (workspaceId: string, groupId: string, memberId: string) =>
+    api.delete(`/v1/workspaces/${workspaceId}/groups/${groupId}/members/${memberId}`).then(r => r.data),
+};

@@ -13,8 +13,9 @@ export const KEYS={
 
   invites:(w:string)=>['workspaces',w,'invites'] as const,
   invitePreview:(t:string)=>['invites','preview',t] as const,
-  groups:(w:string)=>['workspaces',w,'groups'] as const,
-  group:(w:string,g:string)=>['workspaces',w,'groups',g] as const,
+
+groups: (w: string) => ['workspaces', w, 'groups'] as const,
+group: (w: string, g: string) => ['workspaces', w, 'groups', g] as const,
   containers:(w:string)=>['workspaces',w,'containers'] as const,
   container:(w:string,c:string)=>['workspaces',w,'containers',c] as const,
   summary:(w:string,c:string)=>['workspaces',w,'containers',c,'summary'] as const,
