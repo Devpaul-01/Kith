@@ -47,7 +47,7 @@ export const router=createBrowserRouter([
     {path:'/auth/reset-password',element:S(ResetPasswordPage)},{path:'/auth/callback',element:S(CallbackPage)},
     {path:'/register',element:S(RegisterPage)},
   ]},
-  {element:<PublicLayout/>,children:[{path:'/invite/:token',element:S(InvitePage)},{path:'/p/:publicToken',element:S(PublicContainerPage)}]},
+  {element:<PublicLayout/>,children:[{path:'/invite/:token',element:S(InvitePage)},{path:'/event/:publicToken',element:S(PublicContainerPage)}]},
   {element:<ProtectedRoute/>,children:[{element:<ProfileGuard/>,children:[
     {path:'/workspace/select',element:S(WorkspaceSelectPage)},{path:'/workspace/create',element:S(CreateWorkspacePage)},
     {element:<WorkspaceGuard/>,children:[{element:<AppLayout/>,children:[

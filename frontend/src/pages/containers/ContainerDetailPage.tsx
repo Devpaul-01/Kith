@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useParams, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { CoverPhotoUpload } from '@/components/containers/CoverPhotoUpload';
-import { Pencil, Archive, Trash2, CheckCircle, Share2, RefreshCw } from 'lucide-react';
+import { Pencil, Archive, Trash2, CheckCircle, Share2, RefreshCw, Upload, X, FileText, Image as ImageIcon } from 'lucide-react';
 import { containerService } from '@/services/container.service';
+import { api } from '@/lib/axios';
 import type { UpdateContainerPayload } from '@/services/container.service';
 import { KEYS } from '@/constants/queryKeys';
 import { useWorkspace } from '@/hooks/useWorkspace';
@@ -25,7 +26,17 @@ import showToast from '@/lib/toast';
 import type { Container } from '@/types/models';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Edit container schema + modal
+// Shared type for an outcome file object (matches backend completeContainerSchema)
+// ─────────────────────────────────────────────────────────────────────────────
+interface OutcomeFile {
+  url:       string;
+  name:      string;
+  size:      number;
+  mime_type: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Edit container
 // ─────────────────────────────────────────────────────────────────────────────
 
 const editSchema = z.object({
@@ -53,11 +64,8 @@ const EVENT_CATEGORIES = [
 function EditContainerModal({
   open, onClose, container, workspaceId, containerId,
 }: {
-  open: boolean;
-  onClose: () => void;
-  container: any;
-  workspaceId: string;
-  containerId: string;
+  open: boolean; onClose: () => void; container: any;
+  workspaceId: string; containerId: string;
 }) {
   const qc      = useQueryClient();
   const isEvent = container?.container_type === 'event';
@@ -91,12 +99,9 @@ function EditContainerModal({
 
   const onSubmit = (d: EditForm) => {
     const payload: UpdateContainerPayload = {
-      name:              d.name,
-      subtitle:          d.subtitle || null,
-      description:       d.description || null,
-      enable_money:      d.enable_money,
-      enable_tasks:      d.enable_tasks,
-      budget_target:     d.budget_target ? Number(d.budget_target) : null,
+      name: d.name, subtitle: d.subtitle || null, description: d.description || null,
+      enable_money: d.enable_money, enable_tasks: d.enable_tasks,
+      budget_target: d.budget_target ? Number(d.budget_target) : null,
       public_show_names: d.public_show_names,
     };
     if (isEvent) {
@@ -112,26 +117,21 @@ function EditContainerModal({
       <div className="max-h-[calc(80vh-100px)] overflow-y-auto px-1">
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <Input label="Name" placeholder="Container name" error={errors.name?.message} {...register('name')} />
-          <Input label="Subtitle (optional)" placeholder="Short tagline or subtitle" {...register('subtitle')} />
-          <Textarea label="Description (optional)" placeholder="What is this container about?" rows={3} {...register('description')} />
-
+          <Input label="Subtitle (optional)" placeholder="Short tagline" {...register('subtitle')} />
+          <Textarea label="Description (optional)" rows={3} {...register('description')} />
           {isEvent && (
             <>
-              <Input label="Event Type (optional)" placeholder="e.g., Wedding, Birthday, Graduation" {...register('event_type')} />
+              <Input label="Event Type (optional)" placeholder="e.g., Wedding" {...register('event_type')} />
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-medium text-text-secondary">Event Category</label>
                 <select className="text-sm border border-border rounded-xl px-3 py-2 focus:outline-none bg-white w-full" {...register('event_type_category')}>
-                  {EVENT_CATEGORIES.map(cat => (
-                    <option key={cat.value} value={cat.value}>{cat.label}</option>
-                  ))}
+                  {EVENT_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
                 </select>
               </div>
               <Input label="Event Date (optional)" type="date" {...register('event_date')} />
             </>
           )}
-
           <Input label="Budget Target (optional)" type="number" min="0" step="0.01" placeholder="0.00" {...register('budget_target')} />
-
           <div className="space-y-2">
             <p className="text-xs font-medium text-text-secondary uppercase tracking-wide">Features</p>
             <label className="flex items-center gap-3 cursor-pointer select-none">
@@ -144,10 +144,9 @@ function EditContainerModal({
             </label>
             <label className="flex items-center gap-3 cursor-pointer select-none">
               <input type="checkbox" className="w-4 h-4 accent-primary" {...register('public_show_names')} />
-              <span className="text-sm text-text-primary">Show contributor names on public page</span>
+              <span className="text-sm text-text-primary">Show contributor names publicly</span>
             </label>
           </div>
-
           <div className="flex gap-3 pt-2">
             <Button variant="secondary" fullWidth type="button" onClick={onClose}>Cancel</Button>
             <Button fullWidth type="submit" loading={mutation.isPending}>Save changes</Button>
@@ -159,231 +158,393 @@ function EditContainerModal({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Convert to Recurring schema + modal
-//
-// Aligned with backend convertToRecurringSchema:
-//   recurrence_cadence: enum ['monthly', 'quarterly', 'yearly', 'custom']
-//   recurrence_days:    number (single integer, required when cadence = custom)
-//   recurrence_start:   date string (required)
-//   recurrence_end:     date string (optional)
-//   carry_forward_unpaid: boolean (default false)
-//   new_name:           string min 2 max 100 (optional)
+// Convert to Recurring
 // ─────────────────────────────────────────────────────────────────────────────
 
 const convertSchema = z
   .object({
-    new_name:             z.string().min(2, 'At least 2 characters').max(100).optional().or(z.literal('')),
-    recurrence_cadence:   z.enum(['monthly', 'quarterly', 'yearly', 'custom'], {
-      required_error: 'Cadence is required',
-    }),
+    new_name:             z.string().min(2).max(100).optional().or(z.literal('')),
+    recurrence_cadence:   z.enum(['monthly', 'quarterly', 'yearly', 'custom'], { required_error: 'Cadence is required' }),
     recurrence_days:      z.coerce.number().int().min(1, 'Must be at least 1 day').optional(),
     recurrence_start:     z.string().min(1, 'Start date is required'),
     recurrence_end:       z.string().optional(),
     carry_forward_unpaid: z.boolean().default(false),
   })
-  .superRefine((data, ctx) => {
-    if (data.recurrence_cadence === 'custom' && !data.recurrence_days) {
-      ctx.addIssue({
-        path:    ['recurrence_days'],
-        message: 'Number of days is required for custom cadence',
-        code:    z.ZodIssueCode.custom,
-      });
+  .superRefine((d, ctx) => {
+    if (d.recurrence_cadence === 'custom' && !d.recurrence_days) {
+      ctx.addIssue({ path: ['recurrence_days'], message: 'Required for custom cadence', code: z.ZodIssueCode.custom });
     }
   });
-
 type ConvertForm = z.infer<typeof convertSchema>;
 
 function ConvertToRecurringModal({
-  open,
-  onClose,
-  container,
-  workspaceId,
-  containerId,
-  onSuccess,
+  open, onClose, container, workspaceId, containerId, onSuccess,
 }: {
-  open:        boolean;
-  onClose:     () => void;
-  container:   Container;
-  workspaceId: string;
-  containerId: string;
-  onSuccess:   (newContainerId: string) => void;
+  open: boolean; onClose: () => void; container: Container;
+  workspaceId: string; containerId: string; onSuccess: (id: string) => void;
 }) {
-  const {
-    register,
-    handleSubmit,
-    watch,
-    formState: { errors },
-    reset,
-  } = useForm<ConvertForm>({
+  const { register, handleSubmit, watch, formState: { errors }, reset } = useForm<ConvertForm>({
     resolver: zodResolver(convertSchema),
-    defaultValues: {
-      new_name:             '',
-      recurrence_cadence:   'monthly',
-      recurrence_start:     '',
-      recurrence_end:       '',
-      carry_forward_unpaid: false,
-    },
+    defaultValues: { new_name: '', recurrence_cadence: 'monthly', recurrence_start: '', recurrence_end: '', carry_forward_unpaid: false },
   });
-
   const cadence = watch('recurrence_cadence');
 
   const mutation = useMutation({
     mutationFn: (d: ConvertForm) =>
       containerService.convertToRecurring(workspaceId, containerId, {
-        // Send new_name only when the user actually typed something
         ...(d.new_name ? { new_name: d.new_name } : {}),
-        recurrence_cadence:   d.recurrence_cadence as any, // service type includes 'weekly' but backend doesn't — cast is safe
-        recurrence_days:      d.recurrence_days,
-        recurrence_start:     d.recurrence_start,
-        recurrence_end:       d.recurrence_end || null,
+        recurrence_cadence: d.recurrence_cadence as any,
+        recurrence_days: d.recurrence_days,
+        recurrence_start: d.recurrence_start,
+        recurrence_end: d.recurrence_end || null,
         carry_forward_unpaid: d.carry_forward_unpaid,
       }),
     onSuccess: (res) => {
       showToast.success('Event converted to recurring pool');
-      reset();
-      onClose();
-      onSuccess(res.new_container.id);
+      reset(); onClose(); onSuccess(res.new_container.id);
     },
     onError: (error: any) => {
-      const message =
-        error?.response?.data?.error?.message ||
-        error?.message ||
-        'Failed to convert container';
-      showToast.error(message);
+      showToast.error(error?.response?.data?.error?.message || 'Failed to convert container');
     },
   });
 
-  const handleClose = () => {
-    reset();
-    onClose();
-  };
+  const handleClose = () => { reset(); onClose(); };
 
   return (
     <Modal open={open} onClose={handleClose} title="Convert to Recurring Pool" size="lg">
       <div className="max-h-[calc(80vh-100px)] overflow-y-auto px-1">
-        {/* Explanation banner */}
         <div className="rounded-lg bg-blue-50 border border-blue-200 px-4 py-3 mb-4">
           <p className="text-sm font-medium text-blue-800 mb-1">What this does</p>
           <ul className="text-xs text-blue-700 list-disc list-inside space-y-1">
             <li>Creates a new <strong>recurring pool</strong> based on this event</li>
-            <li>All existing participants and ledger entries stay on this event</li>
-            <li>You will be taken to the new recurring container after conversion</li>
+            <li>Existing participants and ledger entries stay on this event</li>
+            <li>You'll be taken to the new pool after conversion</li>
           </ul>
         </div>
-
         <form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-4">
-          {/* Optional rename */}
           <div>
             <label className="block text-xs font-medium text-text-secondary mb-1">
-              New name <span className="text-text-secondary font-normal">(optional — defaults to "{container.name}")</span>
+              New name <span className="font-normal text-text-secondary">(optional — defaults to "{container.name}")</span>
             </label>
-            <input
-              type="text"
-              placeholder={container.name}
+            <input type="text" placeholder={container.name}
               className="w-full border border-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white"
-              {...register('new_name')}
-            />
-            {errors.new_name && (
-              <p className="text-xs text-danger mt-1">{errors.new_name.message}</p>
-            )}
+              {...register('new_name')} />
+            {errors.new_name && <p className="text-xs text-danger mt-1">{errors.new_name.message}</p>}
           </div>
-
-          {/* Cadence */}
           <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1">
-              Recurrence cadence <span className="text-danger">*</span>
-            </label>
-            <select
-              className="w-full text-sm border border-border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white"
-              {...register('recurrence_cadence')}
-            >
+            <label className="block text-xs font-medium text-text-secondary mb-1">Recurrence cadence <span className="text-danger">*</span></label>
+            <select className="w-full text-sm border border-border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white" {...register('recurrence_cadence')}>
               <option value="monthly">Monthly</option>
               <option value="quarterly">Quarterly</option>
               <option value="yearly">Yearly</option>
               <option value="custom">Custom (every X days)</option>
             </select>
-            {errors.recurrence_cadence && (
-              <p className="text-xs text-danger mt-1">{errors.recurrence_cadence.message}</p>
-            )}
+            {errors.recurrence_cadence && <p className="text-xs text-danger mt-1">{errors.recurrence_cadence.message}</p>}
           </div>
-
-          {/* Custom interval — shown only when cadence = custom */}
           {cadence === 'custom' && (
             <div>
-              <label className="block text-xs font-medium text-text-secondary mb-1">
-                Every X days <span className="text-danger">*</span>
-              </label>
-              <input
-                type="number"
-                min="1"
-                placeholder="e.g. 14"
+              <label className="block text-xs font-medium text-text-secondary mb-1">Every X days <span className="text-danger">*</span></label>
+              <input type="number" min="1" placeholder="e.g. 14"
                 className="w-full border border-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white"
-                {...register('recurrence_days')}
-              />
-              {errors.recurrence_days && (
-                <p className="text-xs text-danger mt-1">{errors.recurrence_days.message}</p>
-              )}
+                {...register('recurrence_days')} />
+              {errors.recurrence_days && <p className="text-xs text-danger mt-1">{errors.recurrence_days.message}</p>}
             </div>
           )}
-
-          {/* Date range */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-text-secondary mb-1">
-                Start date <span className="text-danger">*</span>
-              </label>
-              <input
-                type="date"
-                className="w-full border border-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white"
-                {...register('recurrence_start')}
-              />
-              {errors.recurrence_start && (
-                <p className="text-xs text-danger mt-1">{errors.recurrence_start.message}</p>
-              )}
+              <label className="block text-xs font-medium text-text-secondary mb-1">Start date <span className="text-danger">*</span></label>
+              <input type="date" className="w-full border border-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white" {...register('recurrence_start')} />
+              {errors.recurrence_start && <p className="text-xs text-danger mt-1">{errors.recurrence_start.message}</p>}
             </div>
             <div>
-              <label className="block text-xs font-medium text-text-secondary mb-1">
-                End date <span className="text-text-secondary font-normal">(optional)</span>
-              </label>
-              <input
-                type="date"
-                className="w-full border border-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white"
-                {...register('recurrence_end')}
-              />
+              <label className="block text-xs font-medium text-text-secondary mb-1">End date <span className="font-normal text-text-secondary">(optional)</span></label>
+              <input type="date" className="w-full border border-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white" {...register('recurrence_end')} />
             </div>
           </div>
-
-          {/* Carry forward toggle */}
           <label className="flex items-start gap-3 cursor-pointer select-none border border-border rounded-xl px-4 py-3 hover:bg-surface-secondary transition-colors">
-            <input
-              type="checkbox"
-              className="w-4 h-4 accent-primary mt-0.5 shrink-0"
-              {...register('carry_forward_unpaid')}
-            />
+            <input type="checkbox" className="w-4 h-4 accent-primary mt-0.5 shrink-0" {...register('carry_forward_unpaid')} />
             <div>
               <p className="text-sm font-medium text-text-primary">Carry forward unpaid amounts</p>
-              <p className="text-xs text-text-secondary mt-0.5">
-                Unpaid balances from a cycle roll into the next cycle's expected total
-              </p>
+              <p className="text-xs text-text-secondary mt-0.5">Unpaid balances roll into the next cycle's expected total</p>
             </div>
           </label>
-
-          {/* Confirmation warning */}
           <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-            <p className="text-xs text-amber-700">
-              ⚠️ This action cannot be undone. The new recurring pool will be created immediately.
-            </p>
+            <p className="text-xs text-amber-700">⚠️ This action cannot be undone. The new recurring pool will be created immediately.</p>
           </div>
-
           <div className="flex gap-3 pt-1">
-            <Button variant="secondary" fullWidth type="button" onClick={handleClose}>
-              Cancel
-            </Button>
+            <Button variant="secondary" fullWidth type="button" onClick={handleClose}>Cancel</Button>
             <Button fullWidth type="submit" loading={mutation.isPending}>
               <RefreshCw size={14} /> Convert to Recurring
             </Button>
           </div>
         </form>
+      </div>
+    </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Complete Container Modal
+// Supports outcome notes + up to 10 file/image uploads (images and PDFs).
+// Upload flow: get presigned URL → PUT to storage → collect file object →
+// send all collected objects with the complete API call.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Tracks each selected file + its upload state
+interface PendingFile {
+  file:   File;
+  status: 'pending' | 'uploading' | 'done' | 'error';
+  // Populated after a successful upload — sent to the backend in outcome_files
+  result?: OutcomeFile;
+}
+
+function isImageFile(f: File) { return f.type.startsWith('image/'); }
+
+function FilePill({
+  pf, onRemove,
+}: { pf: PendingFile; onRemove: () => void }) {
+  const Icon = isImageFile(pf.file) ? ImageIcon : FileText;
+  const statusColor =
+    pf.status === 'done'      ? 'text-success'  :
+    pf.status === 'error'     ? 'text-danger'   :
+    pf.status === 'uploading' ? 'text-primary'  :
+    'text-text-secondary';
+
+  return (
+    <div className="flex items-center gap-2 border border-border rounded-lg px-3 py-2 bg-surface-alt text-sm">
+      <Icon size={14} className={cn('shrink-0', statusColor)} />
+      <span className="flex-1 truncate text-xs text-text-primary">{pf.file.name}</span>
+      <span className={cn('text-[10px] font-medium shrink-0', statusColor)}>
+        {pf.status === 'uploading' ? 'Uploading…' :
+         pf.status === 'done'      ? '✓ Uploaded' :
+         pf.status === 'error'     ? 'Failed'     : ''}
+      </span>
+      {pf.status === 'pending' && (
+        <button onClick={onRemove} className="shrink-0 text-text-secondary hover:text-danger transition-colors">
+          <X size={13} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CompleteContainerModal({
+  open, onClose, workspaceId, containerId, onSuccess,
+}: {
+  open: boolean; onClose: () => void;
+  workspaceId: string; containerId: string;
+  onSuccess: () => void;
+}) {
+  const [outcomeNotes,    setOutcomeNotes]    = useState('');
+  const [pendingFiles,    setPendingFiles]    = useState<PendingFile[]>([]);
+  const [isSubmitting,    setIsSubmitting]    = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const MAX_FILES = 10;
+  const canAddMore = pendingFiles.length < MAX_FILES;
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(e.target.files ?? []);
+    if (!selected.length) return;
+
+    // Validate each file
+    const valid: PendingFile[] = [];
+    for (const f of selected) {
+      if (!f.type.startsWith('image/') && f.type !== 'application/pdf') {
+        showToast.error(`"${f.name}" is not an image or PDF — skipped`);
+        continue;
+      }
+      if (f.size > 20 * 1024 * 1024) {
+        showToast.error(`"${f.name}" exceeds 20 MB — skipped`);
+        continue;
+      }
+      if (pendingFiles.length + valid.length >= MAX_FILES) {
+        showToast.error(`Maximum ${MAX_FILES} files allowed`);
+        break;
+      }
+      valid.push({ file: f, status: 'pending' });
+    }
+
+    setPendingFiles(prev => [...prev, ...valid]);
+    // Reset input so the same file can be re-added after removal
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeFile = (index: number) => {
+    setPendingFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleComplete = async () => {
+    setIsSubmitting(true);
+
+    try {
+      const uploadedFiles: OutcomeFile[] = [];
+
+      // Upload each pending file sequentially
+      for (let i = 0; i < pendingFiles.length; i++) {
+        const pf = pendingFiles[i];
+        if (pf.status === 'done' && pf.result) {
+          // Already uploaded in a previous attempt
+          uploadedFiles.push(pf.result);
+          continue;
+        }
+
+        // Mark as uploading
+        setPendingFiles(prev =>
+          prev.map((f, idx) => idx === i ? { ...f, status: 'uploading' } : f)
+        );
+
+        try {
+          // Step 1: Get presigned upload URL from backend
+          const { upload_url, file_url, file_key } =
+            await containerService.getOutcomeFileUploadUrl(workspaceId, containerId, {
+              filename:     pf.file.name,
+              content_type: pf.file.type,
+              file_size:    pf.file.size,
+            });
+
+          // Step 2: PUT the file to the presigned URL
+          const uploadRes = await fetch(upload_url, {
+            method:  'PUT',
+            body:    pf.file,
+            headers: { 'Content-Type': pf.file.type },
+          });
+          if (!uploadRes.ok) throw new Error(`Storage upload failed (${uploadRes.status})`);
+
+          // Step 3: Collect the outcome file object
+          const outcomeFile: OutcomeFile = {
+            url:       file_url,
+            name:      pf.file.name,
+            size:      pf.file.size,
+            mime_type: pf.file.type,
+          };
+
+          uploadedFiles.push(outcomeFile);
+
+          // Mark as done
+          setPendingFiles(prev =>
+            prev.map((f, idx) =>
+              idx === i ? { ...f, status: 'done', result: outcomeFile } : f
+            )
+          );
+        } catch (err: any) {
+          setPendingFiles(prev =>
+            prev.map((f, idx) => idx === i ? { ...f, status: 'error' } : f)
+          );
+          throw new Error(`Failed to upload "${pf.file.name}": ${err.message}`);
+        }
+      }
+
+      // Step 4: Call the complete endpoint with notes + all uploaded file objects
+      // Using api directly because containerService.complete() has the wrong
+      // outcome_files type (string[] vs OutcomeFile[]) — see container_service.ts fix
+      await api.post(
+        `/v1/workspaces/${workspaceId}/containers/${containerId}/complete`,
+        {
+          outcome_details: outcomeNotes || undefined,
+          outcome_files:   uploadedFiles,
+        },
+      );
+
+      showToast.success('Container marked as completed');
+      handleClose();
+      onSuccess();
+    } catch (err: any) {
+      showToast.error(err?.message || 'Failed to complete container');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleClose = () => {
+    if (isSubmitting) return;
+    setOutcomeNotes('');
+    setPendingFiles([]);
+    onClose();
+  };
+
+  const hasErrors = pendingFiles.some(f => f.status === 'error');
+
+  return (
+    <Modal open={open} onClose={handleClose} title="Complete Container">
+      <div className="space-y-4">
+        <ul className="text-sm text-text-secondary list-disc list-inside space-y-1">
+          <li>Status changes to "completed"</li>
+          <li>A milestone is created in the timeline</li>
+          <li>All participants are notified</li>
+        </ul>
+
+        {/* Outcome notes */}
+        <Textarea
+          label="Outcome notes (optional)"
+          placeholder="What was the outcome? Any highlights?"
+          rows={3}
+          value={outcomeNotes}
+          onChange={e => setOutcomeNotes(e.target.value)}
+        />
+
+        {/* File upload section */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-text-secondary">
+              Outcome files <span className="font-normal">(optional — images or PDFs, max {MAX_FILES})</span>
+            </label>
+            {pendingFiles.length > 0 && (
+              <span className="text-xs text-text-secondary">{pendingFiles.length}/{MAX_FILES}</span>
+            )}
+          </div>
+
+          {/* File list */}
+          {pendingFiles.length > 0 && (
+            <div className="space-y-1.5">
+              {pendingFiles.map((pf, i) => (
+                <FilePill
+                  key={`${pf.file.name}-${i}`}
+                  pf={pf}
+                  onRemove={() => removeFile(i)}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Drop zone / add button — hidden once max is reached */}
+          {canAddMore && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isSubmitting}
+              className="w-full flex items-center justify-center gap-2 border border-dashed border-border rounded-xl py-3 text-sm text-text-secondary hover:border-primary hover:text-primary transition-colors disabled:opacity-50"
+            >
+              <Upload size={14} />
+              {pendingFiles.length === 0 ? 'Attach files (images or PDFs)' : 'Add more files'}
+            </button>
+          )}
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,application/pdf"
+            multiple
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+        </div>
+
+        {/* Re-try hint if any uploads errored */}
+        {hasErrors && (
+          <p className="text-xs text-danger bg-danger/5 border border-danger/20 rounded-lg px-3 py-2">
+            Some files failed to upload. Remove them or try again.
+          </p>
+        )}
+
+        <div className="flex gap-3 pt-2">
+          <Button variant="secondary" fullWidth onClick={handleClose} disabled={isSubmitting}>
+            Cancel
+          </Button>
+          <Button fullWidth onClick={handleComplete} loading={isSubmitting} disabled={hasErrors}>
+            Complete Container
+          </Button>
+        </div>
       </div>
     </Modal>
   );
@@ -401,10 +562,9 @@ export default function ContainerDetailPage() {
   const navigate = useNavigate();
   const qc       = useQueryClient();
 
-  const [showEdit,      setShowEdit]      = useState(false);
-  const [showComplete,  setShowComplete]  = useState(false);
-  const [showConvert,   setShowConvert]   = useState(false);   // ← new
-  const [completeOutcome, setCompleteOutcome] = useState('');
+  const [showEdit,    setShowEdit]    = useState(false);
+  const [showComplete,setShowComplete]= useState(false);
+  const [showConvert, setShowConvert] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: KEYS.container(workspaceId, id!),
@@ -418,9 +578,9 @@ export default function ContainerDetailPage() {
     current_user_participation?: any;
   };
 
-  const container       = responseData?.container;
-  const tasksEnabled    = container?.enable_tasks ?? false;
-  const moneyEnabled    = container?.enable_money ?? false;
+  const container        = responseData?.container;
+  const tasksEnabled     = container?.enable_tasks ?? false;
+  const moneyEnabled     = container?.enable_money ?? false;
   const participantCount = responseData?.participant_count ?? 0;
 
   // ── Mutations ─────────────────────────────────────────────────────────────
@@ -437,26 +597,10 @@ export default function ContainerDetailPage() {
 
   const deleteMutation = useMutation({
     mutationFn: () => containerService.delete(workspaceId, id!),
-    onSuccess: () => {
-      showToast.success('Container deleted');
-      navigate('/app/containers');
-    },
+    onSuccess: () => { showToast.success('Container deleted'); navigate('/app/containers'); },
     onError: (error: any) => {
-      const message = error?.response?.data?.error?.message || 'Failed to delete container';
-      showToast.error(message);
+      showToast.error(error?.response?.data?.error?.message || 'Failed to delete container');
     },
-  });
-
-  const completeMutation = useMutation({
-    mutationFn: () => containerService.complete(workspaceId, id!, completeOutcome || undefined),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: KEYS.container(workspaceId, id!) });
-      qc.invalidateQueries({ queryKey: KEYS.containers(workspaceId) });
-      showToast.success('Container marked as completed');
-      setShowComplete(false);
-      setCompleteOutcome('');
-    },
-    onError: () => showToast.error('Failed to complete container'),
   });
 
   const generatePublicLinkMutation = useMutation({
@@ -469,22 +613,22 @@ export default function ContainerDetailPage() {
   });
 
   const handleArchive = () => {
-    if (confirm('Archive this container? It will be moved to archived status.')) archiveMutation.mutate();
+    if (confirm('Archive this container?')) archiveMutation.mutate();
   };
   const handleDelete = () => {
-    if (confirm('Delete this container? This action cannot be undone.')) deleteMutation.mutate();
+    if (confirm('Delete this container? This cannot be undone.')) deleteMutation.mutate();
   };
-
-  // ── Handle successful conversion ─────────────────────────────────────────
-  const handleConvertSuccess = (newContainerId: string) => {
-    // Invalidate the containers list so the new pool appears immediately
+  const handleCompleteSuccess = () => {
+    qc.invalidateQueries({ queryKey: KEYS.container(workspaceId, id!) });
     qc.invalidateQueries({ queryKey: KEYS.containers(workspaceId) });
-    // Navigate to the new recurring container
-    navigate(`/app/containers/${newContainerId}`);
+  };
+  const handleConvertSuccess = (newId: string) => {
+    qc.invalidateQueries({ queryKey: KEYS.containers(workspaceId) });
+    navigate(`/app/containers/${newId}`);
   };
 
   if (isLoading) return <div className="flex justify-center py-16"><Spinner size="lg" /></div>;
-  if (!container)  return <div className="p-6 text-center text-text-secondary">Container not found.</div>;
+  if (!container) return <div className="p-6 text-center text-text-secondary">Container not found.</div>;
 
   const containerType = container.container_type;
   const isEvent       = containerType === 'event';
@@ -498,18 +642,31 @@ export default function ContainerDetailPage() {
     ...(tasksEnabled ? [{ id: 'tasks',        label: 'Tasks',        path: '/tasks'        }] : []),
     ...(isAdmin      ? [{ id: 'participants', label: 'Participants', path: '/participants' }] : []),
     ...(isAdmin && containerType === 'recurring'
-      ? [{ id: 'cycles', label: 'Cycles', path: '/cycles' }]
-      : []),
+      ? [{ id: 'cycles', label: 'Cycles', path: '/cycles' }] : []),
     { id: 'summary', label: 'Summary', path: '/summary' },
   ];
 
   const basePath = `/app/containers/${id}`;
+  const coverPhotos: Array<{ url: string; path: string; uploaded_at?: string }> =
+    (container as any).cover_photos ?? [];
 
   return (
-    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-5">
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-4">
 
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between gap-4">
+      {/* ── Cover photo — full-width banner, separate from the header row ── */}
+      {/* FIX: was inside the header flex row, causing it to push over action  */}
+      {/* buttons. Now it lives as its own block before the header.            */}
+      {isAdmin && (
+        <CoverPhotoUpload
+          workspaceId={workspaceId}
+          containerId={id!}
+          currentCoverPhotos={coverPhotos}
+          onSuccess={() => qc.invalidateQueries({ queryKey: KEYS.container(workspaceId, id!) })}
+        />
+      )}
+
+      {/* ── Header — title + action buttons only, no cover photo inside ───── */}
+      <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <h1 className="text-xl font-bold text-text-primary truncate">{container.name}</h1>
           {container.subtitle && (
@@ -520,82 +677,53 @@ export default function ContainerDetailPage() {
           )}
         </div>
 
-        {isAdmin && (
-          <CoverPhotoUpload
-            workspaceId={workspaceId}
-            containerId={id!}
-            currentCoverPhotos={(container as any).cover_photos || []}
-            onSuccess={() => qc.invalidateQueries({ queryKey: KEYS.container(workspaceId, id!) })}
-          />
-        )}
-
-        <div className="flex items-center gap-2 flex-shrink-0">
-
-          {/* Edit */}
+        {/* Action icon buttons — compact row, no longer competing with cover */}
+        <div className="flex items-center gap-1.5 flex-shrink-0">
           {isAdmin && (
-            <button
-              onClick={() => setShowEdit(true)}
+            <button onClick={() => setShowEdit(true)}
               className="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
-              title="Edit container"
-            >
+              title="Edit container">
               <Pencil size={15} />
             </button>
           )}
 
-          {/* Generate public link */}
           {isAdmin && container.public_token === null && (
-            <button
-              onClick={() => generatePublicLinkMutation.mutate()}
+            <button onClick={() => generatePublicLinkMutation.mutate()}
               disabled={generatePublicLinkMutation.isPending}
               className="p-1.5 rounded-lg text-text-secondary hover:text-primary hover:bg-surface-secondary transition-colors disabled:opacity-50"
-              title="Generate public link"
-            >
+              title="Generate public link">
               <Share2 size={15} />
             </button>
           )}
 
-          {/* Convert to recurring — only for active event containers */}
           {isAdmin && isEvent && isActive && (
-            <button
-              onClick={() => setShowConvert(true)}
+            <button onClick={() => setShowConvert(true)}
               className="p-1.5 rounded-lg text-text-secondary hover:text-primary hover:bg-surface-secondary transition-colors"
-              title="Convert to recurring pool"
-            >
+              title="Convert to recurring pool">
               <RefreshCw size={15} />
             </button>
           )}
 
-          {/* Mark as completed */}
           {isAdmin && isActive && (
-            <button
-              onClick={() => setShowComplete(true)}
+            <button onClick={() => setShowComplete(true)}
               className="p-1.5 rounded-lg text-text-secondary hover:text-success hover:bg-surface-secondary transition-colors"
-              title="Mark as completed"
-            >
+              title="Mark as completed">
               <CheckCircle size={15} />
             </button>
           )}
 
-          {/* Archive */}
           {isAdmin && !isArchived && (
-            <button
-              onClick={handleArchive}
-              disabled={archiveMutation.isPending}
+            <button onClick={handleArchive} disabled={archiveMutation.isPending}
               className="p-1.5 rounded-lg text-text-secondary hover:text-warning hover:bg-surface-secondary transition-colors disabled:opacity-50"
-              title="Archive container"
-            >
+              title="Archive container">
               <Archive size={15} />
             </button>
           )}
 
-          {/* Delete */}
           {isAdmin && (isArchived || !isActive) && (
-            <button
-              onClick={handleDelete}
-              disabled={deleteMutation.isPending}
+            <button onClick={handleDelete} disabled={deleteMutation.isPending}
               className="p-1.5 rounded-lg text-text-secondary hover:text-danger hover:bg-surface-secondary transition-colors disabled:opacity-50"
-              title="Delete container"
-            >
+              title="Delete container">
               <Trash2 size={15} />
             </button>
           )}
@@ -632,9 +760,8 @@ export default function ContainerDetailPage() {
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
               <p className="text-text-secondary text-xs">Type</p>
-              <p className="font-medium text-text-primary capitalize">{containerType || 'Not specified'}</p>
+              <p className="font-medium text-text-primary capitalize">{containerType}</p>
             </div>
-
             {isEvent && (
               <div>
                 <p className="text-text-secondary text-xs">Category</p>
@@ -643,26 +770,22 @@ export default function ContainerDetailPage() {
                 </p>
               </div>
             )}
-
             {isEvent && container.event_type && (
               <div>
                 <p className="text-text-secondary text-xs">Event Type</p>
                 <p className="font-medium text-text-primary">{container.event_type}</p>
               </div>
             )}
-
             {!isEvent && container.recurrence_cadence && (
               <div>
                 <p className="text-text-secondary text-xs">Cadence</p>
                 <p className="font-medium text-text-primary capitalize">{container.recurrence_cadence}</p>
               </div>
             )}
-
             <div>
               <p className="text-text-secondary text-xs">Currency</p>
               <p className="font-medium text-text-primary">{currency}</p>
             </div>
-
             {container.budget_target && (
               <div>
                 <p className="text-text-secondary text-xs">Budget Target</p>
@@ -671,12 +794,10 @@ export default function ContainerDetailPage() {
                 </p>
               </div>
             )}
-
             <div>
               <p className="text-text-secondary text-xs">Participants</p>
               <p className="font-medium text-text-primary">{participantCount}</p>
             </div>
-
             <div>
               <p className="text-text-secondary text-xs">Public Page</p>
               <p className="font-medium text-text-primary">
@@ -685,27 +806,23 @@ export default function ContainerDetailPage() {
                   : <span className="text-text-secondary">Disabled</span>}
               </p>
             </div>
-
             <div>
               <p className="text-text-secondary text-xs">Show Names Publicly</p>
               <p className="font-medium text-text-primary">
                 {container.public_show_names ? 'Yes' : 'No'}
               </p>
             </div>
-
             <div>
               <p className="text-text-secondary text-xs">Created</p>
               <p className="font-medium text-text-primary">{formatDate(container.created_at)}</p>
             </div>
           </div>
 
-          {/* Convert to recurring CTA inside overview — visible alternative to icon button */}
+          {/* Convert to recurring CTA */}
           {isAdmin && isEvent && isActive && (
             <div className="mt-4 pt-4 border-t border-border">
-              <button
-                onClick={() => setShowConvert(true)}
-                className="flex items-center gap-2 text-sm text-primary hover:underline font-medium"
-              >
+              <button onClick={() => setShowConvert(true)}
+                className="flex items-center gap-2 text-sm text-primary hover:underline font-medium">
                 <RefreshCw size={14} />
                 Convert this event to a recurring pool
               </button>
@@ -717,36 +834,16 @@ export default function ContainerDetailPage() {
         </Card>
       )}
 
-      {/* ── Complete Container Modal ───────────────────────────────────────── */}
-      <Modal
-        open={showComplete}
-        onClose={() => { setShowComplete(false); setCompleteOutcome(''); }}
-        title="Complete Container"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-text-secondary">Marking this container as completed will:</p>
-          <ul className="text-sm text-text-secondary list-disc list-inside space-y-1">
-            <li>Change status to "completed"</li>
-            <li>Create a milestone in the timeline</li>
-            <li>Notify all participants</li>
-          </ul>
-          <Textarea
-            label="Outcome Notes (optional)"
-            placeholder="What was the outcome? Any highlights?"
-            rows={3}
-            value={completeOutcome}
-            onChange={(e) => setCompleteOutcome(e.target.value)}
-          />
-          <div className="flex gap-3 pt-2">
-            <Button variant="secondary" fullWidth onClick={() => setShowComplete(false)}>Cancel</Button>
-            <Button fullWidth onClick={() => completeMutation.mutate()} loading={completeMutation.isPending}>
-              Complete Container
-            </Button>
-          </div>
-        </div>
-      </Modal>
+      {/* ── Modals ────────────────────────────────────────────────────────── */}
 
-      {/* ── Convert to Recurring Modal ─────────────────────────────────────── */}
+      <CompleteContainerModal
+        open={showComplete}
+        onClose={() => setShowComplete(false)}
+        workspaceId={workspaceId}
+        containerId={id!}
+        onSuccess={handleCompleteSuccess}
+      />
+
       {isAdmin && isEvent && container && (
         <ConvertToRecurringModal
           open={showConvert}
@@ -758,7 +855,6 @@ export default function ContainerDetailPage() {
         />
       )}
 
-      {/* ── Edit Container Modal ───────────────────────────────────────────── */}
       {isAdmin && (
         <EditContainerModal
           open={showEdit}

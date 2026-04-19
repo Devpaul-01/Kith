@@ -457,11 +457,61 @@ async function completeContainer(req, res, next) {
     if (updateErr) throw new Error(updateErr.message);
 
     // Auto-create milestone
-    await supabaseAdmin.from('milestones').insert({
-      workspace_id: workspaceId, title: `${container.name} completed`,
-      milestone_date: now.split('T')[0], description: data.outcome_details || null,
-      milestone_type: 'custom', created_by: req.member.id,
-    });
+    console.log('\n📝 Creating milestone for completed container...');
+    const milestoneTitle = `${container.name} completed`;
+    const milestoneDate = now.split('T')[0];
+    
+    const { data: insertedMilestone, error: milestoneInsertError } = await supabaseAdmin
+      .from('milestones')
+      .insert({
+        workspace_id: workspaceId, 
+        title: milestoneTitle,
+        milestone_date: milestoneDate, 
+        description: data.outcome_details || null,
+        milestone_type: 'custom', 
+        created_by: req.member.id,
+      })
+      .select()
+      .single();
+
+    if (milestoneInsertError) {
+      console.error('❌ Failed to create milestone:', milestoneInsertError);
+    } else {
+      console.log('✅ Milestone created successfully:', {
+        id: insertedMilestone.id,
+        title: insertedMilestone.title,
+        milestone_date: insertedMilestone.milestone_date,
+        workspace_id: insertedMilestone.workspace_id,
+        created_by: insertedMilestone.created_by,
+      });
+    }
+
+    // Verify milestone exists in database
+    console.log('\n🔍 Verifying milestone was saved...');
+    const { data: verifyMilestone, error: verifyError } = await supabaseAdmin
+      .from('milestones')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .eq('title', milestoneTitle)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (verifyError) {
+      console.error('❌ Failed to verify milestone:', verifyError);
+    } else if (verifyMilestone && verifyMilestone.length > 0) {
+      console.log('✅ Milestone verified in database:', {
+        found: true,
+        count: verifyMilestone.length,
+        latest: {
+          id: verifyMilestone[0].id,
+          title: verifyMilestone[0].title,
+          milestone_date: verifyMilestone[0].milestone_date,
+          created_at: verifyMilestone[0].created_at,
+        }
+      });
+    } else {
+      console.log('❌ No milestone found with title:', milestoneTitle);
+    }
 
     // Notify participants
     const { data: participants } = await supabaseAdmin
@@ -562,7 +612,7 @@ async function generatePublicLink(req, res, next) {
     if (error) throw new Error(error.message);
     if (!data) throw new NotFoundError('Container not found');
 
-    success(res, { public_url: `${process.env.FRONTEND_URL}/public/event/${token}`, public_token: token });
+    success(res, { public_url: `${process.env.FRONTEND_URL}/event/${token}`, public_token: token });
   } catch (err) { next(err); }
 }
 
