@@ -13,7 +13,6 @@ import { GeneralSettingsTab } from '@/components/workspace/GeneralSettingsTab';
 import { AppearanceTab } from '@/components/workspace/AppearanceTab';
 import { PreferencesTab } from '@/components/workspace/PreferencesTab';
 import { DangerZoneTab } from '@/components/workspace/DangerZoneTab';
-import showToast from '@/lib/toast';
 
 export default function WorkspaceSettingsPage() {
   const { workspaceId, workspace } = useWorkspace();
@@ -23,13 +22,13 @@ export default function WorkspaceSettingsPage() {
   const [activeTab, setActiveTab] = useState('general');
 
   // Fetch workspace details (refresh after updates)
-  const { data: workspaceData, isLoading: workspaceLoading, refetch: refetchWorkspace } = useQuery({
+  const { data: workspaceData, isLoading: workspaceLoading } = useQuery({
     queryKey: KEYS.workspace(workspaceId),
     queryFn: () => workspaceService.get(workspaceId),
   });
 
   // Fetch workspace settings
-  const { data: settingsData, isLoading: settingsLoading, refetch: refetchSettings } = useQuery({
+  const { data: settingsData, isLoading: settingsLoading } = useQuery({
     queryKey: KEYS.settings(workspaceId),
     queryFn: () => workspaceService.getSettings(workspaceId),
   });
@@ -40,17 +39,11 @@ export default function WorkspaceSettingsPage() {
   const updateWorkspaceMutation = useMutation({
     mutationFn: (payload: Parameters<typeof workspaceService.update>[1]) =>
       workspaceService.update(workspaceId, payload),
-    onSuccess: (data) => {
-      // Invalidate both the workspace and the specific workspace query
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: KEYS.workspace(workspaceId) });
-      qc.invalidateQueries({ queryKey: ['workspaces'] });
-      refetchWorkspace();
-      showToast.success('Workspace settings saved successfully');
+      showToast.success('Settings saved');
     },
-    onError: (error: any) => {
-      const message = error?.response?.data?.error?.message || 'Failed to save settings';
-      showToast.error(message);
-    },
+    onError: () => showToast.error('Failed to save settings'),
   });
 
   const updateSettingsMutation = useMutation({
@@ -58,13 +51,9 @@ export default function WorkspaceSettingsPage() {
       workspaceService.updateSettings(workspaceId, payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: KEYS.settings(workspaceId) });
-      refetchSettings();
-      showToast.success('Preferences saved successfully');
+      showToast.success('Preferences saved');
     },
-    onError: (error: any) => {
-      const message = error?.response?.data?.error?.message || 'Failed to save preferences';
-      showToast.error(message);
-    },
+    onError: () => showToast.error('Failed to save preferences'),
   });
 
   const deleteMutation = useMutation({
@@ -72,13 +61,10 @@ export default function WorkspaceSettingsPage() {
     onSuccess: () => {
       clearWs();
       qc.removeQueries({ queryKey: KEYS.workspace(workspaceId) });
-      showToast.success('Workspace deleted successfully');
+      showToast.success('Workspace deleted');
       nav('/workspace/select');
     },
-    onError: (error: any) => {
-      const message = error?.response?.data?.error?.message || 'Failed to delete workspace';
-      showToast.error(message);
-    },
+    onError: () => showToast.error('Failed to delete workspace'),
   });
 
   if (workspaceLoading || settingsLoading) {

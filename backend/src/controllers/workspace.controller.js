@@ -2,6 +2,9 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { success }       = require('../utils/response');
 const { NotFoundError } = require('../utils/errors');
+// At the top of workspace.controller.js, add these imports if missing:
+const { uploadFileSchema } = require('../validators/ledger.validator');
+const { generateUploadUrl } = require('../services/storage.service');
 const { createWorkspaceSchema, updateWorkspaceSchema, updateSettingsSchema } = require('../validators/workspace.validator');
 const audit = require('../services/audit.service');
 
@@ -110,6 +113,23 @@ async function getWorkspace(req, res, next) {
 }
 
 // ── Update workspace ───────────────────────────────────────────────
+// In workspace.controller.js - add this function
+
+async function getAvatarUploadUrl(req, res, next) {
+  try {
+    const data = uploadFileSchema.parse(req.body);
+    const { workspaceId } = req.params;
+    const result = await generateUploadUrl({
+      workspaceId,
+      folder: 'workspace-avatars',
+      filename: data.filename,
+      contentType: data.content_type,
+      fileSize: data.file_size,
+      fileType: 'workspace_avatar',
+    });
+    success(res, result);
+  } catch (err) { next(err); }
+}
 
 async function updateWorkspace(req, res, next) {
   try {
@@ -323,21 +343,88 @@ async function getDashboard(req, res, next) {
         }));
         console.log(`✅ Found ${pendingConfirmations.length} pending confirmations`);
       }
+      
+      
+      
     }
+    
 
-    // 6. Recent activity (audit log)
-    console.log("📝 Fetching recent activity...");
-    const { data: activity, error: activityError } = await supabaseAdmin
-      .from('audit_log')
-      .select('action, target_type, target_id, metadata, created_at')
-      .eq('workspace_id', workspaceId)
-      .order('created_at', { ascending: false })
-      .limit(10);
 
-    if (activityError) {
-      console.error("❌ Activity query error:", activityError);
-    }
-    console.log(`✅ Found ${activity?.length || 0} recent activities`);
+
+
+// 6. Recent activity (audit log) - IMPROVED with actor names and readable descriptions
+console.log("📝 Fetching recent activity...");
+const { data: activity, error: activityError } = await supabaseAdmin
+  .from('audit_log')
+  .select(`
+    action, 
+    target_type, 
+    target_id, 
+    metadata, 
+    created_at,
+    actor_member_id,
+    actor_member:workspace_members!actor_member_id(display_name)
+  `)
+  .eq('workspace_id', workspaceId)
+  .order('created_at', { ascending: false })
+  .limit(10);
+
+if (activityError) {
+  console.error("❌ Activity query error:", activityError);
+}
+
+// Helper function to generate readable description
+function getActivityDescription(action, metadata, target_type) {
+  const actions = {
+    'container.completed': 'completed a container',
+    'container.archived': 'archived a container',
+    'container.deleted': 'deleted a container',
+    'container.settings_changed': 'updated container settings',
+    'container.participants_added': 'added participants to a container',
+    'container.converted_to_recurring': 'converted event to recurring pool',
+    'ledger.confirmed': 'confirmed a contribution',
+    'ledger.submitted': 'submitted a contribution',
+    'ledger.corrected': 'added a correction',
+    'dispute.raised': 'raised a dispute',
+    'dispute.resolved': 'resolved a dispute',
+    'workspace.settings_changed': 'updated workspace settings',
+    'workspace.deleted': 'deleted workspace',
+    'member.removed': 'removed a member',
+    'cycle.override_applied': 'applied cycle override',
+    'task.created': 'created a task',
+    'task.completed': 'completed a task',
+    'task.confirmed': 'confirmed a task',
+  };
+  
+  const baseAction = actions[action] || action.replace(/\./g, ' ');
+  
+  if (metadata?.fields?.length) {
+    return `changed ${metadata.fields.join(', ')}`;
+  }
+  if (metadata?.keys?.length) {
+    return `updated ${metadata.keys.join(', ')}`;
+  }
+  if (metadata?.added_count !== undefined) {
+    const participantText = metadata.added_count !== 1 ? 's' : '';
+    return `added ${metadata.added_count} participant${participantText}`;
+  }
+  if (target_type === 'container') {
+    return baseAction;
+  }
+  return baseAction;
+}
+
+const enrichedActivity = (activity || []).map((a) => ({
+  ...a,
+  actor_name: a.actor_member?.display_name || 'System',
+  description: getActivityDescription(a.action, a.metadata, a.target_type),
+}));
+
+console.log(`✅ Found ${enrichedActivity.length} recent activities`);
+
+
+// Then in the dashboardData object, use enrichedActivity instead of activity:
+
 
     // 7. Unread notifications
     console.log("🔔 Fetching unread notifications...");
@@ -352,17 +439,16 @@ async function getDashboard(req, res, next) {
     }
     console.log(`✅ ${unreadCount || 0} unread notifications`);
 
-    // Prepare final dashboard data
     const dashboardData = {
-      workspace_summary: summary,
-      active_events: activeEvents,
-      recurring_pools: recurringPools,
-      upcoming_deadlines: upcomingDeadlines,
-      pending_confirmations: pendingConfirmations,
-      recent_activity: activity || [],
-      unread_notification_count: unreadCount || 0,
-      unread_activity_count: (activity || []).length,
-    };
+  workspace_summary: summary,
+  active_events: activeEvents,
+  recurring_pools: recurringPools,
+  upcoming_deadlines: upcomingDeadlines,
+  pending_confirmations: pendingConfirmations,
+  recent_activity: enrichedActivity,  // ← Use enriched version
+  unread_notification_count: unreadCount || 0,
+  unread_activity_count: enrichedActivity.length,
+};
     
     console.log("✅ Dashboard data prepared successfully");
     console.log("📦 Data keys:", Object.keys(dashboardData));
@@ -423,4 +509,4 @@ async function updateSettings(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { listWorkspaces, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, getDashboard, getSettings, updateSettings };
+module.exports = { listWorkspaces, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace,getAvatarUploadUrl, getDashboard, getSettings, updateSettings };

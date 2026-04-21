@@ -175,5 +175,12 @@ router.patch('/milestones/:milestoneId',      requireAdmin,      msCtrl.updateMi
 router.delete('/milestones/:milestoneId',     requireAdmin,      msCtrl.deleteMilestone);
 router.post('/milestones/:milestoneId/photos/upload-url', requireAdmin, uploadLimiter, msCtrl.getMilestonePhotoUploadUrl);
 router.post('/milestones/:milestoneId/photos/confirm',    requireAdmin, msCtrl.confirmMilestonePhoto);
+// In workspace.routes.js - add this route
+router.post(
+  '/avatar-upload-url',
+  requireAdmin,
+  uploadLimiter,
+  wCtrl.getAvatarUploadUrl
+);
 
 module.exports = router;

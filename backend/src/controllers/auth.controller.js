@@ -43,22 +43,6 @@ function mapSupabaseAuthError(error) {
 }
 
 // ── Signup ────────────────────────────────────────────────────────
-//
-// BEHAVIOUR depends on Supabase "Enable email confirmations" setting:
-//
-//   Confirmation OFF (dev/testing):
-//     authData.session is returned immediately → user is logged in on signup
-//     Response: 201 with access_token + refresh_token + user
-//
-//   Confirmation ON (production):
-//     authData.session is null → user must click verification email first
-//     Response: 201 with just a message, no tokens
-//
-// No code change needed when you flip the Supabase dashboard toggle.
-//
-// IMPORTANT: Do NOT write email_confirmed_at to the users table.
-// That field lives in Supabase's internal auth.users table, not ours.
-// Supabase manages confirmation state itself — we never touch it.
 
 async function signup(req, res, next) {
   try {
@@ -79,7 +63,6 @@ async function signup(req, res, next) {
 
     if (error) return next(mapSupabaseAuthError(error));
 
-    // Create the profile row whenever we have an ID
     if (authData?.user?.id) {
       const { error: dbError } = await supabaseAdmin
         .from('users')
@@ -89,6 +72,8 @@ async function signup(req, res, next) {
             email:                data.email,
             full_name:            data.full_name,
             country_of_residence: data.country_of_residence,
+            timezone:             data.timezone,
+            preferred_language:   data.preferred_language || 'en',
             auth_provider:        'email',
           },
           { onConflict: 'id' }
@@ -99,13 +84,10 @@ async function signup(req, res, next) {
           userId: authData.user.id,
           error:  dbError.message,
         });
-        // Non-fatal: auth user exists, profile created on first login via POST /auth/register
       }
     }
 
-    // Confirmation OFF → session returned immediately
     if (authData?.session) {
-      console.log("Sessioj found");
       return success(res, {
         message:       'Account created successfully.',
         access_token:  authData.session.access_token,
@@ -120,7 +102,6 @@ async function signup(req, res, next) {
       }, 201);
     }
 
-    // Confirmation ON → tell user to check their email
     success(res, {
       message: 'Account created. Please check your email and click the verification link before logging in.',
       email:   data.email,
@@ -249,8 +230,6 @@ async function getGoogleAuthUrl(req, res, next) {
 }
 
 // ── Register / upsert profile ─────────────────────────────────────
-//
-// Called in two situations — see explanation at the bottom of this file.
 
 async function register(req, res, next) {
   try {
@@ -277,8 +256,10 @@ async function register(req, res, next) {
     if (!fullName && !isOAuth) throw new ValidationError('full_name is required', 'full_name');
 
     const countryOfResidence = bodyData.country_of_residence || null;
-    const avatarUrl          = userMeta.avatar_url || userMeta.picture || null;
-    const dbProvider         = isOAuth && provider === 'google' ? 'google' : 'email';
+    const timezone = bodyData.timezone || null;
+    const preferredLanguage = bodyData.preferred_language || 'en';
+    const avatarUrl = userMeta.avatar_url || userMeta.picture || null;
+    const dbProvider = isOAuth && provider === 'google' ? 'google' : 'email';
 
     const { data, error } = await supabaseAdmin
       .from('users')
@@ -288,6 +269,8 @@ async function register(req, res, next) {
           email,
           full_name:            fullName,
           country_of_residence: countryOfResidence,
+          timezone:             timezone,
+          preferred_language:   preferredLanguage,
           avatar_url:           avatarUrl,
           auth_provider:        dbProvider,
         },
@@ -335,16 +318,23 @@ async function getMe(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Update profile ────────────────────────────────────────────────
+// ── Update profile (ENHANCED) ─────────────────────────────────────
+// Now supports: full_name, bio, country_of_residence, timezone,
+// avatar_url, push_enabled, email_digest_enabled, preferred_language
 
 async function updateProfile(req, res, next) {
   try {
-    const data   = updateProfileSchema.parse(req.body);
+    const data = updateProfileSchema.parse(req.body);
     const userId = req.user.id;
 
     const updates = {};
-    for (const [key, value] of Object.entries(data)) {
-      if (value !== undefined) updates[key] = value;
+    const allowedFields = [
+      'full_name', 'bio', 'country_of_residence', 'timezone',
+      'avatar_url', 'push_enabled', 'email_digest_enabled', 'preferred_language'
+    ];
+    
+    for (const field of allowedFields) {
+      if (data[field] !== undefined) updates[field] = data[field];
     }
 
     if (!Object.keys(updates).length) {
@@ -383,7 +373,91 @@ async function getAvatarUploadUrl(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Update contacts ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// NEW: Individual Contact Management (not bulk update)
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Get all contacts for current user ─────────────────────────────
+
+async function getUserContacts(req, res, next) {
+  try {
+    const userId = req.user.id;
+
+    const { data, error } = await supabaseAdmin
+      .from('user_contacts')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw new Error(error.message);
+    success(res, { contacts: data || [] });
+  } catch (err) { next(err); }
+}
+
+// ── Add or update a single contact ────────────────────────────────
+
+async function upsertContact(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const { type, value, label, country_code, is_primary } = req.body;
+
+    if (!type || !value) {
+      throw new ValidationError('type and value are required');
+    }
+
+    // If this contact is being set as primary, unset any existing primary of same type
+    if (is_primary) {
+      await supabaseAdmin
+        .from('user_contacts')
+        .update({ is_primary: false })
+        .eq('user_id', userId)
+        .eq('type', type);
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('user_contacts')
+      .upsert(
+        {
+          user_id: userId,
+          type,
+          value,
+          label: label || null,
+          country_code: country_code || null,
+          is_primary: is_primary || false,
+        },
+        { onConflict: 'user_id,type,value' }
+      )
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    success(res, { contact: data }, 201);
+  } catch (err) { next(err); }
+}
+
+// ── Delete a contact by ID ────────────────────────────────────────
+
+async function deleteContact(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const { contactId } = req.params;
+
+    const { error } = await supabaseAdmin
+      .from('user_contacts')
+      .delete()
+      .eq('id', contactId)
+      .eq('user_id', userId);
+
+    if (error) throw new Error(error.message);
+    success(res, { message: 'Contact deleted successfully' });
+  } catch (err) { next(err); }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EXISTING METHODS (kept as is)
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Update contacts (bulk - kept for backward compatibility) ──────
 
 async function updateContacts(req, res, next) {
   try {
@@ -486,4 +560,6 @@ module.exports = {
   signup, login, logout, refreshToken, forgotPassword, resetPassword, getGoogleAuthUrl,
   register, getMe, updateProfile, getAvatarUploadUrl, updateContacts,
   registerPushToken, updateNotificationPrefs, requestDataExport,
+  // NEW exports
+  getUserContacts, upsertContact, deleteContact,
 };

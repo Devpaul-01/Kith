@@ -11,6 +11,7 @@ const MAX_SIZES = {
   outcome_file:   50 * 1024 * 1024,  // 50 MB
   milestone_photo:10 * 1024 * 1024,  // 10 MB
   avatar:          5 * 1024 * 1024,  //  5 MB
+  workspace_avatar: 5 * 1024 * 1024, //  5 MB  // ← ADD THIS
 };
 
 const ALLOWED_TYPES = {
@@ -20,6 +21,7 @@ const ALLOWED_TYPES = {
   outcome_file:   ['image/jpeg','image/png','image/webp','image/gif','application/pdf'],
   milestone_photo:['image/jpeg','image/png','image/webp','image/gif'],
   avatar:         ['image/jpeg','image/png','image/webp'],
+  workspace_avatar: ['image/jpeg','image/png','image/webp'],  // ← ADD THIS
 };
 
 function validateUpload(fileType, contentType, fileSize) {
@@ -42,6 +44,7 @@ function validateUpload(fileType, contentType, fileSize) {
     throw new BusinessRuleError(`File type "${contentType}" is not allowed for ${fileType}`);
   }
 }
+
 
 /**
  * Generate a signed upload URL for Supabase Storage.

@@ -1,4 +1,34 @@
-export interface User{id:string;email:string;full_name:string;bio?:string;country_of_residence?:string;timezone?:string;avatar_url?:string;push_enabled:boolean;email_digest_enabled:boolean;created_at:string;updated_at:string;}
+// In models.ts - replace the existing User interface
+export interface User {
+  id: string;
+  email: string;
+  full_name: string;
+  bio?: string;
+  country_of_residence?: string;
+  timezone?: string;
+  avatar_url?: string;
+  preferred_language?: string;
+  push_enabled: boolean;
+  push_token?: string;
+  push_token_platform?: 'web' | 'ios' | 'android';
+  email_digest_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  last_seen_at?: string;
+}
+
+export interface UserContact {
+  id: string;
+  user_id: string;
+  type: 'email_secondary' | 'whatsapp' | 'phone' | 'telegram' | 'signal' | 'instagram' | 'facebook' | 'twitter' | 'linkedin' | 'custom';
+  label?: string;
+  value: string;
+  country_code?: string;
+  is_primary: boolean;
+  is_verified: boolean;
+  verified_at?: string;
+  created_at: string;
+}
 export interface Membership{member_id:string;role:'admin'|'member';workspace_id:string;display_name:string;workspace_name:string;base_currency:string;}
 export interface Workspace{id:string;name:string;description?:string;base_currency:string;family_type?:string;avatar_url?:string;created_at:string;updated_at:string;}
 export interface WorkspaceMember{id:string;user_id:string|null;workspace_id:string;display_name:string;role:'admin'|'member';is_proxy:boolean;is_active:boolean;engagement_level?:EngagementLevel;email?:string;avatar_url?:string;created_at:string;updated_at:string;}
@@ -231,7 +261,18 @@ export interface Cycle {
   total_collected: number;
 }
 
-export interface AuditEntry{id:string;action:string;actor_name:string;description:string;created_at:string;}
+export interface AuditEntry {
+  id: string;
+  action: string;
+  actor_name: string;
+  description: string;
+  created_at: string;
+  target_type?: string;
+  target_id?: string;
+  metadata?: Record<string, unknown>;
+}
+
+
 export interface FileInfo{filename:string;content_type:string;file_size:number;}
 export interface ActiveEvent{id:string;name:string;event_date?:string;status:ContainerStatus;progress_pct:number;days_until?:number;total_confirmed?:number;budget_target?:number;}
 export interface RecurringPool{id:string;name:string;current_cycle_status?:string;total_expected:number;total_collected:number;}

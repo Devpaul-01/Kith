@@ -54,4 +54,8 @@ router.patch('/notification-preferences', requireAuth, loadDbUser, ctrl.updateNo
 // Request a GDPR data export (Phase 2)
 router.post('/request-data-export', requireAuth, loadDbUser, ctrl.requestDataExport);
 
+// Add these new routes
+router.get('/contacts', requireAuth, loadDbUser, ctrl.getUserContacts);
+router.post('/contacts',requireAuth, loadDbUser, ctrl.upsertContact);
+router.delete('/contacts/:contactId', requireAuth, loadDbUser,  ctrl.deleteContact);
 module.exports = router;

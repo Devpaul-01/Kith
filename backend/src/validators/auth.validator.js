@@ -49,13 +49,17 @@ const resetPasswordSchema = z.object({
 });
 
 // ── Profile update ────────────────────────────────────────────────
+
+
 const updateProfileSchema = z.object({
   full_name: z.string().min(2).max(100).optional(),
-  bio: z.string().max(200, 'Bio must be 200 characters or fewer').optional(),
-  country_of_residence: z.string().min(2).max(100).optional(),
-  timezone: z.string().max(50).optional(),
+  bio: z.string().max(500).optional(),
+  country_of_residence: z.string().max(100).optional(),
+  timezone: z.string().max(100).optional(),
+  avatar_url: z.string().url().optional(),
+  push_enabled: z.boolean().optional(),
+  email_digest_enabled: z.boolean().optional(),
   preferred_language: z.string().max(10).optional(),
-  avatar_url: z.string().url().optional().nullable(),
 });
 
 // ── Contact methods ───────────────────────────────────────────────
