@@ -2,7 +2,7 @@
 const { supabaseAdmin, supabaseAuth } = require('../config/supabase');
 const { success } = require('../utils/response');
 const {
-  AppError, ValidationError, UnauthorizedError, ConflictError, BusinessRuleError,
+  AppError, ValidationError, UnauthorizedError, ConflictError, BusinessRuleError, NotFoundError,
 } = require('../utils/errors');
 const {
   signupSchema, loginSchema, registerSchema, forgotPasswordSchema,
@@ -11,6 +11,8 @@ const {
 } = require('../validators/auth.validator');
 const { uploadFileSchema }  = require('../validators/ledger.validator');
 const { generateUploadUrl } = require('../services/storage.service');
+// Issue 21: queue import for data export
+const { getQueue } = require('../queues');
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -113,7 +115,7 @@ async function signup(req, res, next) {
 
 async function login(req, res, next) {
   try {
-    const data   = loginSchema.parse(req.body);
+    const data = loginSchema.parse(req.body);
     const client = getAuthClient();
 
     const { data: authData, error } = await client.auth.signInWithPassword({
@@ -121,7 +123,7 @@ async function login(req, res, next) {
     });
     if (error) return next(mapSupabaseAuthError(error));
 
-    const [{ data: user }, { data: memberships }] = await Promise.all([
+    const [userResult, membershipsResult] = await Promise.all([
       supabaseAdmin
         .from('users')
         .select('*')
@@ -136,7 +138,10 @@ async function login(req, res, next) {
         .is('deleted_at', null),
     ]);
 
-    const shapedMemberships = (memberships || []).map((m) => ({
+    const userData        = userResult.data;
+    const membershipsData = membershipsResult.data || [];
+
+    const shapedMemberships = membershipsData.map((m) => ({
       member_id:      m.id,
       role:           m.role,
       workspace_id:   m.workspace_id,
@@ -145,13 +150,21 @@ async function login(req, res, next) {
       base_currency:  m.workspaces?.base_currency,
     }));
 
+    // Issue 1 fix: path changed from '/api/auth/refresh' to '/v1/auth/refresh'
+    res.cookie('refresh_token', authData.session.refresh_token, {
+      httpOnly: true,
+      secure:   process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge:   30 * 24 * 60 * 60 * 1000,
+      path:     '/v1/auth/refresh',
+    });
+
     success(res, {
-      access_token:  authData.session.access_token,
-      refresh_token: authData.session.refresh_token,
-      expires_in:    authData.session.expires_in,
-      token_type:    'Bearer',
-      user:          user || null,
-      memberships:   shapedMemberships,
+      access_token: authData.session.access_token,
+      expires_in:   authData.session.expires_in,
+      token_type:   'Bearer',
+      user:         userData || null,
+      memberships:  shapedMemberships,
     });
   } catch (err) { next(err); }
 }
@@ -160,19 +173,32 @@ async function login(req, res, next) {
 
 async function refreshToken(req, res, next) {
   try {
-    const data   = refreshTokenSchema.parse(req.body);
-    const client = getAuthClient();
+    const refresh_token = req.cookies.refresh_token;
 
+    if (!refresh_token) {
+      return next(new UnauthorizedError('No refresh token provided'));
+    }
+
+    const client = getAuthClient();
     const { data: refreshData, error } = await client.auth.refreshSession({
-      refresh_token: data.refresh_token,
+      refresh_token,
     });
+
     if (error) return next(new UnauthorizedError('Invalid or expired refresh token.'));
 
+    // Issue 1 fix: path changed from '/api/auth/refresh' to '/v1/auth/refresh'
+    res.cookie('refresh_token', refreshData.session.refresh_token, {
+      httpOnly: true,
+      secure:   process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge:   30 * 24 * 60 * 60 * 1000,
+      path:     '/v1/auth/refresh',
+    });
+
     success(res, {
-      access_token:  refreshData.session.access_token,
-      refresh_token: refreshData.session.refresh_token,
-      expires_in:    refreshData.session.expires_in,
-      token_type:    'Bearer',
+      access_token: refreshData.session.access_token,
+      expires_in:   refreshData.session.expires_in,
+      token_type:   'Bearer',
     });
   } catch (err) { next(err); }
 }
@@ -181,9 +207,24 @@ async function refreshToken(req, res, next) {
 
 async function logout(req, res, next) {
   try {
+    // Issue 1 fix: path changed from '/api/auth/refresh' to '/v1/auth/refresh'
+    res.clearCookie('refresh_token', { path: '/v1/auth/refresh' });
+
     const { error } = await supabaseAdmin.auth.admin.signOut(req.user.id);
     if (error) require('../utils/logger').warn('Supabase signOut error', { error: error.message });
     success(res, { message: 'Logged out successfully.' });
+  } catch (err) { next(err); }
+}
+
+// ── Logout all devices (Issue 5.6) ───────────────────────────────
+
+async function logoutAllDevices(req, res, next) {
+  try {
+    res.clearCookie('refresh_token', { path: '/v1/auth/refresh' });
+    // 'global' scope revokes all sessions for the user, not just the current one
+    const { error } = await supabaseAdmin.auth.admin.signOut(req.user.id, 'global');
+    if (error) require('../utils/logger').warn('Supabase global signOut error', { error: error.message });
+    success(res, { message: 'Logged out from all devices.' });
   } catch (err) { next(err); }
 }
 
@@ -229,6 +270,70 @@ async function getGoogleAuthUrl(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// ── Google OAuth callback (Issue 5.5) ─────────────────────────────
+
+async function googleCallback(req, res, next) {
+  try {
+    const { code } = req.body;
+    if (!code) throw new ValidationError('code is required', 'code');
+
+    const client = getAuthClient();
+    const { data, error } = await client.auth.exchangeCodeForSession(code);
+    if (error) return next(mapSupabaseAuthError(error));
+
+    const session = data.session;
+    const user    = data.user;
+
+    // Ensure user profile exists (upsert)
+    if (user?.id) {
+      await supabaseAdmin.from('users').upsert({
+        id:            user.id,
+        email:         user.email,
+        full_name:     user.user_metadata?.full_name || user.user_metadata?.name || null,
+        avatar_url:    user.user_metadata?.avatar_url || user.user_metadata?.picture || null,
+        auth_provider: 'google',
+      }, { onConflict: 'id' });
+    }
+
+    // Issue 1 fix: correct path used here too
+    res.cookie('refresh_token', session.refresh_token, {
+      httpOnly: true,
+      secure:   process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge:   30 * 24 * 60 * 60 * 1000,
+      path:     '/v1/auth/refresh',
+    });
+
+    success(res, {
+      access_token: session.access_token,
+      expires_in:   session.expires_in,
+      token_type:   'Bearer',
+      user: { id: user.id, email: user.email },
+    });
+  } catch (err) { next(err); }
+}
+
+// ── Verify email (Issue 5.4) ──────────────────────────────────────
+
+async function verifyEmail(req, res, next) {
+  try {
+    const { token_hash, type } = req.body;
+    if (!token_hash) throw new ValidationError('token_hash is required', 'token_hash');
+
+    const client = getAuthClient();
+    const { data, error } = await client.auth.verifyOtp({ token_hash, type: type || 'email' });
+    if (error) return next(mapSupabaseAuthError(error));
+
+    success(res, {
+      message:       'Email verified successfully.',
+      access_token:  data.session?.access_token,
+      refresh_token: data.session?.refresh_token,
+      expires_in:    data.session?.expires_in,
+      token_type:    'Bearer',
+    });
+  } catch (err) { next(err); }
+}
+
 // ── Register / upsert profile ─────────────────────────────────────
 
 async function register(req, res, next) {
@@ -256,10 +361,10 @@ async function register(req, res, next) {
     if (!fullName && !isOAuth) throw new ValidationError('full_name is required', 'full_name');
 
     const countryOfResidence = bodyData.country_of_residence || null;
-    const timezone = bodyData.timezone || null;
-    const preferredLanguage = bodyData.preferred_language || 'en';
-    const avatarUrl = userMeta.avatar_url || userMeta.picture || null;
-    const dbProvider = isOAuth && provider === 'google' ? 'google' : 'email';
+    const timezone           = bodyData.timezone             || null;
+    const preferredLanguage  = bodyData.preferred_language   || 'en';
+    const avatarUrl          = userMeta.avatar_url || userMeta.picture || null;
+    const dbProvider         = isOAuth && provider === 'google' ? 'google' : 'email';
 
     const { data, error } = await supabaseAdmin
       .from('users')
@@ -269,7 +374,7 @@ async function register(req, res, next) {
           email,
           full_name:            fullName,
           country_of_residence: countryOfResidence,
-          timezone:             timezone,
+          timezone,
           preferred_language:   preferredLanguage,
           avatar_url:           avatarUrl,
           auth_provider:        dbProvider,
@@ -285,27 +390,32 @@ async function register(req, res, next) {
 }
 
 // ── Get current user ──────────────────────────────────────────────
+//
+// Issue 2 fix: removed the first (dead-code) duplicate definition of getMe
+// that appeared between the Login comment block and the login function.
+//
+// Issue 7 fix: req.dbUser is already populated by loadDbUser middleware on
+// this route (GET /auth/me uses requireAuth, loadDbUser, ctrl.getMe).
+// The previous implementation ignored req.dbUser and ran a second
+// supabaseAdmin.from('users').select('*') query — an unnecessary round-trip.
 
 async function getMe(req, res, next) {
   try {
     const userId = req.user.id;
 
-    const [{ data: user }, { data: memberships }] = await Promise.all([
-      supabaseAdmin
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .is('deleted_at', null)
-        .maybeSingle(),
-      supabaseAdmin
-        .from('workspace_members')
-        .select('id, role, workspace_id, display_name, workspaces!inner(name, base_currency)')
-        .eq('user_id', userId)
-        .eq('is_active', true)
-        .is('deleted_at', null),
-    ]);
+    // Issue 7: use req.dbUser already populated by loadDbUser — no second query
+    const user = req.dbUser || null;
 
-    const shapedMemberships = (memberships || []).map((m) => ({
+    const { data: membershipsData, error: mErr } = await supabaseAdmin
+      .from('workspace_members')
+      .select('id, role, workspace_id, display_name, workspaces!inner(name, base_currency)')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .is('deleted_at', null);
+
+    if (mErr) throw new Error(mErr.message);
+
+    const shapedMemberships = (membershipsData || []).map((m) => ({
       member_id:      m.id,
       role:           m.role,
       workspace_id:   m.workspace_id,
@@ -314,25 +424,23 @@ async function getMe(req, res, next) {
       base_currency:  m.workspaces?.base_currency,
     }));
 
-    success(res, { user: user || null, memberships: shapedMemberships });
+    success(res, { user, memberships: shapedMemberships });
   } catch (err) { next(err); }
 }
 
-// ── Update profile (ENHANCED) ─────────────────────────────────────
-// Now supports: full_name, bio, country_of_residence, timezone,
-// avatar_url, push_enabled, email_digest_enabled, preferred_language
+// ── Update profile ─────────────────────────────────────────────────
 
 async function updateProfile(req, res, next) {
   try {
-    const data = updateProfileSchema.parse(req.body);
+    const data   = updateProfileSchema.parse(req.body);
     const userId = req.user.id;
 
     const updates = {};
     const allowedFields = [
       'full_name', 'bio', 'country_of_residence', 'timezone',
-      'avatar_url', 'push_enabled', 'email_digest_enabled', 'preferred_language'
+      'avatar_url', 'push_enabled', 'email_digest_enabled', 'preferred_language',
     ];
-    
+
     for (const field of allowedFields) {
       if (data[field] !== undefined) updates[field] = data[field];
     }
@@ -373,10 +481,6 @@ async function getAvatarUploadUrl(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// NEW: Individual Contact Management (not bulk update)
-// ═══════════════════════════════════════════════════════════════════
-
 // ── Get all contacts for current user ─────────────────────────────
 
 async function getUserContacts(req, res, next) {
@@ -394,7 +498,11 @@ async function getUserContacts(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Add or update a single contact ────────────────────────────────
+// ── Add or update a single contact (Issue 13 — atomic RPC) ────────
+//
+// Issue 13 fix: replaced two sequential writes (UPDATE is_primary=false, then
+// UPSERT) with a single atomic RPC to eliminate the TOCTOU race condition that
+// could result in multiple contacts of the same type having is_primary=true.
 
 async function upsertContact(req, res, next) {
   try {
@@ -405,59 +513,50 @@ async function upsertContact(req, res, next) {
       throw new ValidationError('type and value are required');
     }
 
-    // If this contact is being set as primary, unset any existing primary of same type
-    if (is_primary) {
-      await supabaseAdmin
-        .from('user_contacts')
-        .update({ is_primary: false })
-        .eq('user_id', userId)
-        .eq('type', type);
-    }
-
-    const { data, error } = await supabaseAdmin
-      .from('user_contacts')
-      .upsert(
-        {
-          user_id: userId,
-          type,
-          value,
-          label: label || null,
-          country_code: country_code || null,
-          is_primary: is_primary || false,
-        },
-        { onConflict: 'user_id,type,value' }
-      )
-      .select()
-      .single();
+    const { data, error } = await supabaseAdmin.rpc('upsert_primary_contact', {
+      p_user_id:      userId,
+      p_type:         type,
+      p_value:        value,
+      p_label:        label        || null,
+      p_country_code: country_code || null,
+      p_is_primary:   is_primary   || false,
+    });
 
     if (error) throw new Error(error.message);
     success(res, { contact: data }, 201);
   } catch (err) { next(err); }
 }
 
-// ── Delete a contact by ID ────────────────────────────────────────
+// ── Delete a contact by ID (Issue 4 — 404 on missing) ─────────────
+//
+// Issue 4 fix: the previous implementation did not check whether any row was
+// actually deleted, returning 200 even for non-existent contactIds.
+// Now uses .select('id').maybeSingle() to detect no-op deletes.
 
 async function deleteContact(req, res, next) {
   try {
     const userId = req.user.id;
     const { contactId } = req.params;
 
-    const { error } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('user_contacts')
       .delete()
       .eq('id', contactId)
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .select('id')
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!data) throw new NotFoundError('Contact not found');
+
     success(res, { message: 'Contact deleted successfully' });
   } catch (err) { next(err); }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// EXISTING METHODS (kept as is)
-// ═══════════════════════════════════════════════════════════════════
-
-// ── Update contacts (bulk - kept for backward compatibility) ──────
+// ── Update contacts — bulk replace (Issue 12 — batch upsert) ──────
+//
+// Issue 12 fix: replaced serial for...of loop (N round-trips) with a single
+// batch upsert, consistent with how the workers handle bulk writes.
 
 async function updateContacts(req, res, next) {
   try {
@@ -472,19 +571,21 @@ async function updateContacts(req, res, next) {
       .eq('user_id', userId)
       .in('type', types);
 
-    for (const contact of data.contacts) {
-      await supabaseAdmin.from('user_contacts').upsert(
-        {
-          user_id:      userId,
-          type:         contact.type,
-          label:        contact.label || null,
-          value:        contact.value,
-          country_code: contact.country_code || null,
-          is_primary:   contact.is_primary ?? false,
-        },
-        { onConflict: 'user_id,type,value' }
-      );
-    }
+    // Issue 12: single batch upsert instead of N sequential upserts
+    const upsertRows = data.contacts.map((contact) => ({
+      user_id:      userId,
+      type:         contact.type,
+      label:        contact.label        || null,
+      value:        contact.value,
+      country_code: contact.country_code || null,
+      is_primary:   contact.is_primary   ?? false,
+    }));
+
+    const { error: upsertErr } = await supabaseAdmin
+      .from('user_contacts')
+      .upsert(upsertRows, { onConflict: 'user_id,type,value' });
+
+    if (upsertErr) throw new Error(upsertErr.message);
 
     const { data: contacts, error } = await supabaseAdmin
       .from('user_contacts')
@@ -548,18 +649,56 @@ async function updateNotificationPrefs(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Request data export ───────────────────────────────────────────
+// ── Request data export (Issue 21) ───────────────────────────────
+//
+// Issue 21 fix: was a no-op stub. Now fetches the user's workspace memberships
+// and enqueues an async job that exports ledger data and emails it to the user.
 
 async function requestDataExport(req, res, next) {
   try {
-    success(res, { message: 'Your data export will be emailed within 24 hours.' });
+    const userId    = req.user.id;
+    const userEmail = req.user.email;
+
+    const { data: memberships } = await supabaseAdmin
+      .from('workspace_members')
+      .select('workspace_id')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .is('deleted_at', null);
+
+    const workspaceIds = (memberships || []).map((m) => m.workspace_id);
+
+    await getQueue('data-export-queue').add(
+      'export-user-data',
+      { userId, userEmail, workspaceIds },
+      { attempts: 2, backoff: { type: 'exponential', delay: 10000 } }
+    );
+
+    success(res, { message: 'Your data export has been queued and will be emailed within 24 hours.' });
   } catch (err) { next(err); }
 }
 
 module.exports = {
-  signup, login, logout, refreshToken, forgotPassword, resetPassword, getGoogleAuthUrl,
-  register, getMe, updateProfile, getAvatarUploadUrl, updateContacts,
-  registerPushToken, updateNotificationPrefs, requestDataExport,
-  // NEW exports
-  getUserContacts, upsertContact, deleteContact,
+  signup,
+  login,
+  logout,
+  logoutAllDevices,
+  refreshToken,
+  forgotPassword,
+  resetPassword,
+  getGoogleAuthUrl,
+  googleCallback,
+  verifyEmail,
+  register,
+  getMe,
+  updateProfile,
+  getAvatarUploadUrl,
+  updateContacts,
+  registerPushToken,
+  updateNotificationPrefs,
+  requestDataExport,
+  // Individual contact management
+  getUserContacts,
+  upsertContact,
+  deleteContact,
 };

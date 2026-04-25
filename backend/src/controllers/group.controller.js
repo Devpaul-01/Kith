@@ -59,7 +59,7 @@ async function createGroup(req, res, next) {
         const { data: memberCheck } = await supabaseAdmin
           .from('workspace_members').select('id').eq('id', memberId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
         if (memberCheck) {
-          await supabaseAdmin.from('group_members').upsert({ group_id: group.id, workspace_member_id: memberId, added_by: req.member.id }, { ignoreDuplicates: true });
+          await supabaseAdmin.from('group_members').insert({ group_id: group.id, workspace_member_id: memberId, added_by: req.member.id }, { ignoreDuplicates: true });
         }
       }
     }

@@ -7,11 +7,11 @@ const audit = require('../services/audit.service');
 
 async function listMembers(req, res, next) {
   try {
-    const { workspaceId } = req.params;
-    const isAdmin         = req.member.role === 'admin';
-    const { search, sort } = req.query;
-    const filterRole      = req.query['filter[role]'];
-    const filterProxy     = req.query['filter[is_proxy]'];
+    const { workspaceId }     = req.params;
+    const isAdmin             = req.member.role === 'admin';
+    const { search, sort }    = req.query;
+    const filterRole          = req.query['filter[role]'];
+    const filterProxy         = req.query['filter[is_proxy]'];
 
     let query = supabaseAdmin
       .from('workspace_members')
@@ -25,7 +25,7 @@ async function listMembers(req, res, next) {
 
     const sortField = sort?.replace('-', '') || 'display_name';
     const ascending = !sort?.startsWith('-');
-    const safeSort  = ['display_name','joined_at'].includes(sortField) ? sortField : 'display_name';
+    const safeSort  = ['display_name', 'joined_at'].includes(sortField) ? sortField : 'display_name';
     query = query.order(safeSort, { ascending });
 
     const { data, error } = await query;
@@ -33,12 +33,16 @@ async function listMembers(req, res, next) {
 
     const members = (data || []).map((m) => {
       const flat = { ...m, email: m.users?.email, country_of_residence: m.users?.country_of_residence, timezone: m.users?.timezone, users: undefined };
-      if (!isAdmin) { const { admin_notes, last_active_at, contribution_streak_months, ...limited } = flat; return limited; }
+      if (!isAdmin) {
+        const { admin_notes, last_active_at, contribution_streak_months, ...limited } = flat;
+        return limited;
+      }
       return flat;
     });
 
-    // Counts
-    const { data: all } = await supabaseAdmin.from('workspace_members').select('role, is_active, is_proxy, deleted_at').eq('workspace_id', workspaceId);
+    const { data: all } = await supabaseAdmin
+      .from('workspace_members').select('role, is_active, is_proxy, deleted_at').eq('workspace_id', workspaceId);
+
     const meta = {
       total:        (all || []).length,
       admins_count: (all || []).filter((m) => m.role === 'admin' && !m.deleted_at).length,
@@ -64,11 +68,15 @@ async function createMember(req, res, next) {
     const { data: member, error } = await supabaseAdmin
       .from('workspace_members')
       .insert({
-        workspace_id: workspaceId, display_name: data.display_name, is_proxy: data.is_proxy,
-        proxy_managed_by: data.proxy_managed_by || null, role: data.role,
-        relationship_to_head: data.relationship_to_head || null,
+        workspace_id:          workspaceId,
+        display_name:          data.display_name,
+        is_proxy:              data.is_proxy,
+        proxy_managed_by:      data.proxy_managed_by      || null,
+        role:                  data.role,
+        relationship_to_head:  data.relationship_to_head  || null,
         relationship_category: data.relationship_category,
-        date_of_birth: data.date_of_birth || null, admin_notes: data.admin_notes || null,
+        date_of_birth:         data.date_of_birth         || null,
+        admin_notes:           data.admin_notes           || null,
       })
       .select()
       .single();
@@ -101,18 +109,30 @@ async function getMember(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// ── Update member ──────────────────────────────────────────────────
+//
+// Issue 15 fix: removed the inline `if (!isAdmin && !isSelf) throw ForbiddenError`
+// check at the top of this function. Authorization is now enforced at the route
+// layer via `requireSelfOrAdmin()` in workspace.routes.js before this function
+// is ever called. Keeping duplicate checks in both layers was confusing and
+// made the authorization surface harder to audit.
+// The admin-only field restriction check is still here — that is field-level
+// (not resource-level) authorization and belongs in the controller.
+
 async function updateMember(req, res, next) {
   try {
-    const data                          = updateMemberSchema.parse(req.body);
-    const { workspaceId, memberId }     = req.params;
-    const isAdmin = req.member.role === 'admin';
-    const isSelf  = req.member.id === memberId;
+    const data                      = updateMemberSchema.parse(req.body);
+    const { workspaceId, memberId } = req.params;
+    const isAdmin                   = req.member.role === 'admin';
 
-    if (!isAdmin && !isSelf) throw new ForbiddenError('You can only edit your own profile');
+    // Issue 15: removed top-level `if (!isAdmin && !isSelf) throw ForbiddenError`
+    // requireSelfOrAdmin() in the route already guarantees this caller is either
+    // an admin OR the member being updated.
 
-    const adminOnlyFields    = ['role','is_proxy','proxy_managed_by','is_active','admin_notes','relationship_category'];
-    const memberEditableFields = ['display_name','relationship_to_head','date_of_birth'];
+    const adminOnlyFields      = ['role', 'is_proxy', 'proxy_managed_by', 'is_active', 'admin_notes', 'relationship_category'];
+    const memberEditableFields = ['display_name', 'relationship_to_head', 'date_of_birth'];
 
+    // Field-level restriction: members cannot touch admin-only fields even on their own record
     if (!isAdmin) {
       for (const field of adminOnlyFields) {
         if (data[field] !== undefined) throw new ForbiddenError(`Field '${field}' can only be edited by admins`);
@@ -125,35 +145,40 @@ async function updateMember(req, res, next) {
     if (fetchErr) throw new Error(fetchErr.message);
     if (!current) throw new NotFoundError('Member not found');
 
+    // Optimistic lock
     if (data.version && current.updated_at !== data.version) {
       throw new BusinessRuleError('Record was modified by another request. Please refresh and try again.');
     }
 
+    // Last-admin guard
     if (isAdmin && data.role === 'member' && current.role === 'admin') {
-      const { data: admins } = await supabaseAdmin.from('workspace_members').select('id').eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).is('deleted_at', null);
+      const { data: admins } = await supabaseAdmin
+        .from('workspace_members').select('id').eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).is('deleted_at', null);
       if ((admins || []).length <= 1) throw new BusinessRuleError('Cannot demote the last admin. Promote another member first.');
     }
 
     if (data.proxy_managed_by) {
-      const { data: adminCheck } = await supabaseAdmin.from('workspace_members').select('id').eq('id', data.proxy_managed_by).eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).maybeSingle();
+      const { data: adminCheck } = await supabaseAdmin
+        .from('workspace_members').select('id').eq('id', data.proxy_managed_by).eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).maybeSingle();
       if (!adminCheck) throw new BusinessRuleError('proxy_managed_by must be an active admin');
     }
 
     const allowedFields = isAdmin
-      ? ['display_name','relationship_to_head','relationship_category','date_of_birth','role','is_proxy','proxy_managed_by','is_active','admin_notes']
+      ? ['display_name', 'relationship_to_head', 'relationship_category', 'date_of_birth', 'role', 'is_proxy', 'proxy_managed_by', 'is_active', 'admin_notes']
       : memberEditableFields;
 
     const updates = {};
     for (const field of allowedFields) {
       if (data[field] !== undefined) {
         updates[field] = data[field];
-        // Write profile audit
         if (String(current[field]) !== String(data[field])) {
           await supabaseAdmin.from('member_profile_audit').insert({
-            workspace_member_id: memberId, changed_by: req.member.id, field_name: field,
-            old_value: current[field] != null ? String(current[field]) : null,
-            new_value: data[field]    != null ? String(data[field])    : null,
-            change_source: isAdmin ? 'admin' : 'member',
+            workspace_member_id: memberId,
+            changed_by:          req.member.id,
+            field_name:          field,
+            old_value:           current[field] != null ? String(current[field]) : null,
+            new_value:           data[field]    != null ? String(data[field])    : null,
+            change_source:       isAdmin ? 'admin' : 'member',
           });
         }
       }
@@ -181,11 +206,13 @@ async function deleteMember(req, res, next) {
     if (!target) throw new NotFoundError('Member not found');
 
     if (target.role === 'admin' && req.member.id === memberId) {
-      const { data: admins } = await supabaseAdmin.from('workspace_members').select('id').eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).is('deleted_at', null);
+      const { data: admins } = await supabaseAdmin
+        .from('workspace_members').select('id').eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).is('deleted_at', null);
       if ((admins || []).length <= 1) throw new BusinessRuleError('Cannot remove the last admin');
     }
 
-    const { count } = await supabaseAdmin.from('ledger_entries').select('*', { count: 'exact', head: true }).eq('contributor_id', memberId).eq('status', 'confirmed');
+    const { count } = await supabaseAdmin
+      .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('contributor_id', memberId).eq('status', 'confirmed');
     const hasEntries = count > 0;
 
     if (hasEntries && force === 'true') {
@@ -214,7 +241,11 @@ async function getProfileHistory(req, res, next) {
 
     if (error) throw new Error(error.message);
 
-    const history = (data || []).map((r) => ({ ...r, changed_by_name: r.changed_by_member?.display_name, changed_by_member: undefined }));
+    const history = (data || []).map((r) => ({
+      ...r,
+      changed_by_name: r.changed_by_member?.display_name,
+      changed_by_member: undefined,
+    }));
 
     success(res, { history });
   } catch (err) { next(err); }
@@ -229,9 +260,9 @@ async function getContributionSummary(req, res, next) {
       .select('id, container_id, base_amount, status, confirmed_at')
       .eq('contributor_id', memberId);
 
-    const confirmed         = (ledger || []).filter((le) => le.status === 'confirmed');
-    const containerIds      = [...new Set((ledger || []).map((le) => le.container_id))];
-    const lastContribDate   = confirmed.length ? confirmed.map((le) => le.confirmed_at).sort().pop()?.split('T')[0] : null;
+    const confirmed       = (ledger || []).filter((le) => le.status === 'confirmed');
+    const containerIds    = [...new Set((ledger || []).map((le) => le.container_id))];
+    const lastContribDate = confirmed.length ? confirmed.map((le) => le.confirmed_at).sort().pop()?.split('T')[0] : null;
 
     const { data: participations } = await supabaseAdmin
       .from('container_participants')
@@ -283,20 +314,20 @@ async function getMemberEngagement(req, res, next) {
         ...(tasks || []).map((t) => t.completed_at),
       ].filter(Boolean);
 
-      const lastActivity   = activityDates.length ? new Date(Math.max(...activityDates.map((d) => new Date(d)))) : null;
-      const daysSince      = lastActivity ? Math.floor((now - lastActivity) / 86400000) : Infinity;
-      let engagementLevel  = 'inactive';
+      const lastActivity  = activityDates.length ? new Date(Math.max(...activityDates.map((d) => new Date(d)))) : null;
+      const daysSince     = lastActivity ? Math.floor((now - lastActivity) / 86400000) : Infinity;
+      let engagementLevel = 'inactive';
       if (daysSince <= 30)      engagementLevel = 'active';
       else if (daysSince <= 90) engagementLevel = 'quiet';
 
       return {
-        member_id:                    m.id,
-        display_name:                 m.display_name,
-        last_activity:                lastActivity ? lastActivity.toISOString().split('T')[0] : null,
+        member_id:                     m.id,
+        display_name:                  m.display_name,
+        last_activity:                 lastActivity ? lastActivity.toISOString().split('T')[0] : null,
         confirmed_contributions_count: confirmedLedger.length,
         pending_contributions_count:   pendingLedger.length,
-        overdue_count:                0, // simplified — add overdue target check if needed
-        engagement_level:             engagementLevel,
+        overdue_count:                 0,
+        engagement_level:              engagementLevel,
       };
     }));
 
@@ -304,4 +335,13 @@ async function getMemberEngagement(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { listMembers, createMember, getMember, updateMember, deleteMember, getProfileHistory, getContributionSummary, getMemberEngagement };
+module.exports = {
+  listMembers,
+  createMember,
+  getMember,
+  updateMember,
+  deleteMember,
+  getProfileHistory,
+  getContributionSummary,
+  getMemberEngagement,
+};

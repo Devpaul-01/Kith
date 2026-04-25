@@ -25,6 +25,7 @@ function getFirebaseApp() {
   }
 }
 
+
 function getMessaging() {
   const app = getFirebaseApp();
   if (!app) return null;

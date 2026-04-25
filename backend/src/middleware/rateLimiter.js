@@ -1,38 +1,43 @@
 // src/middleware/rateLimiter.js
 const rateLimit = require('express-rate-limit');
 
+// For now, don't use Redis store - just use memory store
+// The error is because rate-limit-redis expects a different API
+const store = undefined; // Use default memory store
+
 const createLimiter = (windowMs, max, message) =>
   rateLimit({
     windowMs,
     max,
+    store,  // undefined = use memory store
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: { code: 'RATE_LIMITED', message } },
     skip: (req) => process.env.NODE_ENV === 'test',
   });
 
-// Auth endpoints: 5/min per IP
+// Auth endpoints: 5 / min per IP
 const authLimiter = createLimiter(
   60 * 1000,
   5,
   'Too many auth attempts. Try again in a minute.'
 );
 
-// Invite acceptance: 10/hour per IP
+// Invite acceptance: 10 / hour per IP
 const inviteLimiter = createLimiter(
   60 * 60 * 1000,
   10,
   'Too many invite attempts. Try again later.'
 );
 
-// File upload URL generation: 20/hour per user
+// File upload URL generation: 20 / hour per user
 const uploadLimiter = createLimiter(
   60 * 60 * 1000,
   20,
   'Upload limit reached. Try again later.'
 );
 
-// General API: 200/min per user
+// General API: 200 / min per user
 const generalLimiter = createLimiter(
   60 * 1000,
   200,

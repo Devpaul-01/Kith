@@ -7,17 +7,6 @@ const { NotFoundError } = require('../utils/errors');
  * Attaches req.member and req.workspace.
  * Returns 404 (never 403) to prevent workspace enumeration.
  */
- // src/middleware/workspace.js
-
-
-/**
- * Verifies the caller is an active member of :workspaceId.
- * Attaches req.member and req.workspace.
- * Returns 404 (never 403) to prevent workspace enumeration.
- */
-// src/middleware/workspace.js
-
-
 async function requireMembership(req, res, next) {
   try {
     const workspaceId = req.params.workspaceId;
@@ -46,10 +35,10 @@ async function requireMembership(req, res, next) {
     if (memberErr) throw new Error(memberErr.message);
     if (!member) throw new NotFoundError('Workspace not found');
 
-    // Fetch workspace
+    // Issue 8: removed `plan` from workspace select
     const { data: workspace, error: wsErr } = await supabaseAdmin
       .from('workspaces')
-      .select('id, name, base_currency, plan, visibility, bank_details')
+      .select('id, name, base_currency, visibility, bank_details')
       .eq('id', workspaceId)
       .is('deleted_at', null)
       .maybeSingle();
@@ -66,11 +55,11 @@ async function requireMembership(req, res, next) {
       workspaceId: member.workspace_id,
     };
 
+    // Issue 8: removed `plan` from req.workspace
     req.workspace = {
       id:           workspace.id,
       name:         workspace.name,
       baseCurrency: workspace.base_currency,
-      plan:         workspace.plan,
       visibility:   workspace.visibility,
       bankDetails:  workspace.bank_details,
     };
@@ -80,8 +69,5 @@ async function requireMembership(req, res, next) {
     next(err);
   }
 }
-
-
-
 
 module.exports = { requireMembership };

@@ -30,6 +30,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use(requestId);
 app.use(requestLogger);
 app.use(generalLimiter);
+const cookieParser = require('cookie-parser');
+app.use(cookieParser());
 
 // ── Health check ───────────────────────────────────────────────────
 app.get('/health', async (req, res) => {

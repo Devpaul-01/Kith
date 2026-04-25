@@ -1,5 +1,4 @@
 // src/routes/workspace.routes.js
-// ✅ Correct - MERGE params from parent router
 const router = require('express').Router({ mergeParams: true });
 
 const wCtrl  = require('../controllers/workspace.controller');
@@ -13,31 +12,49 @@ const dCtrl  = require('../controllers/dispute.controller');
 const tCtrl  = require('../controllers/task.controller');
 const msCtrl = require('../controllers/milestone.controller');
 
-const { requireAuth, loadDbUser } = require('../middleware/auth');
-const { requireMembership }       = require('../middleware/workspace');
-const { requireAdmin }            = require('../middleware/role');
-const { uploadLimiter }           = require('../middleware/rateLimiter');
+const { requireAuth, loadDbUser }   = require('../middleware/auth');
+const { requireMembership }         = require('../middleware/workspace');
+// Issue 15: import requireSelfOrAdmin alongside requireAdmin
+const { requireAdmin, requireSelfOrAdmin } = require('../middleware/role');
+const { uploadLimiter }             = require('../middleware/rateLimiter');
 
 // Apply auth + active-membership check to EVERY route in this router
 router.use(requireAuth, loadDbUser, requireMembership);
 
 // ── Workspace ──────────────────────────────────────────────────────
-router.get('/',          wCtrl.getWorkspace);
-router.patch('/',        requireAdmin, wCtrl.updateWorkspace);
-router.delete('/',       requireAdmin, wCtrl.deleteWorkspace);
-router.get('/dashboard', wCtrl.getDashboard);
-router.get('/settings',  requireAdmin, wCtrl.getSettings);
-router.patch('/settings',requireAdmin, wCtrl.updateSettings);
+router.get('/',           wCtrl.getWorkspace);
+router.patch('/',         requireAdmin, wCtrl.updateWorkspace);
+router.delete('/',        requireAdmin, wCtrl.deleteWorkspace);
+router.get('/dashboard',  wCtrl.getDashboard);
+router.get('/settings',   requireAdmin, wCtrl.getSettings);
+router.patch('/settings', requireAdmin, wCtrl.updateSettings);
+
+// Issue 5.10: cross-entity search across members + containers
+router.get('/search', wCtrl.searchWorkspace);
+
+// Admin broadcast — send admin_announcement to all (or role-filtered) members
+router.post('/announce',  requireAdmin, wCtrl.announceToWorkspace);
+
+// Paginated, filterable audit log exposed to admins
+router.get('/audit-log',  requireAdmin, wCtrl.getAuditLog);
+router.get('/audit-log/export', requireAdmin, wCtrl.exportAuditLog);
+
+// Overdue contribution summary across all active containers
+router.get('/overdue-summary', requireAdmin, wCtrl.getOverdueSummary);
+
+// Workspace avatar upload
+router.post('/avatar-upload-url', requireAdmin, uploadLimiter, wCtrl.getAvatarUploadUrl);
 
 // ── Members ────────────────────────────────────────────────────────
-router.get('/members',                        mCtrl.listMembers);
-router.post('/members',                       requireAdmin, mCtrl.createMember);
-router.get('/members/engagement',             requireAdmin, mCtrl.getMemberEngagement);
-router.get('/members/:memberId',              mCtrl.getMember);
-router.patch('/members/:memberId',            mCtrl.updateMember);
-router.delete('/members/:memberId',           requireAdmin, mCtrl.deleteMember);
-router.get('/members/:memberId/profile-history',       requireAdmin, mCtrl.getProfileHistory);
-router.get('/members/:memberId/contribution-summary',  mCtrl.getContributionSummary);
+router.get('/members',                         mCtrl.listMembers);
+router.post('/members',                        requireAdmin, mCtrl.createMember);
+router.get('/members/engagement',              requireAdmin, mCtrl.getMemberEngagement);
+router.get('/members/:memberId',               mCtrl.getMember);
+// Issue 15: authorization moved from controller to route via requireSelfOrAdmin
+router.patch('/members/:memberId',             requireSelfOrAdmin(), mCtrl.updateMember);
+router.delete('/members/:memberId',            requireAdmin, mCtrl.deleteMember);
+router.get('/members/:memberId/profile-history',      requireAdmin, mCtrl.getProfileHistory);
+router.get('/members/:memberId/contribution-summary', mCtrl.getContributionSummary);
 
 // ── Invites ────────────────────────────────────────────────────────
 router.post('/invites',              requireAdmin, iCtrl.createInvite);
@@ -45,12 +62,12 @@ router.get('/invites',               requireAdmin, iCtrl.listInvites);
 router.delete('/invites/:inviteId',  requireAdmin, iCtrl.revokeInvite);
 
 // ── Groups ─────────────────────────────────────────────────────────
-router.get('/groups',                           gCtrl.listGroups);
-router.post('/groups',                          requireAdmin, gCtrl.createGroup);
-router.get('/groups/:groupId',                  requireAdmin, gCtrl.getGroup);
-router.patch('/groups/:groupId',                requireAdmin, gCtrl.updateGroup);
-router.delete('/groups/:groupId',               requireAdmin, gCtrl.deleteGroup);
-router.post('/groups/:groupId/members',         requireAdmin, gCtrl.addGroupMembers);
+router.get('/groups',                               gCtrl.listGroups);
+router.post('/groups',                              requireAdmin, gCtrl.createGroup);
+router.get('/groups/:groupId',                      requireAdmin, gCtrl.getGroup);
+router.patch('/groups/:groupId',                    requireAdmin, gCtrl.updateGroup);
+router.delete('/groups/:groupId',                   requireAdmin, gCtrl.deleteGroup);
+router.post('/groups/:groupId/members',             requireAdmin, gCtrl.addGroupMembers);
 router.delete('/groups/:groupId/members/:memberId', requireAdmin, gCtrl.removeGroupMember);
 
 // ── Containers ─────────────────────────────────────────────────────
@@ -59,11 +76,15 @@ router.post('/containers',                                   requireAdmin, cCtrl
 router.get('/containers/:containerId',                       cCtrl.getContainer);
 router.patch('/containers/:containerId',                     requireAdmin, cCtrl.updateContainer);
 router.delete('/containers/:containerId',                    requireAdmin, cCtrl.deleteContainer);
+
+// Restore a soft-deleted container (admin only)
+router.post('/containers/:containerId/restore',              requireAdmin, cCtrl.restoreContainer);
+
 router.post('/containers/:containerId/complete',             requireAdmin, cCtrl.completeContainer);
 router.post('/containers/:containerId/convert-to-recurring', requireAdmin, cCtrl.convertToRecurring);
 router.post('/containers/:containerId/archive',              requireAdmin, cCtrl.archiveContainer);
 router.post('/containers/:containerId/generate-public-link', requireAdmin, cCtrl.generatePublicLink);
-router.get('/containers/:containerId/summary',               cCtrl.getSummary, cCtrl.debugContainerData);
+router.get('/containers/:containerId/summary',               cCtrl.getSummary);
 router.get('/containers/:containerId/cycles',                requireAdmin, cCtrl.listCycles);
 router.post(
   '/containers/:containerId/outcome-files/upload-url',
@@ -88,16 +109,33 @@ router.get('/containers/:containerId/participants/:participantId/cycle-targets',
 router.post('/containers/:containerId/cycles/:cycleId/override', requireAdmin, pCtrl.overrideCycle);
 
 // ── Ledger ─────────────────────────────────────────────────────────
-router.get('/containers/:containerId/ledger',                       lCtrl.listEntries);
-router.post('/containers/:containerId/ledger',                      lCtrl.createEntry);
-router.patch('/containers/:containerId/ledger/:entryId',            lCtrl.updateEntry);
-router.post('/containers/:containerId/ledger/:entryId/upload-proof',uploadLimiter, lCtrl.getUploadProofUrl);
-router.post('/containers/:containerId/ledger/:entryId/confirm-proof',             lCtrl.confirmProof);
-router.post('/containers/:containerId/ledger/:entryId/confirm',     requireAdmin, lCtrl.confirmEntry);
-router.post('/containers/:containerId/ledger/:entryId/dispute',                   dCtrl.raiseDispute);
-router.post('/containers/:containerId/ledger/:entryId/add-correction', requireAdmin, lCtrl.addCorrection);
-router.get('/containers/:containerId/ledger/:entryId/proof-url',                  lCtrl.getProofUrl);
-router.get('/ledger/export',                                        requireAdmin, lCtrl.exportLedger);
+// NOTE: static sub-paths (/summary) MUST be declared BEFORE /:entryId to avoid
+// "summary" being captured as an entryId parameter.
+
+router.get('/containers/:containerId/ledger',                            lCtrl.listEntries);
+router.post('/containers/:containerId/ledger',                           lCtrl.createEntry);
+
+// Issue 5.3: lightweight aggregate — declared BEFORE /:entryId routes
+router.get('/containers/:containerId/ledger/summary',                    lCtrl.getLedgerSummary);
+
+// Issue 5.1: single-entry fetch
+router.get('/containers/:containerId/ledger/:entryId',                   lCtrl.getEntry);
+
+router.patch('/containers/:containerId/ledger/:entryId',                 lCtrl.updateEntry);
+
+// Issue 5.2: delete pending or non-confirmed entry
+router.delete('/containers/:containerId/ledger/:entryId',                lCtrl.deleteEntry);
+
+// Issue 5.9: remove a proof file by index
+router.delete('/containers/:containerId/ledger/:entryId/proof/:proofIndex', lCtrl.deleteProof);
+
+router.post('/containers/:containerId/ledger/:entryId/upload-proof',     uploadLimiter, lCtrl.getUploadProofUrl);
+router.post('/containers/:containerId/ledger/:entryId/confirm-proof',    lCtrl.confirmProof);
+router.post('/containers/:containerId/ledger/:entryId/confirm',          requireAdmin, lCtrl.confirmEntry);
+router.post('/containers/:containerId/ledger/:entryId/dispute',          dCtrl.raiseDispute);
+router.post('/containers/:containerId/ledger/:entryId/add-correction',   requireAdmin, lCtrl.addCorrection);
+router.get('/containers/:containerId/ledger/:entryId/proof-url',         lCtrl.getProofUrl);
+router.get('/ledger/export',                                             requireAdmin, lCtrl.exportLedger);
 
 // ── Disputes ───────────────────────────────────────────────────────
 router.get('/disputes',                          requireAdmin, dCtrl.listDisputes);
@@ -107,80 +145,32 @@ router.post('/disputes/:disputeId/resolve',      requireAdmin, dCtrl.resolveDisp
 
 // ── Tasks ──────────────────────────────────────────────────────────
 // NOTE: static sub-paths (/export, /bulk) MUST be declared before /:taskId
-// to prevent Express matching them as taskId values.
 
-// Collection routes
-router.get(
-  '/containers/:containerId/tasks',
-  tCtrl.listTasks                           // admin: all | member: all (filtered in UI)
-);
-router.post(
-  '/containers/:containerId/tasks',
-  requireAdmin, tCtrl.createTask            // admin only; supports assigned_to on create
-);
-router.post(
-  '/containers/:containerId/tasks/bulk',
-  requireAdmin, tCtrl.bulkCreateTasks       // admin only
-);
+router.get('/containers/:containerId/tasks',           tCtrl.listTasks);
+router.post('/containers/:containerId/tasks',          requireAdmin, tCtrl.createTask);
+router.post('/containers/:containerId/tasks/bulk',     requireAdmin, tCtrl.bulkCreateTasks);
+router.get('/containers/:containerId/tasks/export',    tCtrl.exportTasks);
 
-// Export — no requireAdmin: controller enforces per-role filtering
-// Admin → all tasks CSV | Member → their tasks CSV
-router.get(
-  '/containers/:containerId/tasks/export',
-  tCtrl.exportTasks
-);
-
-// Single-task routes
-router.get(
-  '/containers/:containerId/tasks/:taskId',
-  tCtrl.getTask                             // admin: any task | member: own task
-);
-router.patch(
-  '/containers/:containerId/tasks/:taskId',
-  tCtrl.updateTask                          // admin: all fields | member: status + note
-);
-router.delete(
-  '/containers/:containerId/tasks/:taskId',
-  requireAdmin, tCtrl.deleteTask            // admin only — soft delete
-);
-
-// Admin-only task actions
-router.patch(
-  '/containers/:containerId/tasks/:taskId/reassign',
-  requireAdmin, tCtrl.reassignTask
-);
-router.patch(
-  '/containers/:containerId/tasks/:taskId/status',
-   tCtrl.overrideTaskStatus
-);
-router.post(
-  '/containers/:containerId/tasks/:taskId/confirm',
-  requireAdmin, tCtrl.adminConfirmTask      // admin confirms after member completes
-);
-
-// Proof upload — available to admin and the assigned member (enforced in controller)
-router.post(
-  '/containers/:containerId/tasks/:taskId/upload-proof',
-  uploadLimiter, tCtrl.getTaskProofUploadUrl
-);
-router.post(
-  '/containers/:containerId/tasks/:taskId/confirm-proof',
-  tCtrl.confirmTaskProof
-);
+router.get('/containers/:containerId/tasks/:taskId',                  tCtrl.getTask);
+router.patch('/containers/:containerId/tasks/:taskId',                tCtrl.updateTask);
+router.delete('/containers/:containerId/tasks/:taskId',               requireAdmin, tCtrl.deleteTask);
+router.patch('/containers/:containerId/tasks/:taskId/reassign',       requireAdmin, tCtrl.reassignTask);
+// Issue 16: added requireAdmin — overrideTaskStatus is an admin-only hard override
+router.patch('/containers/:containerId/tasks/:taskId/status',         requireAdmin, tCtrl.overrideTaskStatus);
+router.post('/containers/:containerId/tasks/:taskId/confirm',         requireAdmin, tCtrl.adminConfirmTask);
+router.post('/containers/:containerId/tasks/:taskId/upload-proof',    uploadLimiter, tCtrl.getTaskProofUploadUrl);
+router.post('/containers/:containerId/tasks/:taskId/confirm-proof',   tCtrl.confirmTaskProof);
+// Issue 5.8: remove a task proof file by index
+router.delete('/containers/:containerId/tasks/:taskId/proof/:proofIndex', tCtrl.deleteTaskProof);
 
 // ── Timeline + Milestones ──────────────────────────────────────────
-router.get('/timeline',                                          msCtrl.getTimeline);
-router.post('/milestones',                    requireAdmin,      msCtrl.createMilestone);
-router.patch('/milestones/:milestoneId',      requireAdmin,      msCtrl.updateMilestone);
-router.delete('/milestones/:milestoneId',     requireAdmin,      msCtrl.deleteMilestone);
+router.get('/timeline',                                               msCtrl.getTimeline);
+router.post('/milestones',                     requireAdmin,          msCtrl.createMilestone);
+// Issue 5.7: single milestone fetch — declared before PATCH/DELETE to be unambiguous
+router.get('/milestones/:milestoneId',                                msCtrl.getMilestone);
+router.patch('/milestones/:milestoneId',       requireAdmin,          msCtrl.updateMilestone);
+router.delete('/milestones/:milestoneId',      requireAdmin,          msCtrl.deleteMilestone);
 router.post('/milestones/:milestoneId/photos/upload-url', requireAdmin, uploadLimiter, msCtrl.getMilestonePhotoUploadUrl);
 router.post('/milestones/:milestoneId/photos/confirm',    requireAdmin, msCtrl.confirmMilestonePhoto);
-// In workspace.routes.js - add this route
-router.post(
-  '/avatar-upload-url',
-  requireAdmin,
-  uploadLimiter,
-  wCtrl.getAvatarUploadUrl
-);
 
 module.exports = router;

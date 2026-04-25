@@ -21,10 +21,19 @@ router.post('/forgot-password', authLimiter, ctrl.forgotPassword);
 // Get Google OAuth redirect URL — frontend opens this URL
 router.get('/google/url', ctrl.getGoogleAuthUrl);
 
+// Issue 5.5: Exchange Google OAuth code for a session after redirect
+router.post('/google/callback', authLimiter, ctrl.googleCallback);
+
+// Issue 5.4: Exchange Supabase OTP token (from email verification link) for a session
+router.post('/verify-email', authLimiter, ctrl.verifyEmail);
+
 // ── Authenticated ─────────────────────────────────────────────────
 
-// Logout — invalidates all sessions for this user
+// Logout — invalidates the current session
 router.post('/logout', requireAuth, ctrl.logout);
+
+// Issue 5.6: Logout from all devices — revokes all sessions for the user
+router.post('/logout-all-devices', requireAuth, ctrl.logoutAllDevices);
 
 // Reset password — requires the short-lived recovery JWT from the reset email
 router.post('/reset-password', requireAuth, ctrl.resetPassword);
@@ -45,17 +54,18 @@ router.post('/avatar/upload-url', requireAuth, loadDbUser, uploadLimiter, ctrl.g
 // Replace contact methods (phone, WhatsApp, social, etc.)
 router.patch('/contacts', requireAuth, loadDbUser, ctrl.updateContacts);
 
+// Individual contact management
+router.get('/contacts',                  requireAuth, loadDbUser, ctrl.getUserContacts);
+router.post('/contacts',                 requireAuth, loadDbUser, ctrl.upsertContact);
+router.delete('/contacts/:contactId',    requireAuth, loadDbUser, ctrl.deleteContact);
+
 // Register / update FCM push notification token
 router.post('/push-token', requireAuth, loadDbUser, ctrl.registerPushToken);
 
 // Toggle push notifications and email digest on/off
 router.patch('/notification-preferences', requireAuth, loadDbUser, ctrl.updateNotificationPrefs);
 
-// Request a GDPR data export (Phase 2)
-router.post('/request-data-export', requireAuth, loadDbUser, ctrl.requestDataExport);
+// Issue 21: GDPR data export — queues an async job; result emailed to user
+router.post('/data-export', requireAuth, loadDbUser, ctrl.requestDataExport);
 
-// Add these new routes
-router.get('/contacts', requireAuth, loadDbUser, ctrl.getUserContacts);
-router.post('/contacts',requireAuth, loadDbUser, ctrl.upsertContact);
-router.delete('/contacts/:contactId', requireAuth, loadDbUser,  ctrl.deleteContact);
 module.exports = router;
