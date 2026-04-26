@@ -47,6 +47,11 @@ function getQueue(name) {
   return queues.get(name);
 }
 
+function getAllQueues() {
+  // Ensure all queues are initialised
+  QUEUE_NAMES.forEach(getQueue);
+  return Object.values(queues);
+}
 /**
  * Gracefully closes all open queue connections.
  * Call during process shutdown after workers have been closed.
@@ -57,4 +62,4 @@ async function closeQueues() {
   queues.clear();
 }
 
-module.exports = { getQueue, closeQueues, QUEUE_NAMES };
+module.exports = { getQueue, getAllQueues, closeQueues, QUEUE_NAMES };
