@@ -1,0 +1,11 @@
+import{useQuery}from'@tanstack/react-query';import{workspaceService}from'@/services/workspace.service';import{useWorkspaceStore}from'@/store/workspaceStore';import{useWorkspace}from'@/hooks/useWorkspace';import{ChevronDown,Plus}from'lucide-react';import{useNavigate}from'react-router-dom';import{useState,useRef,useEffect}from'react';import{KEYS}from'@/constants/queryKeys';import type{Membership}from'@/types/models';
+export function WorkspaceSwitcher(){
+  const{workspace}=useWorkspace();const{setActive}=useWorkspaceStore();const nav=useNavigate();const[open,setOpen]=useState(false);const ref=useRef<HTMLDivElement>(null);
+  const{data}=useQuery({queryKey:KEYS.workspaces(),queryFn:()=>workspaceService.list(),staleTime:120_000});
+  const workspaces:Membership[]=(data as{memberships?:Membership[]})?.memberships??[];
+  useEffect(()=>{const h=(e:MouseEvent)=>{if(ref.current&&!ref.current.contains(e.target as Node))setOpen(false);};document.addEventListener('mousedown',h);return()=>document.removeEventListener('mousedown',h);},[]);
+  return(<div ref={ref} className="relative"><button onClick={()=>setOpen(s=>!s)} className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-slate-100 transition-colors"><span className="text-sm font-semibold text-text-primary max-w-[140px] truncate">{workspace?.name??'Select Workspace'}</span><ChevronDown size={14} className="text-text-secondary"/></button>
+    {open&&(<div className="absolute top-full mt-1 left-0 w-56 bg-white border border-border rounded-2xl shadow-dropdown z-50 py-1">{workspaces.map(w=>(<button key={w.workspace_id} onClick={()=>{setActive(w.workspace_id);setOpen(false);nav('/app/dashboard');}} className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 text-text-primary flex items-center justify-between"><span className="truncate">{w.workspace_name}</span>{w.workspace_id===workspace?.id&&<span className="w-2 h-2 rounded-full bg-primary flex-shrink-0"/>}</button>))}
+      <div className="border-t border-border mt-1 pt-1"><button onClick={()=>{setOpen(false);nav('/workspace/create');}} className="w-full text-left px-4 py-2.5 text-sm text-primary hover:bg-slate-50 flex items-center gap-2 font-medium"><Plus size={14}/>New Workspace</button></div></div>)}
+  </div>);
+}
