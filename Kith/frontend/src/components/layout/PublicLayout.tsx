@@ -1,2 +1,0 @@
-import{Outlet}from'react-router-dom';import{Toaster}from'react-hot-toast';
-export function PublicLayout(){return(<div className="min-h-screen bg-surface-page"><header className="h-14 border-b border-border bg-white flex items-center px-6"><span className="text-xl font-extrabold text-text-primary">ki<span className="text-primary">th</span></span></header><main className="p-4 max-w-2xl mx-auto"><Outlet/></main><Toaster position="top-right"/></div>);}

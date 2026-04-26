@@ -1,2 +1,0 @@
-import{api}from'@/lib/axios';
-export const publicService={previewInvite:(token:string)=>api.get(`/v1/public/invites/${token}`).then(r=>r.data),acceptInvite:(token:string)=>api.post(`/v1/public/invites/${token}/accept`).then(r=>r.data),getPublicContainer:(token:string)=>api.get(`/v1/public/containers/${token}`).then(r=>r.data)};
