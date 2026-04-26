@@ -1,0 +1,2 @@
+import{api}from'@/lib/axios';
+export const notificationService={getCount:(workspaceId?:string)=>api.get('/v1/notifications/count',{params:workspaceId?{workspace_id:workspaceId}:{}}).then(r=>r.data),list:(p?:{page?:number;per_page?:number;is_read?:boolean;workspace_id?:string})=>api.get('/v1/notifications',{params:p}).then(r=>r.data),markRead:(id:string)=>api.patch(`/v1/notifications/${id}/read`).then(r=>r.data),markAllRead:(workspaceId?:string)=>api.patch('/v1/notifications/read-all',{workspace_id:workspaceId}).then(r=>r.data)};
