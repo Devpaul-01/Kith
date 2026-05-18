@@ -1,3 +1,0 @@
-import{cn}from'@/utils/cn';import type{ReactNode}from'react';
-interface Props{icon?:ReactNode;title:string;description?:string;action?:ReactNode;className?:string;}
-export function EmptyState({icon,title,description,action,className}:Props){return(<div className={cn('flex flex-col items-center justify-center py-16 text-center gap-3',className)}>{icon&&<div className="text-slate-300 mb-2">{icon}</div>}<p className="font-semibold text-text-primary">{title}</p>{description&&<p className="text-sm text-text-secondary max-w-xs">{description}</p>}{action&&<div className="mt-2">{action}</div>}</div>);}
