@@ -13,7 +13,7 @@ logout: () => api.post('/v1/auth/logout').then(r => r.data),
   
   getAvatarUploadUrl:(f:FileInfo)=>api.post('/v1/auth/avatar/upload-url',f).then(r=>r.data),
   updateContacts:(contacts:Array<{type:string;value:string;label?:string;country_code?:string;is_primary?:boolean}>)=>api.patch('/v1/auth/contacts',{contacts}).then(r=>r.data),
-  registerPushToken:(token:string,platform:'web'|'ios'|'android')=>api.post('/v1/auth/push-token',{token,platform}).then(r=>r.data),
+
   updateNotificationPrefs:(p:{push_enabled?:boolean;email_digest_enabled?:boolean})=>api.patch('/v1/auth/notification-preferences',p).then(r=>r.data),
   requestDataExport:()=>api.post('/v1/auth/request-data-export').then(r=>r.data),
   // services/auth.service.ts - add these methods
