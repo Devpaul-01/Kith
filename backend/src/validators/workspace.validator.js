@@ -4,17 +4,37 @@ const { SUPPORTED_CURRENCIES } = require('./auth.validator');
 
 // ── Workspace ──────────────────────────────────────────────────────
 
+// Issue M8 fix: createWorkspaceSchema and updateWorkspaceSchema previously
+// declared two different family_type enums inline — create allowed
+// ['extended','event','pool'], update allowed 8 values including several
+// (nuclear, blended, community, other, association) that could never be
+// set at creation time. This read as an oversight rather than a deliberate
+// design choice, so both schemas now share one list, mirroring how
+// SUPPORTED_CURRENCIES is already shared from auth.validator.js.
+//
+// SCHEMA VERIFICATION NEEDED: this list is the union of both prior enums
+// (the more permissive option, so no previously-valid value on either
+// schema becomes invalid). Please confirm against any CHECK constraint on
+// workspaces.family_type in the real schema once available — if the
+// database itself restricts creation to a narrower set, that constraint
+// should be the source of truth and this list should be narrowed to match
+// (with the update schema's extra values treated as legacy/migration-only,
+// documented explicitly rather than silently allowed).
+const FAMILY_TYPES = [
+  'extended', 'nuclear', 'blended', 'community', 'other', 'association', 'event', 'pool',
+];
+
 const createWorkspaceSchema = z.object({
   name:          z.string().min(2).max(80),
   base_currency: z.enum(SUPPORTED_CURRENCIES),
-  family_type:   z.enum(['extended', 'event', 'pool']).optional().default('extended'),
+  family_type:   z.enum(FAMILY_TYPES).optional().default('extended'),
   description:   z.string().max(500).optional(),
 });
 
 const updateWorkspaceSchema = z.object({
   name:          z.string().min(2).max(80).optional(),
   base_currency: z.enum(SUPPORTED_CURRENCIES).optional(),
-  family_type:   z.enum(['extended', 'nuclear', 'blended', 'community', 'other', 'association', 'event', 'pool']).optional(),
+  family_type:   z.enum(FAMILY_TYPES).optional(),
   description:   z.string().max(500).optional().nullable(),
   avatar_url:    z.string().url().optional().nullable(),
   visibility:    z.enum(['private', 'public']).optional(),
@@ -205,4 +225,5 @@ module.exports = {
   updateContainerSchema,
   completeContainerSchema,
   convertToRecurringSchema,
+  FAMILY_TYPES, // Issue M8: exported so it stays the single source of truth
 };

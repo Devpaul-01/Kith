@@ -6,6 +6,7 @@ const { createMemberSchema, updateMemberSchema } = require('../validators/worksp
 const audit = require('../services/audit.service');
 const logger = require('../utils/logger');
 const { computeEngagement } = require('../services/engagement.service');
+const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 
 async function listMembers(req, res, next) {
   try {
@@ -247,7 +248,7 @@ async function deleteMember(req, res, next) {
       await supabaseAdmin.from('workspace_members').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', memberId);
     }
 
-    await audit.log({ ...audit.fromReq(req), action: 'member.removed', targetType: 'workspace_member', targetId: memberId });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.MEMBER_REMOVED, targetType: 'workspace_member', targetId: memberId });
 
     success(res, { message: 'Member removed.' });
   } catch (err) { next(err); }

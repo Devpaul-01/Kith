@@ -53,19 +53,34 @@ const createLedgerEntrySchema = z.object({
   original_amount: z.number().positive(),
   original_currency: z.string().min(3).max(5),
   base_amount: z.number().positive(),
+  // Issue M9 fix: previously any unrecognized string silently mapped to
+  // 'other' via .transform(), swallowing client bugs and garbage input
+  // alike with no validation error — inconsistent with the otherwise
+  // strict validation posture used everywhere else in this schema file.
+  // Now: recognized synonyms are still normalized (so existing clients
+  // sending "Bank Transfer" or "Cash" keep working unchanged), but
+  // anything NOT in the known synonym list is rejected as a validation
+  // error instead of being silently coerced. Implemented as a transform
+  // with ctx.addIssue (rather than .pipe(), which needs a newer Zod
+  // version) so this doesn't depend on an unconfirmed Zod version.
   payment_method: z
-    .union([
-      z.enum(['cash', 'bank_transfer', 'mobile_money', 'crypto', 'other']),
-      z.string().transform((val) => {
-        // Transform "Bank " -> "bank_transfer", "Cash" -> "cash", etc.
-        const cleaned = val.trim().toLowerCase();
-        if (cleaned === 'bank' || cleaned === 'bank transfer' || cleaned === 'bank_transfer') return 'bank_transfer';
-        if (cleaned === 'cash') return 'cash';
-        if (cleaned === 'mobile money' || cleaned === 'mobile_money') return 'mobile_money';
-        if (cleaned === 'crypto') return 'crypto';
-        return 'other';
-      })
-    ])
+    .string()
+    .transform((val, ctx) => {
+      const cleaned = val.trim().toLowerCase();
+      const known = {
+        cash: 'cash',
+        bank: 'bank_transfer', 'bank transfer': 'bank_transfer', bank_transfer: 'bank_transfer',
+        'mobile money': 'mobile_money', mobile_money: 'mobile_money',
+        crypto: 'crypto',
+        other: 'other',
+      };
+      if (known[cleaned]) return known[cleaned];
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `payment_method must be one of: cash, bank_transfer, mobile_money, crypto, other (received "${val}")`,
+      });
+      return z.NEVER;
+    })
     .nullable()
     .optional(),
   note: z.string().max(500).optional(),
@@ -102,7 +117,7 @@ const addCorrectionSchema = z.object({
   original_amount: z.number().positive(),
   original_currency: z.string().min(3).max(5),
   base_amount: z.number().positive(),
-  note: z.string().min(5, 'Correction note must be at least 10 characters'),
+  note: z.string().min(10, 'Correction note must be at least 10 characters'),
 });
 
 // ── Disputes ──────────────────────────────────────────────────────

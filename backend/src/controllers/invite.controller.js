@@ -5,6 +5,7 @@ const { NotFoundError, ConflictError, BusinessRuleError } = require('../utils/er
 const { generateToken }  = require('../utils/crypto');
 const notification       = require('../services/notification.service');
 const audit              = require('../services/audit.service');
+const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 
 async function createInvite(req, res, next) {
   try {
@@ -20,7 +21,7 @@ async function createInvite(req, res, next) {
 
     if (error) throw new Error(error.message);
 
-    await audit.log({ ...audit.fromReq(req), action: 'member.invited', targetType: 'invite_link', targetId: data.id });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.MEMBER_INVITED, targetType: 'invite_link', targetId: data.id });
 
     success(res, { token, invite_url: `${process.env.FRONTEND_URL}/invite/${token}`, expires_at: expiresAt }, 201);
   } catch (err) { next(err); }
@@ -146,7 +147,7 @@ async function acceptInvite(req, res, next) {
 
     await notification.send({ type: 'invite_accepted', workspaceId: workspace.id, recipientIds: (admins || []).map((a) => a.id), variables: { actor: member.display_name, workspace: workspace.name } });
 
-    await audit.log({ ...audit.fromReq(req), action: 'member.accepted', targetType: 'workspace_member', targetId: member.id });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.MEMBER_ACCEPTED, targetType: 'workspace_member', targetId: member.id });
 
     success(res, { workspace, member });
   } catch (err) { next(err); }

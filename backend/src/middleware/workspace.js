@@ -2,10 +2,19 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { NotFoundError } = require('../utils/errors');
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Verifies the caller is an active member of :workspaceId.
  * Attaches req.member and req.workspace.
  * Returns 404 (never 403) to prevent workspace enumeration.
+ *
+ * Issue M14 fix: the workspace_members and workspaces lookups were
+ * previously awaited sequentially even though neither depends on the
+ * other's result. This middleware runs on every request through
+ * workspace.routes.js (mounted globally via `router.use(...)` — dozens of
+ * endpoints), so the added round-trip latency compounded app-wide. Now
+ * fetched in parallel via Promise.all.
  */
 async function requireMembership(req, res, next) {
   try {
@@ -17,31 +26,32 @@ async function requireMembership(req, res, next) {
     }
 
     // Validate UUID format
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(workspaceId)) {
+    if (!UUID_REGEX.test(workspaceId)) {
       throw new NotFoundError('Workspace not found');
     }
 
-    // Fetch workspace member
-    const { data: member, error: memberErr } = await supabaseAdmin
-      .from('workspace_members')
-      .select('id, role, display_name, is_proxy, is_active, workspace_id')
-      .eq('workspace_id', workspaceId)
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('deleted_at', null)
-      .maybeSingle();
+    // Issue M14: these two queries are independent — run them concurrently
+    // instead of one-after-the-other.
+    const [{ data: member, error: memberErr }, { data: workspace, error: wsErr }] = await Promise.all([
+      supabaseAdmin
+        .from('workspace_members')
+        .select('id, role, display_name, is_proxy, is_active, workspace_id')
+        .eq('workspace_id', workspaceId)
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .maybeSingle(),
+      // Issue 8: removed `plan` from workspace select
+      supabaseAdmin
+        .from('workspaces')
+        .select('id, name, base_currency, visibility, bank_details')
+        .eq('id', workspaceId)
+        .is('deleted_at', null)
+        .maybeSingle(),
+    ]);
 
     if (memberErr) throw new Error(memberErr.message);
     if (!member) throw new NotFoundError('Workspace not found');
-
-    // Issue 8: removed `plan` from workspace select
-    const { data: workspace, error: wsErr } = await supabaseAdmin
-      .from('workspaces')
-      .select('id, name, base_currency, visibility, bank_details')
-      .eq('id', workspaceId)
-      .is('deleted_at', null)
-      .maybeSingle();
 
     if (wsErr) throw new Error(wsErr.message);
     if (!workspace) throw new NotFoundError('Workspace not found');
