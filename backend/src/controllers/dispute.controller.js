@@ -5,6 +5,7 @@ const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/e
 const { createDisputeSchema, addDisputeNoteSchema, resolveDisputeSchema } = require('../validators/ledger.validator');
 const notification = require('../services/notification.service');
 const audit        = require('../services/audit.service');
+const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 
 async function listDisputes(req, res, next) {
   try {
@@ -64,11 +65,17 @@ async function getDispute(req, res, next) {
     if (!dispute) throw new NotFoundError('Dispute not found');
     if (!isAdmin && dispute.raised_by !== callerId) throw new ForbiddenError('Access denied');
 
-    const { data: entry } = await supabaseAdmin
+    // Issue L4 fix: was `.single()`, which throws a raw Postgrest error
+    // (reaching the generic 500 handler) if the referenced entry is ever
+    // missing, instead of the clean 404 pattern used everywhere else in
+    // this file.
+    const { data: entry, error: entryErr } = await supabaseAdmin
       .from('ledger_entries')
       .select('*, contributor:workspace_members!contributor_id(display_name)')
       .eq('id', dispute.ledger_entry_id)
-      .single();
+      .maybeSingle();
+
+    if (entryErr) throw new Error(entryErr.message);
 
     success(res, {
       dispute: { ...dispute, raised_by_name: dispute.raised_by_member?.display_name, raised_by_member: undefined },
@@ -117,7 +124,7 @@ async function raiseDispute(req, res, next) {
       referenceId:   dispute.id,
       variables:     { actor: req.member.displayName, amount: `${entry.original_amount} ${entry.original_currency}`, container: containerId },
     });
-    await audit.log({ ...audit.fromReq(req), action: 'dispute.raised', targetType: 'dispute', targetId: dispute.id });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.DISPUTE_RAISED, targetType: 'dispute', targetId: dispute.id });
 
     success(res, { dispute, entry: { ...entry, status: 'disputed' } }, 201);
   } catch (err) { next(err); }
@@ -151,6 +158,13 @@ async function addDisputeNote(req, res, next) {
 // Risk: if the second write failed, the dispute showed 'resolved' but the
 // ledger entry remained 'disputed', an inconsistent state.
 // Now: resolve_dispute_atomic executes both inside a PostgreSQL transaction.
+//
+// Issue M6 fix: the dispute_resolved notification previously sent a
+// hardcoded empty string for `container` (`variables: { container: '' }`),
+// so every dispute-resolved notification literally read "Dispute in  has
+// been resolved" — the function never actually looked up the related
+// container. Now joins disputes → ledger_entries → containers to populate
+// the real name.
 
 async function resolveDispute(req, res, next) {
   try {
@@ -158,9 +172,15 @@ async function resolveDispute(req, res, next) {
     const { workspaceId, disputeId } = req.params;
 
     const { data: dispute } = await supabaseAdmin
-      .from('disputes').select('*').eq('id', disputeId).eq('workspace_id', workspaceId).maybeSingle();
+      .from('disputes')
+      .select('*, ledger_entries!ledger_entry_id(container_id, containers!container_id(name))')
+      .eq('id', disputeId)
+      .eq('workspace_id', workspaceId)
+      .maybeSingle();
     if (!dispute) throw new NotFoundError('Dispute not found');
     if (dispute.status !== 'open') throw new BusinessRuleError('Dispute is already resolved');
+
+    const containerName = dispute.ledger_entries?.containers?.name || 'a container';
 
     // Issue 5: atomic RPC replaces the two sequential writes
     const now = new Date().toISOString();
@@ -179,9 +199,9 @@ async function resolveDispute(req, res, next) {
       recipientIds:  [dispute.raised_by],
       referenceType: 'dispute',
       referenceId:   disputeId,
-      variables:     { container: '' },
+      variables:     { container: containerName },
     });
-    await audit.log({ ...audit.fromReq(req), action: 'dispute.resolved', targetType: 'dispute', targetId: disputeId });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.DISPUTE_RESOLVED, targetType: 'dispute', targetId: disputeId });
 
     success(res, { dispute: updated });
   } catch (err) { next(err); }

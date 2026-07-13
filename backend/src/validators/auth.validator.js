@@ -48,6 +48,17 @@ const resetPasswordSchema = z.object({
     .regex(/[0-9]/, 'Password must contain at least one number'),
 });
 
+// ── Change password (Issue H2 — logged-in user, requires current password) ──
+const changePasswordSchema = z.object({
+  current_password: z.string().min(1, 'Current password is required'),
+  new_password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .max(72, 'Password too long')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number'),
+});
+
 // ── Profile update ────────────────────────────────────────────────
 
 
@@ -101,6 +112,7 @@ module.exports = {
   registerSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  changePasswordSchema,
   updateProfileSchema,
   contactSchema,
   pushTokenSchema,

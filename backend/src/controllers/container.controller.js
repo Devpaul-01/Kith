@@ -10,6 +10,7 @@ const notification = require('../services/notification.service');
 const audit        = require('../services/audit.service');
 const { getQueue } = require('../queues');
 const logger       = require('../utils/logger');
+const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 
 // ── List containers ────────────────────────────────────────────────
 //
@@ -267,7 +268,7 @@ async function completeContainer(req, res, next) {
       .from('container_participants').select('workspace_member_id').eq('container_id', containerId);
 
     await notification.send({ type: 'container_completed', workspaceId, recipientIds: (participants || []).map((p) => p.workspace_member_id), referenceType: 'container', referenceId: containerId, variables: { container: container.name } });
-    await audit.log({ ...audit.fromReq(req), action: 'container.completed', targetType: 'container', targetId: containerId });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.CONTAINER_COMPLETED, targetType: 'container', targetId: containerId });
 
     success(res, { container: updated });
   } catch (err) { next(err); }
@@ -326,7 +327,7 @@ async function convertToRecurring(req, res, next) {
       });
     }
 
-    await audit.log({ ...audit.fromReq(req), action: 'container.converted_to_recurring', targetType: 'container', targetId: newContainer.id, metadata: { source_container_id: containerId } });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.CONTAINER_CONVERTED_TO_RECURRING, targetType: 'container', targetId: newContainer.id, metadata: { source_container_id: containerId } });
 
     success(res, { new_container: newContainer, source_container_id: containerId }, 201);
   } catch (err) { next(err); }
@@ -349,7 +350,7 @@ async function archiveContainer(req, res, next) {
     if (error) throw new Error(error.message);
     if (!data) throw new NotFoundError('Container not found or cannot be archived');
 
-    await audit.log({ ...audit.fromReq(req), action: 'container.archived', targetType: 'container', targetId: containerId });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.CONTAINER_ARCHIVED, targetType: 'container', targetId: containerId });
 
     success(res, { container: data });
   } catch (err) { next(err); }
@@ -395,7 +396,7 @@ async function deleteContainer(req, res, next) {
 
     if (deleteErr) throw new Error(deleteErr.message);
 
-    await audit.log({ ...audit.fromReq(req), action: 'container.deleted', targetType: 'container', targetId: containerId });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.CONTAINER_DELETED, targetType: 'container', targetId: containerId });
 
     success(res, { message: 'Container deleted.' });
   } catch (err) { next(err); }
@@ -417,7 +418,7 @@ async function restoreContainer(req, res, next) {
     if (error) throw new Error(error.message);
     if (!data) throw new NotFoundError('No soft-deleted container found with this ID');
 
-    await audit.log({ ...audit.fromReq(req), action: 'container.restored', targetType: 'container', targetId: containerId });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.CONTAINER_RESTORED, targetType: 'container', targetId: containerId });
 
     success(res, { container: data });
   } catch (err) { next(err); }

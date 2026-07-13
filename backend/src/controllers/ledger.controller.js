@@ -10,6 +10,13 @@
 // Once that migration is applied, clients should send:
 //   X-Idempotency-Key: <uuid-per-submission>
 // on POST /ledger to guarantee exactly-once recording.
+//
+// Issue M16 fix: set IDEMPOTENCY_ENABLED=true in the environment once the
+// migration above has actually been applied. Until then, the idempotency
+// check below is skipped outright (with a one-time startup log) rather
+// than probing for a missing column via a try/catch that silently
+// swallowed ALL errors — including transient network failures unrelated to
+// the migration — with zero observability into how often that happened.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { success }       = require('../utils/response');
@@ -19,6 +26,14 @@ const { generateUploadUrl, generateDownloadUrl } = require('../services/storage.
 const notification = require('../services/notification.service');
 const audit        = require('../services/audit.service');
 const { exportLedgerCSV } = require('../services/export.service');
+const logger = require('../utils/logger');
+const { AUDIT_ACTIONS } = require('../constants/audit-actions');
+
+const IDEMPOTENCY_ENABLED = process.env.IDEMPOTENCY_ENABLED === 'true';
+if (!IDEMPOTENCY_ENABLED) {
+  logger.warn('Ledger idempotency-key checking is DISABLED (IDEMPOTENCY_ENABLED is not "true"). ' +
+    'Set it once the ledger_entries.idempotency_key migration has been applied.');
+}
 
 // ── List entries ──────────────────────────────────────────────────
 
@@ -135,21 +150,31 @@ async function createEntry(req, res, next) {
     const force       = req.query.force === 'true';
 
     // ── Idempotency key check ────────────────────────────────────
+    //
+    // Issue M16 fix: previously wrapped in a try/catch that swallowed ANY
+    // error (network blips, RLS misconfig, timeouts — not just "column
+    // doesn't exist yet") with zero logging, silently disabling
+    // idempotency protection with no way to know it had happened. Now
+    // gated by an explicit IDEMPOTENCY_ENABLED flag (set only once the
+    // migration is confirmed applied) instead of probing for the column.
     const idempotencyKey = req.headers['x-idempotency-key'] || null;
-    if (idempotencyKey) {
-      try {
-        const { data: existing } = await supabaseAdmin
-          .from('ledger_entries')
-          .select('*')
-          .eq('idempotency_key', idempotencyKey)
-          .eq('workspace_id', workspaceId)
-          .maybeSingle();
+    if (idempotencyKey && IDEMPOTENCY_ENABLED) {
+      const { data: existing, error: idempErr } = await supabaseAdmin
+        .from('ledger_entries')
+        .select('*')
+        .eq('idempotency_key', idempotencyKey)
+        .eq('workspace_id', workspaceId)
+        .maybeSingle();
 
-        if (existing) {
-          return success(res, { entry: existing, idempotent: true }, 200);
-        }
-      } catch (_) {
-        // Column not yet migrated — fall through to normal duplicate window check
+      if (idempErr) {
+        // Fail loud rather than silently disabling the guarantee this
+        // header exists to provide.
+        logger.error('Idempotency-key lookup failed', { idempotencyKey, workspaceId, error: idempErr.message });
+        throw new Error(idempErr.message);
+      }
+
+      if (existing) {
+        return success(res, { entry: existing, idempotent: true }, 200);
       }
     }
 
@@ -198,7 +223,7 @@ async function createEntry(req, res, next) {
       if (!cycle) throw new BusinessRuleError('Cycle does not belong to this container');
     }
 
-    if (!force && !idempotencyKey) {
+    if (!force && !(idempotencyKey && IDEMPOTENCY_ENABLED)) {
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
       const { data: dup } = await supabaseAdmin
         .from('ledger_entries')
@@ -229,7 +254,7 @@ async function createEntry(req, res, next) {
         payment_method:    data.payment_method || null,
         note:              data.note           || null,
         is_crypto:         data.is_crypto      || false,
-        idempotency_key:   idempotencyKey,
+        idempotency_key:   IDEMPOTENCY_ENABLED ? idempotencyKey : null,
         status,
         recorded_by:       callerId,
         confirmed_at:      status === 'confirmed' ? now : null,
@@ -275,7 +300,7 @@ async function createEntry(req, res, next) {
 
     await audit.log({
       ...audit.fromReq(req),
-      action:     status === 'confirmed' ? 'ledger.confirmed' : 'ledger.submitted',
+      action:     status === 'confirmed' ? AUDIT_ACTIONS.LEDGER_CONFIRMED : AUDIT_ACTIONS.LEDGER_SUBMITTED,
       targetType: 'ledger_entry',
       targetId:   entry.id,
     });
@@ -361,7 +386,7 @@ async function deleteEntry(req, res, next) {
 
     await audit.log({
       ...audit.fromReq(req),
-      action:     'ledger.deleted',
+      action:     AUDIT_ACTIONS.LEDGER_DELETED,
       targetType: 'ledger_entry',
       targetId:   entryId,
     });
@@ -384,7 +409,7 @@ async function getLedgerSummary(req, res, next) {
 
     let query = supabaseAdmin
       .from('ledger_entries')
-      .select('status, base_amount, original_currency')
+      .select('status, base_amount')
       .eq('workspace_id', workspaceId)
       .eq('container_id', containerId);
 
@@ -488,13 +513,22 @@ async function confirmEntry(req, res, next) {
     if (error) throw new Error(error.message);
 
     await notification.send({ type: 'contribution_confirmed', workspaceId, recipientIds: [entry.contributor_id], referenceType: 'ledger_entry', referenceId: entryId, variables: { amount: `${entry.original_amount} ${entry.original_currency}`, container: containerId } });
-    await audit.log({ ...audit.fromReq(req), action: 'ledger.confirmed', targetType: 'ledger_entry', targetId: entryId });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.LEDGER_CONFIRMED, targetType: 'ledger_entry', targetId: entryId });
 
     success(res, { entry: updated });
   } catch (err) { next(err); }
 }
 
 // ── Add correction ────────────────────────────────────────────────
+//
+// Issue M5 fix: this previously never checked `source.status`, so a
+// correction could be attached to a pending/proof_uploaded/even disputed
+// entry — not just confirmed ones. That conflicts with the business model
+// implied elsewhere in this file (deleteEntry's own comment: "Confirmed
+// entries are immutable (use corrections instead)"), which only makes
+// sense if corrections exist specifically to adjust already-confirmed
+// entries. Non-confirmed entries can simply be edited (updateEntry) or
+// deleted (deleteEntry) instead.
 
 async function addCorrection(req, res, next) {
   try {
@@ -503,6 +537,13 @@ async function addCorrection(req, res, next) {
 
     const { data: source } = await supabaseAdmin.from('ledger_entries').select('*').eq('id', entryId).eq('container_id', containerId).maybeSingle();
     if (!source) throw new NotFoundError('Entry not found');
+
+    // Issue M5 fix: corrections may only be attached to confirmed entries.
+    if (source.status !== 'confirmed') {
+      throw new BusinessRuleError(
+        'Only confirmed entries can be corrected. Pending or proof-uploaded entries can be edited or deleted directly instead.'
+      );
+    }
 
     const { data: corrParticipant } = await supabaseAdmin
       .from('container_participants')
@@ -530,7 +571,7 @@ async function addCorrection(req, res, next) {
 
     if (error) throw new Error(error.message);
 
-    await audit.log({ ...audit.fromReq(req), action: 'ledger.corrected', targetType: 'ledger_entry', targetId: entryId, metadata: { correction_entry_id: correction.id } });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.LEDGER_CORRECTED, targetType: 'ledger_entry', targetId: entryId, metadata: { correction_entry_id: correction.id } });
 
     success(res, { correction_entry: correction }, 201);
   } catch (err) { next(err); }

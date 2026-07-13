@@ -35,8 +35,14 @@ router.post('/logout', requireAuth, ctrl.logout);
 // Issue 5.6: Logout from all devices — revokes all sessions for the user
 router.post('/logout-all-devices', requireAuth, ctrl.logoutAllDevices);
 
-// Reset password — requires the short-lived recovery JWT from the reset email
+// Reset password — ONLY for the password-recovery link flow (requires the
+// short-lived recovery JWT; enforced in the controller via isRecoverySession)
 router.post('/reset-password', requireAuth, ctrl.resetPassword);
+
+// Issue H2: change password for an already-logged-in user, from account
+// settings. Requires current_password — distinct from the recovery-link
+// flow above.
+router.post('/change-password', requireAuth, ctrl.changePassword);
 
 // Complete / upsert user profile (call after signup or Google OAuth)
 // Idempotent — safe to call multiple times

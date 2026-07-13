@@ -5,6 +5,7 @@ const { NotFoundError, BusinessRuleError } = require('../utils/errors');
 const { addParticipantsSchema, addParticipantsFromGroupSchema, updateParticipantSchema, setTargetSchema, cycleOverrideSchema } = require('../validators/ledger.validator');
 const audit = require('../services/audit.service');
 const logger = require('../utils/logger');
+const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 
 async function listParticipants(req, res, next) {
   try {
@@ -150,7 +151,7 @@ async function addParticipants(req, res, next) {
     // Audit log
     await audit.log({
       ...audit.fromReq(req),
-      action: 'container.participants_added',
+      action: AUDIT_ACTIONS.CONTAINER_PARTICIPANTS_ADDED,
       targetType: 'container',
       targetId: containerId,
       metadata: { 
@@ -270,42 +271,24 @@ async function setTarget(req, res, next) {
     if (!participant) throw new NotFoundError('Participant not found');
     if (!participant.containers?.enable_money) throw new BusinessRuleError('Container does not have money tracking enabled');
 
-    // NOTE (Issue H1): this remains a multi-step, non-atomic write
-    // (supersede existing target → insert new target → link superseded_by).
-    // Wrapping this in a `set_contributor_target_atomic` RPC — consistent
-    // with raise_dispute_atomic / resolve_dispute_atomic /
-    // convert_event_to_recurring_atomic elsewhere in this codebase — is
-    // planned for the next batch once the current DB schema/RPC source is
-    // available, so the migration can be written against real column names
-    // instead of inferred ones. Left as-is here rather than guessing.
-
-    // Supersede existing current target
-    const { data: existing } = await supabaseAdmin
-      .from('contributor_targets').select('id, *').eq('container_participant_id', participantId).eq('is_current', true).is('cycle_id', null).maybeSingle();
-
-    if (existing) {
-      await supabaseAdmin.from('contributor_targets').update({ is_current: false, superseded_at: new Date().toISOString() }).eq('id', existing.id);
-    }
-
-    const { data: newTarget, error } = await supabaseAdmin
-      .from('contributor_targets')
-      .insert({
-        container_participant_id: participantId, container_id: containerId,
-        workspace_member_id: participant.workspace_member_id,
-        target_amount: data.amount, target_currency: data.currency,
-        due_date: data.due_date || null, is_current: true, set_by: req.member.id,
-      })
-      .select()
-      .single();
+    // Issue H1 fix: previously three sequential, non-transactional writes
+    // (supersede existing target -> insert new target -> link
+    // superseded_by), which could leave a participant with NO current
+    // target at all if the insert failed after the supersede succeeded.
+    // Now a single atomic RPC — see migrations/0002_set_contributor_target_atomic.sql.
+    const { data: rpcResult, error } = await supabaseAdmin.rpc('set_contributor_target_atomic', {
+      p_container_participant_id: participantId,
+      p_container_id:             containerId,
+      p_workspace_member_id:      participant.workspace_member_id,
+      p_target_amount:             data.amount,
+      p_target_currency:           data.currency,
+      p_due_date:                  data.due_date || null,
+      p_set_by:                    req.member.id,
+    });
 
     if (error) throw new Error(error.message);
 
-    // Link superseded_by
-    if (existing) {
-      await supabaseAdmin.from('contributor_targets').update({ superseded_by: newTarget.id }).eq('id', existing.id);
-    }
-
-    success(res, { target: newTarget, previous_target: existing || null });
+    success(res, { target: rpcResult.new_target, previous_target: rpcResult.previous_target });
   } catch (err) { next(err); }
 }
 
@@ -392,7 +375,7 @@ async function overrideCycle(req, res, next) {
       await supabaseAdmin.from('container_cycles').update({ status: 'skipped' }).eq('id', cycleId);
     }
 
-    await audit.log({ ...audit.fromReq(req), action: 'cycle.override_applied', targetType: 'container_cycle', targetId: cycleId, metadata: { override_type: data.override_type } });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.CYCLE_OVERRIDE_APPLIED, targetType: 'container_cycle', targetId: cycleId, metadata: { override_type: data.override_type } });
 
     success(res, { override });
   } catch (err) { next(err); }

@@ -2,11 +2,11 @@
 const { supabaseAdmin, supabaseAuth } = require('../config/supabase');
 const { success } = require('../utils/response');
 const {
-  AppError, ValidationError, UnauthorizedError, ConflictError, BusinessRuleError, NotFoundError,
+  AppError, ValidationError, UnauthorizedError, ForbiddenError, ConflictError, BusinessRuleError, NotFoundError,
 } = require('../utils/errors');
 const {
   signupSchema, loginSchema, registerSchema, forgotPasswordSchema,
-  resetPasswordSchema, updateProfileSchema, contactSchema, pushTokenSchema,
+  resetPasswordSchema, changePasswordSchema, updateProfileSchema, contactSchema, pushTokenSchema,
   notificationPrefsSchema, refreshTokenSchema,
 } = require('../validators/auth.validator');
 const { uploadFileSchema }  = require('../validators/ledger.validator');
@@ -265,27 +265,95 @@ async function forgotPassword(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Reset password ────────────────────────────────────────────────
+// ── Reset password (recovery-link flow only) ────────────────────────
 //
-// NOTE (Issue H2 — flagged, not silently changed): the route comment claims
-// this "requires the short-lived recovery JWT from the reset email," but
-// requireAuth (see middleware/auth.js) does not distinguish a recovery
-// token from an ordinary login session token — it only calls
-// supabaseAdmin.auth.getUser(token). This means any currently-valid access
-// token, not just a fresh recovery link, can reach this endpoint and change
-// the account password with no re-entry of the current password. Fixing
-// this properly requires a decision that affects the frontend reset-password
-// flow (see the implementation summary at the end of this batch) — left
-// unchanged here pending that decision rather than guessing at the intended
-// UX.
+// Issue H2 fix: the route comment claimed this "requires the short-lived
+// recovery JWT from the reset email," but requireAuth did not actually
+// distinguish a recovery-flow token from an ordinary login session token
+// — it just called supabaseAdmin.auth.getUser(token). That meant ANY
+// currently-valid access token (e.g. one obtained via a stolen-but-not-
+// yet-expired device session) could reach this endpoint and change the
+// account password with no re-entry of the current password.
+//
+// Now: this endpoint checks the JWT's `amr` (Authentication Methods
+// Reference) claim for a `recovery` entry, which Supabase includes when a
+// session was established via the password-recovery OTP flow. If that
+// claim isn't present, the request is rejected with instructions to use
+// the new /auth/change-password endpoint instead (for logged-in users who
+// know their current password and just want to change it).
+//
+// VERIFY AGAINST YOUR SUPABASE PROJECT: decode a real recovery-flow access
+// token (jwt.io or `Buffer.from(token.split('.')[1], 'base64url')`) and
+// confirm the payload actually contains `amr: [{ method: 'recovery', ... }]`
+// (or similar). This is standard Supabase GoTrue behavior, but auth
+// provider internals can change between versions — please confirm on your
+// project before removing the old /auth/reset-password behavior from any
+// client that still relies on it as a general-purpose "change password"
+// endpoint.
+//
+// FRONTEND DEPENDENCY: the recovery-link screen (reached by clicking the
+// emailed reset link) should keep calling POST /auth/reset-password
+// unchanged. Any "change password" screen inside account settings (for an
+// already-logged-in user) must switch to POST /auth/change-password,
+// which now requires `current_password` in the body.
+
+function isRecoverySession(req) {
+  try {
+    const header = req.headers.authorization || '';
+    const token  = header.slice(7);
+    const payloadSegment = token.split('.')[1];
+    if (!payloadSegment) return false;
+    const payload = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString('utf8'));
+    const amr = Array.isArray(payload.amr) ? payload.amr : [];
+    return amr.some((entry) => entry?.method === 'recovery');
+  } catch (err) {
+    logger.warn('Failed to decode JWT for recovery-session check', { error: err.message });
+    return false;
+  }
+}
 
 async function resetPassword(req, res, next) {
   try {
+    if (!isRecoverySession(req)) {
+      throw new ForbiddenError(
+        'This endpoint can only be used with a password-recovery link. ' +
+        'To change your password while logged in, use /auth/change-password instead.'
+      );
+    }
+
     const data = resetPasswordSchema.parse(req.body);
     const { error } = await supabaseAdmin.auth.admin.updateUserById(req.user.id, {
       password: data.password,
     });
     if (error) return next(mapSupabaseAuthError(error));
+    success(res, { message: 'Password updated successfully.' });
+  } catch (err) { next(err); }
+}
+
+// ── Change password (logged-in user, requires current password) ────
+//
+// Issue H2 fix: new endpoint for the "change password from account
+// settings" use case, distinct from the recovery-link flow above.
+// Verifies current_password by attempting a real sign-in before allowing
+// the change — an attacker holding a stolen access token but not the
+// account password cannot use this to lock the real owner out.
+
+async function changePassword(req, res, next) {
+  try {
+    const data = changePasswordSchema.parse(req.body);
+    const client = getAuthClient();
+
+    const { error: verifyErr } = await client.auth.signInWithPassword({
+      email:    req.user.email,
+      password: data.current_password,
+    });
+    if (verifyErr) throw new UnauthorizedError('Current password is incorrect.');
+
+    const { error } = await supabaseAdmin.auth.admin.updateUserById(req.user.id, {
+      password: data.new_password,
+    });
+    if (error) return next(mapSupabaseAuthError(error));
+
     success(res, { message: 'Password updated successfully.' });
   } catch (err) { next(err); }
 }
@@ -765,6 +833,7 @@ module.exports = {
   refreshToken,
   forgotPassword,
   resetPassword,
+  changePassword,
   getGoogleAuthUrl,
   googleCallback,
   verifyEmail,
