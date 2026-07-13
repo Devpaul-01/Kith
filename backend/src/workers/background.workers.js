@@ -4,6 +4,7 @@ const { supabaseAdmin } = require('../config/supabase');
 const { getRedis }      = require('../config/redis');
 const { getQueue }      = require('../queues');
 const notification      = require('../services/notification.service');
+const { fetchEngagementData } = require('../services/engagement.service');
 const logger            = require('../utils/logger');
 
 // ── Reminder Worker ────────────────────────────────────────────────
@@ -36,19 +37,26 @@ function createReminderWorker() {
       for (const target of (upcomingTargets || [])) {
         if (!target.container || target.container.status !== 'active') continue;
 
-        await notification.send({
-          type:          'payment_reminder',
-          workspaceId:   target.container.workspace_id,
-          recipientIds:  [target.workspace_member_id],
-          referenceType: 'container',
-          referenceId:   target.container.id,
-          variables: {
-            amount:    `${target.target_amount} ${target.target_currency}`,
-            container: target.container.name,
-            due_date:  target.due_date,
-          },
-          dedupKey: `payment_reminder:${target.id}:${scanDate}`,
-        });
+        try {
+          await notification.send({
+            type:          'payment_reminder',
+            workspaceId:   target.container.workspace_id,
+            recipientIds:  [target.workspace_member_id],
+            referenceType: 'container',
+            referenceId:   target.container.id,
+            variables: {
+              amount:    `${target.target_amount} ${target.target_currency}`,
+              container: target.container.name,
+              due_date:  target.due_date,
+            },
+            dedupKey: `payment_reminder:${target.id}:${scanDate}`,
+          });
+        } catch (err) {
+          // Issue (worker robustness) fix: isolate per-item failures so one
+          // bad target doesn't fail the entire scan (and force BullMQ to
+          // retry — and re-send — every reminder in the batch).
+          logger.error('Reminder scan: failed to send payment_reminder', { targetId: target.id, error: err.message });
+        }
       }
 
       // Overdue contributions (past due date, not yet paid)
@@ -66,15 +74,19 @@ function createReminderWorker() {
       for (const target of (overdueTargets || [])) {
         if (!target.container || target.container.status !== 'active') continue;
 
-        await notification.send({
-          type:          'overdue_reminder',
-          workspaceId:   target.container.workspace_id,
-          recipientIds:  [target.workspace_member_id],
-          referenceType: 'container',
-          referenceId:   target.container.id,
-          variables:     { container: target.container.name },
-          dedupKey:      `overdue_reminder:${target.id}:${scanDate}`,
-        });
+        try {
+          await notification.send({
+            type:          'overdue_reminder',
+            workspaceId:   target.container.workspace_id,
+            recipientIds:  [target.workspace_member_id],
+            referenceType: 'container',
+            referenceId:   target.container.id,
+            variables:     { container: target.container.name },
+            dedupKey:      `overdue_reminder:${target.id}:${scanDate}`,
+          });
+        } catch (err) {
+          logger.error('Reminder scan: failed to send overdue_reminder', { targetId: target.id, error: err.message });
+        }
       }
 
       logger.info('Reminder scan complete', { scanDate });
@@ -269,17 +281,21 @@ function createCycleLifecycleWorker() {
         for (const p of (participants || [])) {
           const recipientTarget = (p.contributor_targets || []).find((t) => t.cycle_id === cycle.id);
 
-          await notification.send({
-            type:          'cycle_started',
-            workspaceId:   container.workspace_id,
-            recipientIds:  [p.workspace_member_id],
-            referenceType: 'container',
-            referenceId:   cycle.container_id,
-            variables: {
-              container: container.name,
-              amount:    recipientTarget ? `${recipientTarget.target_amount} ${recipientTarget.target_currency}` : 'TBD',
-            },
-          });
+          try {
+            await notification.send({
+              type:          'cycle_started',
+              workspaceId:   container.workspace_id,
+              recipientIds:  [p.workspace_member_id],
+              referenceType: 'container',
+              referenceId:   cycle.container_id,
+              variables: {
+                container: container.name,
+                amount:    recipientTarget ? `${recipientTarget.target_amount} ${recipientTarget.target_currency}` : 'TBD',
+              },
+            });
+          } catch (err) {
+            logger.error('Cycle lifecycle: failed to send cycle_started notification', { cycleId: cycle.id, memberId: p.workspace_member_id, error: err.message });
+          }
         }
       }
 
@@ -401,15 +417,19 @@ function createTaskOverdueWorker() {
           if (!recipients.includes(a.id)) recipients.push(a.id);
         }
 
-        await notification.send({
-          type:          'task_overdue',
-          workspaceId:   container.workspace_id,
-          recipientIds:  recipients,
-          referenceType: 'task',
-          referenceId:   task.id,
-          variables:     { task_title: task.title, due_date: task.due_date || 'N/A' },
-          dedupKey:      `task-overdue:${task.id}:${today}`,
-        });
+        try {
+          await notification.send({
+            type:          'task_overdue',
+            workspaceId:   container.workspace_id,
+            recipientIds:  recipients,
+            referenceType: 'task',
+            referenceId:   task.id,
+            variables:     { task_title: task.title, due_date: task.due_date || 'N/A' },
+            dedupKey:      `task-overdue:${task.id}:${today}`,
+          });
+        } catch (err) {
+          logger.error('Task overdue check: failed to send notification', { taskId: task.id, error: err.message });
+        }
       }
 
       logger.info('Task overdue check complete', { marked: (tasks || []).length });
@@ -440,9 +460,10 @@ function createInviteCleanupWorker() {
 
 // ── Engagement Check Worker ────────────────────────────────────────
 //
-// Batch improvement: fetches all ledger entries and tasks for all active
-// members in two queries (instead of two per member), then processes
-// entirely in memory. Reduces from O(2N+1) queries to 3 total.
+// Issue M1 fix: now delegates the batched fetch to
+// services/engagement.service.js#fetchEngagementData, the same helper
+// member.controller.js#getMemberEngagement uses, instead of maintaining an
+// independent (if already-correct) copy of the same batching logic.
 
 function createEngagementCheckWorker() {
   return new Worker(
@@ -463,42 +484,19 @@ function createEngagementCheckWorker() {
       }
 
       const memberIds = members.map((m) => m.id);
-
-      // Two batch queries instead of 2N
-      const [{ data: allLedger }, { data: allTasks }] = await Promise.all([
-        supabaseAdmin
-          .from('ledger_entries')
-          .select('contributor_id, confirmed_at')
-          .in('contributor_id', memberIds)
-          .eq('status', 'confirmed'),
-        supabaseAdmin
-          .from('container_tasks')
-          .select('assigned_to, completed_at')
-          .in('assigned_to', memberIds)
-          .eq('status', 'completed'),
-      ]);
-
-      // Build lookup maps keyed by member ID
-      const ledgerByMember = new Map();
-      for (const le of (allLedger || [])) {
-        if (!ledgerByMember.has(le.contributor_id)) ledgerByMember.set(le.contributor_id, []);
-        ledgerByMember.get(le.contributor_id).push(le.confirmed_at);
-      }
-
-      const tasksByMember = new Map();
-      for (const t of (allTasks || [])) {
-        if (!tasksByMember.has(t.assigned_to)) tasksByMember.set(t.assigned_to, []);
-        tasksByMember.get(t.assigned_to).push(t.completed_at);
-      }
+      const { ledgerByMember, tasksByMember } = await fetchEngagementData(memberIds);
 
       // Update each member's last_active_at in parallel
       const updates = [];
 
       for (const m of members) {
+        const ledger  = (ledgerByMember.get(m.id) || []).filter((le) => le.status === 'confirmed');
+        const tasks   = tasksByMember.get(m.id) || [];
+
         const candidates = [
           m.last_active_at,
-          ...(ledgerByMember.get(m.id) || []),
-          ...(tasksByMember.get(m.id)  || []),
+          ...ledger.map((le) => le.confirmed_at),
+          ...tasks.map((t) => t.completed_at),
         ].filter(Boolean);
 
         if (!candidates.length) continue;

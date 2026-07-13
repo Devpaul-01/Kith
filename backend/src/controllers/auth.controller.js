@@ -13,6 +13,7 @@ const { uploadFileSchema }  = require('../validators/ledger.validator');
 const { generateUploadUrl } = require('../services/storage.service');
 // Issue 21: queue import for data export
 const { getQueue } = require('../queues');
+const logger = require('../utils/logger');
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -65,6 +66,8 @@ async function signup(req, res, next) {
 
     if (error) return next(mapSupabaseAuthError(error));
 
+    let profileCreated = true;
+
     if (authData?.user?.id) {
       const { error: dbError } = await supabaseAdmin
         .from('users')
@@ -82,16 +85,31 @@ async function signup(req, res, next) {
         );
 
       if (dbError) {
-        require('../utils/logger').error('Failed to create user profile on signup', {
+        // Issue H3 fix: this previously logged the failure and returned
+        // 201 success anyway, leaving the client believing signup fully
+        // succeeded when the user now has a working Supabase Auth identity
+        // but no application profile row. Every downstream flow that
+        // depends on req.dbUser (loadDbUser middleware) will break for
+        // this user. We can't roll back the already-created Supabase Auth
+        // user from here without risking losing the account entirely if
+        // THIS request also fails, so instead: flag it clearly in the
+        // response so the client can prompt an immediate retry of the
+        // already-idempotent POST /auth/register endpoint, which exists
+        // specifically to repair exactly this state.
+        logger.error('Failed to create user profile on signup — auth user exists without a profile row', {
           userId: authData.user.id,
           error:  dbError.message,
         });
+        profileCreated = false;
       }
     }
 
     if (authData?.session) {
       return success(res, {
-        message:       'Account created successfully.',
+        message:       profileCreated
+          ? 'Account created successfully.'
+          : 'Account created, but profile setup is incomplete. Please call /auth/register to finish setting up your profile.',
+        profile_setup_required: !profileCreated,
         access_token:  authData.session.access_token,
         refresh_token: authData.session.refresh_token,
         expires_in:    authData.session.expires_in,
@@ -107,6 +125,7 @@ async function signup(req, res, next) {
     success(res, {
       message: 'Account created. Please check your email and click the verification link before logging in.',
       email:   data.email,
+      profile_setup_required: !profileCreated,
     }, 201);
   } catch (err) { next(err); }
 }
@@ -165,6 +184,7 @@ async function login(req, res, next) {
       token_type:   'Bearer',
       user:         userData || null,
       memberships:  shapedMemberships,
+      profile_setup_required: !userData,
     });
   } catch (err) { next(err); }
 }
@@ -211,7 +231,7 @@ async function logout(req, res, next) {
     res.clearCookie('refresh_token', { path: '/v1/auth/refresh' });
 
     const { error } = await supabaseAdmin.auth.admin.signOut(req.user.id);
-    if (error) require('../utils/logger').warn('Supabase signOut error', { error: error.message });
+    if (error) logger.warn('Supabase signOut error', { error: error.message });
     success(res, { message: 'Logged out successfully.' });
   } catch (err) { next(err); }
 }
@@ -223,7 +243,7 @@ async function logoutAllDevices(req, res, next) {
     res.clearCookie('refresh_token', { path: '/v1/auth/refresh' });
     // 'global' scope revokes all sessions for the user, not just the current one
     const { error } = await supabaseAdmin.auth.admin.signOut(req.user.id, 'global');
-    if (error) require('../utils/logger').warn('Supabase global signOut error', { error: error.message });
+    if (error) logger.warn('Supabase global signOut error', { error: error.message });
     success(res, { message: 'Logged out from all devices.' });
   } catch (err) { next(err); }
 }
@@ -246,6 +266,18 @@ async function forgotPassword(req, res, next) {
 }
 
 // ── Reset password ────────────────────────────────────────────────
+//
+// NOTE (Issue H2 — flagged, not silently changed): the route comment claims
+// this "requires the short-lived recovery JWT from the reset email," but
+// requireAuth (see middleware/auth.js) does not distinguish a recovery
+// token from an ordinary login session token — it only calls
+// supabaseAdmin.auth.getUser(token). This means any currently-valid access
+// token, not just a fresh recovery link, can reach this endpoint and change
+// the account password with no re-entry of the current password. Fixing
+// this properly requires a decision that affects the frontend reset-password
+// flow (see the implementation summary at the end of this batch) — left
+// unchanged here pending that decision rather than guessing at the intended
+// UX.
 
 async function resetPassword(req, res, next) {
   try {
@@ -259,10 +291,41 @@ async function resetPassword(req, res, next) {
 }
 
 // ── Google OAuth URL ──────────────────────────────────────────────
+//
+// Issue C2 fix: `redirect_to` was previously taken directly from an
+// unauthenticated public query parameter and embedded in the Supabase
+// /authorize URL with no validation — a textbook OAuth open-redirect:
+// GET /v1/auth/google/url?redirect_to=https://evil.example.com/harvest
+// would send the victim, post-authentication, to an attacker-controlled
+// domain, potentially carrying auth codes/tokens with it.
+//
+// Now: `redirect_to` is only honored if it starts with our own
+// FRONTEND_URL origin, or matches an explicitly configured mobile deep-link
+// scheme. Anything else falls back to the safe default. If the mobile app
+// needs a custom deep-link scheme (e.g. `kith://auth/callback`), set
+// ALLOWED_DEEPLINK_SCHEMES="kith://" (comma-separated for multiple) —
+// FRONTEND DEPENDENCY: confirm with the mobile client which scheme(s), if
+// any, it actually relies on, since this now rejects anything not on that
+// list instead of blindly trusting it.
+
+function isAllowedGoogleRedirect(url) {
+  if (!url) return false;
+  if (url.startsWith(process.env.FRONTEND_URL)) return true;
+  const allowedSchemes = (process.env.ALLOWED_DEEPLINK_SCHEMES || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  return allowedSchemes.some((scheme) => url.startsWith(scheme));
+}
 
 async function getGoogleAuthUrl(req, res, next) {
   try {
-    const redirectTo = req.query.redirect_to || `${process.env.FRONTEND_URL}/auth/callback`;
+    const requestedRedirect = req.query.redirect_to;
+    const defaultRedirect   = `${process.env.FRONTEND_URL}/auth/callback`;
+    const redirectTo        = isAllowedGoogleRedirect(requestedRedirect) ? requestedRedirect : defaultRedirect;
+
+    if (requestedRedirect && redirectTo !== requestedRedirect) {
+      logger.warn('Rejected disallowed redirect_to on /auth/google/url', { requestedRedirect, ip: req.ip });
+    }
+
     const url = new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);
     url.searchParams.set('provider', 'google');
     url.searchParams.set('redirect_to', redirectTo);
@@ -286,13 +349,21 @@ async function googleCallback(req, res, next) {
 
     // Ensure user profile exists (upsert)
     if (user?.id) {
-      await supabaseAdmin.from('users').upsert({
+      const { error: dbError } = await supabaseAdmin.from('users').upsert({
         id:            user.id,
         email:         user.email,
         full_name:     user.user_metadata?.full_name || user.user_metadata?.name || null,
         avatar_url:    user.user_metadata?.avatar_url || user.user_metadata?.picture || null,
         auth_provider: 'google',
       }, { onConflict: 'id' });
+
+      if (dbError) {
+        // Same orphaned-profile risk as email signup (Issue H3) — log
+        // loudly rather than swallowing silently. The client's subsequent
+        // GET /auth/me (or POST /auth/register) will surface the missing
+        // profile and can prompt a retry.
+        logger.error('Failed to upsert user profile on Google OAuth callback', { userId: user.id, error: dbError.message });
+      }
     }
 
     // Issue 1 fix: correct path used here too
@@ -343,7 +414,7 @@ async function register(req, res, next) {
 
     const { data: { user: sbUser }, error: sbErr } =
       await supabaseAdmin.auth.admin.getUserById(userId);
-    if (sbErr) require('../utils/logger').warn('Could not fetch Supabase user metadata', { userId });
+    if (sbErr) logger.warn('Could not fetch Supabase user metadata', { userId });
 
     const userMeta = sbUser?.user_metadata || {};
     const appMeta  = sbUser?.app_metadata  || {};
@@ -557,6 +628,14 @@ async function deleteContact(req, res, next) {
 //
 // Issue 12 fix: replaced serial for...of loop (N round-trips) with a single
 // batch upsert, consistent with how the workers handle bulk writes.
+//
+// NOTE (Issue M17 — flagged, not yet fixed): this remains a two-step,
+// non-atomic write (DELETE by type, then batch UPSERT). If the upsert fails
+// after the delete succeeds, the user loses those contact methods with no
+// rollback — the same class of bug already fixed via RPC in upsertContact
+// just above. Wrapping this in a `replace_user_contacts_atomic` RPC is
+// planned for the next batch once the current schema is available (needs
+// real `user_contacts` column names for the migration).
 
 async function updateContacts(req, res, next) {
   try {

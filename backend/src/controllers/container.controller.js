@@ -93,11 +93,23 @@ async function createContainer(req, res, next) {
     if (error) throw new Error(error.message);
 
     if (container.container_type === 'recurring') {
-      await getQueue('cycle-generation-queue').add(
-        'generate-cycles',
-        { container_id: container.id, generate_months_ahead: 3 },
-        { attempts: 3 }
-      );
+      try {
+        await getQueue('cycle-generation-queue').add(
+          'generate-cycles',
+          { container_id: container.id, generate_months_ahead: 3 },
+          { attempts: 3 }
+        );
+      } catch (queueErr) {
+        // The container row already exists at this point — a queue outage
+        // shouldn't turn a successful create into a 500 for the client.
+        // Cycle generation also runs on a daily maintenance schedule
+        // (see queues/scheduler.js: 'cycle-gen-maintenance'), so a missed
+        // enqueue here is self-healing rather than silently lost forever.
+        logger.error('Failed to enqueue initial cycle generation — will be picked up by daily maintenance job', {
+          containerId: container.id,
+          error: queueErr.message,
+        });
+      }
     }
 
     success(res, { container }, 201);
@@ -177,7 +189,15 @@ async function updateContainer(req, res, next) {
     if (!current) throw new NotFoundError('Container not found');
 
     if (data.enable_money === false && current.enable_money === true) {
-      const { count } = await supabaseAdmin.from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId);
+      // Issue C6 fix: `error` was previously ignored here. If this count
+      // query failed (network blip, RLS misconfig, etc.), `count` would be
+      // `undefined`, `undefined > 0` is `false`, and the function would
+      // silently proceed to disable money tracking even though we couldn't
+      // actually verify no ledger entries exist — a financial safety check
+      // failing open instead of closed. Now fails loud (500) instead.
+      const { count, error: countErr } = await supabaseAdmin
+        .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId);
+      if (countErr) throw new Error(countErr.message);
       if (count > 0) throw new BusinessRuleError('Cannot disable money tracking — ledger entries exist');
     }
 
@@ -293,11 +313,18 @@ async function convertToRecurring(req, res, next) {
 
     const newContainer = rpcResult;
 
-    await getQueue('cycle-generation-queue').add(
-      'generate-cycles',
-      { container_id: newContainer.id, generate_months_ahead: 3 },
-      { attempts: 3 }
-    );
+    try {
+      await getQueue('cycle-generation-queue').add(
+        'generate-cycles',
+        { container_id: newContainer.id, generate_months_ahead: 3 },
+        { attempts: 3 }
+      );
+    } catch (queueErr) {
+      logger.error('Failed to enqueue cycle generation after conversion — will be picked up by daily maintenance job', {
+        containerId: newContainer.id,
+        error: queueErr.message,
+      });
+    }
 
     await audit.log({ ...audit.fromReq(req), action: 'container.converted_to_recurring', targetType: 'container', targetId: newContainer.id, metadata: { source_container_id: containerId } });
 
@@ -353,12 +380,20 @@ async function deleteContainer(req, res, next) {
   try {
     const { workspaceId, containerId } = req.params;
 
-    const { count } = await supabaseAdmin
+    // Issue C6 fix: `error` was previously ignored here — the exact same
+    // fail-open bug as updateContainer above, but on the guard that
+    // prevents deleting a container with confirmed money movements. Now
+    // checked explicitly.
+    const { count, error: countErr } = await supabaseAdmin
       .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId).eq('status', 'confirmed');
 
+    if (countErr) throw new Error(countErr.message);
     if (count > 0) throw new BusinessRuleError('Cannot delete a container with confirmed ledger entries');
 
-    await supabaseAdmin.from('containers').update({ deleted_at: new Date().toISOString() }).eq('id', containerId).eq('workspace_id', workspaceId);
+    const { error: deleteErr } = await supabaseAdmin
+      .from('containers').update({ deleted_at: new Date().toISOString() }).eq('id', containerId).eq('workspace_id', workspaceId);
+
+    if (deleteErr) throw new Error(deleteErr.message);
 
     await audit.log({ ...audit.fromReq(req), action: 'container.deleted', targetType: 'container', targetId: containerId });
 

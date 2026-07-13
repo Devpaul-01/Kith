@@ -4,6 +4,7 @@ const { success, noContent } = require('../utils/response');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
 const { addParticipantsSchema, addParticipantsFromGroupSchema, updateParticipantSchema, setTargetSchema, cycleOverrideSchema } = require('../validators/ledger.validator');
 const audit = require('../services/audit.service');
+const logger = require('../utils/logger');
 
 async function listParticipants(req, res, next) {
   try {
@@ -84,63 +85,66 @@ async function addParticipants(req, res, next) {
 
     const validMemberIds = new Set((validMembers || []).map(m => m.id));
 
+    // Issue M4 fix: previously did a per-participant upsert inside the loop
+    // (one round trip per row). Now split into: filter valid rows in memory,
+    // batch-upsert all of them in a single call, then handle the
+    // per-participant target-creation side effect (which genuinely does
+    // differ per row) afterwards.
+    const validParticipants = payload.participants.filter((p) => validMemberIds.has(p.workspace_member_id));
+    const skippedInvalidMember = payload.participants.length - validParticipants.length;
+
     let added = [];
     let skippedAlreadyPresent = 0;
-    let skippedInvalidMember = 0;
 
-    for (const p of payload.participants) {
-      // Skip if member doesn't exist in workspace
-      if (!validMemberIds.has(p.workspace_member_id)) {
-        skippedInvalidMember++;
-        continue;
-      }
-
-      const moneyEnabled = container.enable_money ? (p.money_enabled ?? false) : false;
-      const tasksEnabled = container.enable_tasks ? (p.tasks_enabled ?? false) : false;
+    if (validParticipants.length) {
+      const upsertRows = validParticipants.map((p) => ({
+        container_id:         containerId,
+        workspace_member_id:  p.workspace_member_id,
+        money_enabled:        container.enable_money ? (p.money_enabled ?? false) : false,
+        tasks_enabled:        container.enable_tasks ? (p.tasks_enabled ?? false) : false,
+        role:                 p.role  || null,
+        notes:                p.notes || null,
+        added_by:             req.member.id,
+      }));
 
       const { data: inserted, error: insertError } = await supabaseAdmin
         .from('container_participants')
-        .upsert({ 
-          container_id: containerId, 
-          workspace_member_id: p.workspace_member_id, 
-          money_enabled: moneyEnabled, 
-          tasks_enabled: tasksEnabled, 
-          role: p.role || null, 
-          notes: p.notes || null, 
-          added_by: req.member.id 
-        }, { 
-          onConflict: 'container_id,workspace_member_id', 
-          ignoreDuplicates: true 
-        })
-        .select()
-        .maybeSingle();
+        .upsert(upsertRows, { onConflict: 'container_id,workspace_member_id', ignoreDuplicates: true })
+        .select();
 
-      if (!inserted) { 
-        skippedAlreadyPresent++; 
-        continue; 
-      }
+      if (insertError) throw new Error(insertError.message);
 
-      // Create target if provided and money tracking is enabled
-      if (p.target && container.enable_money && p.target.amount > 0) {
+      added = inserted || [];
+      skippedAlreadyPresent = validParticipants.length - added.length;
+
+      // Targets genuinely need to be created per-participant (different
+      // amount/currency/due_date per row), so this part stays per-item —
+      // but only for rows that were actually newly inserted.
+      const insertedByMemberId = new Map(added.map((row) => [row.workspace_member_id, row]));
+
+      for (const p of validParticipants) {
+        const insertedRow = insertedByMemberId.get(p.workspace_member_id);
+        if (!insertedRow || !p.target || !container.enable_money || !(p.target.amount > 0)) continue;
+
         const { error: targetError } = await supabaseAdmin
           .from('contributor_targets')
-          .insert({ 
-            container_participant_id: inserted.id, 
-            container_id: containerId, 
-            workspace_member_id: p.workspace_member_id, 
-            target_amount: p.target.amount, 
-            target_currency: p.target.currency || container.budget_currency || 'USD', 
-            due_date: p.target.due_date || null, 
-            set_by: req.member.id 
+          .insert({
+            container_participant_id: insertedRow.id,
+            container_id:             containerId,
+            workspace_member_id:      p.workspace_member_id,
+            target_amount:            p.target.amount,
+            target_currency:          p.target.currency || container.budget_currency || 'USD',
+            due_date:                 p.target.due_date || null,
+            set_by:                   req.member.id,
           });
 
         if (targetError) {
           // Log but don't fail - participant was added, just no target
-          console.error('Failed to create target:', targetError.message);
+          logger.error('Failed to create contributor target during addParticipants', {
+            containerId, memberId: p.workspace_member_id, error: targetError.message,
+          });
         }
       }
-
-      added.push(inserted);
     }
 
     // Audit log
@@ -179,17 +183,27 @@ async function addParticipantsFromGroup(req, res, next) {
       .eq('group_id', data.group_id)
       .is('workspace_members.deleted_at', null);
 
+    // Issue M4 fix: batch-upsert instead of one round trip per group member.
+    const rows = (groupMembers || []).map((gm) => ({
+      container_id:        containerId,
+      workspace_member_id: gm.workspace_member_id,
+      money_enabled:       container.enable_money ? (data.money_enabled ?? false) : false,
+      tasks_enabled:       data.tasks_enabled ?? false,
+      added_by:            req.member.id,
+    }));
+
     let added = 0, skipped = 0;
 
-    for (const gm of (groupMembers || [])) {
-      const moneyEnabled = container.enable_money ? (data.money_enabled ?? false) : false;
-      const { data: inserted } = await supabaseAdmin
+    if (rows.length) {
+      const { data: inserted, error } = await supabaseAdmin
         .from('container_participants')
-        .upsert({ container_id: containerId, workspace_member_id: gm.workspace_member_id, money_enabled: moneyEnabled, tasks_enabled: data.tasks_enabled ?? false, added_by: req.member.id }, { onConflict: 'container_id,workspace_member_id', ignoreDuplicates: true })
-        .select('id')
-        .maybeSingle();
+        .upsert(rows, { onConflict: 'container_id,workspace_member_id', ignoreDuplicates: true })
+        .select('id');
 
-      if (inserted) added++; else skipped++;
+      if (error) throw new Error(error.message);
+
+      added   = (inserted || []).length;
+      skipped = rows.length - added;
     }
 
     success(res, { added, skipped });
@@ -227,7 +241,13 @@ async function removeParticipant(req, res, next) {
     const { data: participant } = await supabaseAdmin.from('container_participants').select('*').eq('id', participantId).eq('container_id', containerId).maybeSingle();
     if (!participant) throw new NotFoundError('Participant not found');
 
-    const { count } = await supabaseAdmin.from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId).eq('contributor_id', participant.workspace_member_id).eq('status', 'confirmed');
+    // Issue C6 fix: `error` was previously ignored on this count query — the
+    // same fail-open pattern flagged in container.controller.js and
+    // member.controller.js. Now checked explicitly so a failed query blocks
+    // removal (fails closed) instead of silently allowing it.
+    const { count, error: countErr } = await supabaseAdmin
+      .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId).eq('contributor_id', participant.workspace_member_id).eq('status', 'confirmed');
+    if (countErr) throw new Error(countErr.message);
     if (count > 0) throw new BusinessRuleError('Cannot remove participant with confirmed ledger entries');
 
     await supabaseAdmin.from('container_participants').delete().eq('id', participantId);
@@ -249,6 +269,15 @@ async function setTarget(req, res, next) {
 
     if (!participant) throw new NotFoundError('Participant not found');
     if (!participant.containers?.enable_money) throw new BusinessRuleError('Container does not have money tracking enabled');
+
+    // NOTE (Issue H1): this remains a multi-step, non-atomic write
+    // (supersede existing target → insert new target → link superseded_by).
+    // Wrapping this in a `set_contributor_target_atomic` RPC — consistent
+    // with raise_dispute_atomic / resolve_dispute_atomic /
+    // convert_event_to_recurring_atomic elsewhere in this codebase — is
+    // planned for the next batch once the current DB schema/RPC source is
+    // available, so the migration can be written against real column names
+    // instead of inferred ones. Left as-is here rather than guessing.
 
     // Supersede existing current target
     const { data: existing } = await supabaseAdmin

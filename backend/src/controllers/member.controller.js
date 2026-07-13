@@ -4,6 +4,8 @@ const { success, noContent } = require('../utils/response');
 const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
 const { createMemberSchema, updateMemberSchema } = require('../validators/workspace.validator');
 const audit = require('../services/audit.service');
+const logger = require('../utils/logger');
+const { computeEngagement } = require('../services/engagement.service');
 
 async function listMembers(req, res, next) {
   try {
@@ -168,11 +170,17 @@ async function updateMember(req, res, next) {
       : memberEditableFields;
 
     const updates = {};
+    // Issue M4-adjacent fix: profile-audit inserts were previously done one
+    // row at a time inside this loop (await'd sequentially). Now collected
+    // and written in a single batch insert after the loop, consistent with
+    // the batch-upsert pattern already used elsewhere (auth.controller.js
+    // updateContacts).
+    const auditRows = [];
     for (const field of allowedFields) {
       if (data[field] !== undefined) {
         updates[field] = data[field];
         if (String(current[field]) !== String(data[field])) {
-          await supabaseAdmin.from('member_profile_audit').insert({
+          auditRows.push({
             workspace_member_id: memberId,
             changed_by:          req.member.id,
             field_name:          field,
@@ -189,6 +197,16 @@ async function updateMember(req, res, next) {
     updates.updated_at = new Date().toISOString();
     const { data: member, error } = await supabaseAdmin.from('workspace_members').update(updates).eq('id', memberId).select().single();
     if (error) throw new Error(error.message);
+
+    if (auditRows.length) {
+      const { error: auditErr } = await supabaseAdmin.from('member_profile_audit').insert(auditRows);
+      if (auditErr) {
+        // The member update itself already succeeded — a failure to write
+        // the profile-change audit trail shouldn't turn a successful
+        // update into a 500 for the client. Log loudly instead.
+        logger.error('Failed to write member_profile_audit rows', { memberId, error: auditErr.message });
+      }
+    }
 
     success(res, { member });
   } catch (err) { next(err); }
@@ -211,8 +229,14 @@ async function deleteMember(req, res, next) {
       if ((admins || []).length <= 1) throw new BusinessRuleError('Cannot remove the last admin');
     }
 
-    const { count } = await supabaseAdmin
+    // Issue C6 fix: `error` was previously ignored on this count query — the
+    // same fail-open pattern as container.controller.js's deleteContainer.
+    // A failed count query would silently fall through to `hasEntries =
+    // false`, allowing a member with confirmed ledger entries to be
+    // hard-deleted (`force=true`) if the guard itself couldn't be verified.
+    const { count, error: countErr } = await supabaseAdmin
       .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('contributor_id', memberId).eq('status', 'confirmed');
+    if (countErr) throw new Error(countErr.message);
     const hasEntries = count > 0;
 
     if (hasEntries && force === 'true') {
@@ -287,49 +311,31 @@ async function getContributionSummary(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// ── Member engagement ──────────────────────────────────────────────
+//
+// Issue M1 fix: this previously ran 2 queries PER MEMBER via
+// `Promise.all((members||[]).map(async (m) => {...}))` — O(2N) round trips
+// for the exact same computation `background.workers.js`'s
+// `createEngagementCheckWorker` already batches into 2 total queries via
+// upfront fetch + in-memory Map lookups. Now delegates to the shared
+// `services/engagement.service.js` helper (imported at the top of this
+// file) so both the worker and this endpoint share one implementation
+// instead of two divergent ones.
+
 async function getMemberEngagement(req, res, next) {
   try {
     const { workspaceId } = req.params;
-    const now             = new Date();
 
-    const { data: members } = await supabaseAdmin
+    const { data: members, error } = await supabaseAdmin
       .from('workspace_members')
       .select('id, display_name, last_active_at')
       .eq('workspace_id', workspaceId)
       .eq('is_proxy', false)
       .is('deleted_at', null);
 
-    const result = await Promise.all((members || []).map(async (m) => {
-      const [{ data: ledger }, { data: tasks }] = await Promise.all([
-        supabaseAdmin.from('ledger_entries').select('id, status, confirmed_at').eq('contributor_id', m.id),
-        supabaseAdmin.from('container_tasks').select('id, status, completed_at').eq('assigned_to', m.id).eq('status', 'completed'),
-      ]);
+    if (error) throw new Error(error.message);
 
-      const confirmedLedger = (ledger || []).filter((le) => le.status === 'confirmed');
-      const pendingLedger   = (ledger || []).filter((le) => le.status === 'pending');
-
-      const activityDates = [
-        m.last_active_at,
-        ...confirmedLedger.map((le) => le.confirmed_at),
-        ...(tasks || []).map((t) => t.completed_at),
-      ].filter(Boolean);
-
-      const lastActivity  = activityDates.length ? new Date(Math.max(...activityDates.map((d) => new Date(d)))) : null;
-      const daysSince     = lastActivity ? Math.floor((now - lastActivity) / 86400000) : Infinity;
-      let engagementLevel = 'inactive';
-      if (daysSince <= 30)      engagementLevel = 'active';
-      else if (daysSince <= 90) engagementLevel = 'quiet';
-
-      return {
-        member_id:                     m.id,
-        display_name:                  m.display_name,
-        last_activity:                 lastActivity ? lastActivity.toISOString().split('T')[0] : null,
-        confirmed_contributions_count: confirmedLedger.length,
-        pending_contributions_count:   pendingLedger.length,
-        overdue_count:                 0,
-        engagement_level:              engagementLevel,
-      };
-    }));
+    const result = await computeEngagement(members || []);
 
     success(res, { members: result });
   } catch (err) { next(err); }

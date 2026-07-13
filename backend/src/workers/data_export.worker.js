@@ -28,35 +28,56 @@ function createDataExportWorker() {
         .eq('id', userId)
         .maybeSingle();
 
-      // ── 2. Fetch ledger entries ──────────────────────────────────
-      const { data: ledgerEntries, error: ledgerErr } = await supabaseAdmin
-        .from('ledger_entries')
-        .select(`
-          id, entry_type, original_amount, original_currency,
-          base_amount, payment_method, status, note,
-          recorded_at, confirmed_at,
-          container:containers!container_id(name),
-          workspace:workspaces!workspace_id(name)
-        `)
-        .eq('contributor_id', userId)   // only entries where this user is the contributor
-        .in('workspace_id', workspaceIds)
-        .order('recorded_at', { ascending: false });
-
-      if (ledgerErr) {
-        logger.error('Data export: ledger query failed', { userId, error: ledgerErr.message });
-        throw new Error(ledgerErr.message);
-      }
-
-      // ── 3. Fetch task assignments ────────────────────────────────
-      const { data: memberRows } = await supabaseAdmin
+      // ── 2. Resolve this user's workspace_members rows ────────────
+      //
+      // Issue C1 fix: ledger_entries.contributor_id and
+      // container_tasks.assigned_to both store workspace_members.id, NOT
+      // users.id — every other read of these tables in the codebase
+      // (ledger.controller.js, member.controller.js, etc.) resolves
+      // workspace_members first. This worker's task-export query already
+      // did that resolution correctly; the ledger-export query previously
+      // filtered directly on `contributor_id = userId` (a users.id) and
+      // therefore matched zero rows for every single export, silently. The
+      // resolution is now done once, up front, and reused by both queries.
+      const { data: memberRows, error: memberErr } = await supabaseAdmin
         .from('workspace_members')
         .select('id')
         .eq('user_id', userId)
         .in('workspace_id', workspaceIds)
         .eq('is_active', true);
 
+      if (memberErr) {
+        logger.error('Data export: member resolution query failed', { userId, error: memberErr.message });
+        throw new Error(memberErr.message);
+      }
+
       const memberIds = (memberRows || []).map((m) => m.id);
 
+      // ── 3. Fetch ledger entries ──────────────────────────────────
+      let ledgerEntries = [];
+      if (memberIds.length > 0) {
+        const { data: ledgerData, error: ledgerErr } = await supabaseAdmin
+          .from('ledger_entries')
+          .select(`
+            id, entry_type, original_amount, original_currency,
+            base_amount, payment_method, status, note,
+            recorded_at, confirmed_at,
+            container:containers!container_id(name),
+            workspace:workspaces!workspace_id(name)
+          `)
+          .in('contributor_id', memberIds)
+          .in('workspace_id', workspaceIds)
+          .order('recorded_at', { ascending: false });
+
+        if (ledgerErr) {
+          logger.error('Data export: ledger query failed', { userId, error: ledgerErr.message });
+          throw new Error(ledgerErr.message);
+        }
+
+        ledgerEntries = ledgerData || [];
+      }
+
+      // ── 4. Fetch task assignments ────────────────────────────────
       let taskRows = [];
       if (memberIds.length > 0) {
         const { data: tasks } = await supabaseAdmin
@@ -69,11 +90,11 @@ function createDataExportWorker() {
         taskRows = tasks || [];
       }
 
-      // ── 4. Build CSV payloads ────────────────────────────────────
+      // ── 5. Build CSV payloads ────────────────────────────────────
       const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
 
       const ledgerCsvHeader = 'Workspace,Container,Type,Amount,Currency,Base Amount,Payment Method,Status,Note,Recorded At,Confirmed At';
-      const ledgerCsvRows   = (ledgerEntries || []).map((le) => [
+      const ledgerCsvRows   = ledgerEntries.map((le) => [
         escape(le.workspace?.name),
         escape(le.container?.name),
         le.entry_type,
@@ -102,7 +123,7 @@ function createDataExportWorker() {
 
       const taskCsv = [taskCsvHeader, ...taskCsvRows].join('\n');
 
-      // ── 5. Send email ────────────────────────────────────────────
+      // ── 6. Send email ────────────────────────────────────────────
       const resend = getResend();
       if (!resend) {
         logger.warn('Data export: Resend not configured — export generated but not emailed', { userId });
@@ -119,12 +140,12 @@ function createDataExportWorker() {
         html: `
           <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px">
             <h2 style="color:#1a1a1a">Your Kith data export</h2>
-            <p style="color:#444">Hi ${displayName},</p>
+            <p style="color:#444">Hi ${escapeHtml(displayName)},</p>
             <p style="color:#444">
               Your data export is attached. It includes:
             </p>
             <ul style="color:#444">
-              <li>${(ledgerEntries || []).length} ledger entries (contributions)</li>
+              <li>${ledgerEntries.length} ledger entries (contributions)</li>
               <li>${taskRows.length} task assignments</li>
             </ul>
             <p style="color:#888;font-size:12px">
@@ -150,7 +171,7 @@ function createDataExportWorker() {
       logger.info('Data export emailed', {
         userId,
         userEmail,
-        ledgerCount: (ledgerEntries || []).length,
+        ledgerCount: ledgerEntries.length,
         taskCount:   taskRows.length,
       });
     },
@@ -159,6 +180,19 @@ function createDataExportWorker() {
       concurrency: 2,  // exports are I/O heavy — keep concurrency low
     }
   );
+}
+
+// Shared with notification.worker.js's escaping approach (Issue M12) —
+// displayName here ultimately comes from the user's own profile, lower
+// risk than container/task names, but escaped for consistency since it's
+// interpolated into an HTML email body.
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 module.exports = { createDataExportWorker };
