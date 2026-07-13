@@ -5,6 +5,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Input } from '@/components/ui/Input';
 import { PasswordInput } from '@/components/ui/PasswordInput';
 import { Button } from '@/components/ui/Button';
+
 import { useAuthStore } from '@/store/authStore';
 import { useWorkspaceStore } from '@/store/workspaceStore';
 import showToast from '@/lib/toast';
@@ -13,10 +14,18 @@ import { useMutation } from '@tanstack/react-query';
 import { useState, useEffect } from 'react';
 import type { ApiError } from '@/types/api';
 import type { User, Membership } from '@/types/models';
+// Add this import at the top
+import { getFCMToken } from '@/services/firebase';
 import { authService } from '@/services/auth.service';
+
+// Inside your login mutation, after successful login, add:
+
 
 const schema = z.object({ email: z.string().email('Invalid email'), password: z.string().min(1, 'Required') });
 type Form = z.infer<typeof schema>;
+
+
+
 
 export default function LoginPage() {
   const nav = useNavigate();
@@ -34,19 +43,38 @@ export default function LoginPage() {
     mutationFn: (d: Form) => authService.login(d),
     onSuccess: (data: unknown) => {
       const d = data as { access_token: string; expires_in: number; user: User | null; memberships: Membership[] };
-      setSession(d.access_token, d.expires_in);
+      setSession(d.access_token,d.expires_in);
       setDbUser(d.user, d.memberships);
-
+      if (d.user && 'Notification' in window) {
+  // Check if user hasn't been asked before (optional)
+  const hasAsked = localStorage.getItem('fcm_asked');
+  if (!hasAsked) {
+    localStorage.setItem('fcm_asked', 'true');
+    
+    // Wait a bit then ask
+    setTimeout(async () => {
+      const token = await getFCMToken();
+      if (token) {
+        // Send token to backend
+        await authService.registerPushToken(token, 'web');
+        console.log('FCM token registered');
+      }
+    }, 3000);
+  }
+}
+    
       const pendingInviteToken = localStorage.getItem('pendingInviteToken');
       if (pendingInviteToken) {
         localStorage.removeItem('pendingInviteToken');
         nav(`/invite/${pendingInviteToken}`);
       }
-
+    
       if (!d.user) {
-        showToast.error('Unable to load profile. Please contact support.');
-        return;
-      }
+    // This happens when email confirmation is ON and user hasn't verified email
+    // Or when there's an issue with the user profile
+    showToast.error('Unable to load profile. Please contact support.');
+    return;
+  }
       if (d.memberships.length === 0) { nav('/workspace/create'); return; }
       if (d.memberships.length === 1) { setActive(d.memberships[0].workspace_id); nav('/app/dashboard'); return; }
       nav('/workspace/select');

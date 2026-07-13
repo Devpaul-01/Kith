@@ -63,6 +63,25 @@ async function previewInvite(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// ── Accept invite ──────────────────────────────────────────────────
+//
+// Issue C4 fix: this previously used a check-then-act pattern — read
+// invite.used_at, verify it's null, and only much later write used_at.
+// Two concurrent requests with the same token (e.g. a double-tap on
+// mobile, or a retried request after a slow/timed-out response) could
+// both read used_at: null, both pass the check, both create a
+// workspace_members row, and only then race to set used_at — the loser
+// silently overwriting the winner's used_by_user_id.
+//
+// Fixed by claiming the invite with a single atomic conditional UPDATE
+// (`WHERE used_at IS NULL`) instead. Supabase/Postgrest performs this as
+// one round trip; only the request whose UPDATE actually affects a row
+// (necessarily the first to arrive, since Postgres serializes concurrent
+// UPDATEs to the same row) is allowed to proceed to create a membership.
+// Every other concurrent request gets 0 affected rows back and is
+// rejected here — before it can create a duplicate membership. No RPC or
+// migration required.
+
 async function acceptInvite(req, res, next) {
   try {
     const { token } = req.params;
@@ -91,6 +110,21 @@ async function acceptInvite(req, res, next) {
 
     if (existingMember) throw new ConflictError('You are already a member of this workspace');
 
+    // Issue C4 fix: atomically claim the invite before creating anything.
+    const { data: claimedInvite, error: claimErr } = await supabaseAdmin
+      .from('invite_links')
+      .update({ used_at: new Date().toISOString(), used_by_user_id: userId })
+      .eq('id', invite.id)
+      .is('used_at', null)
+      .select()
+      .maybeSingle();
+
+    if (claimErr) throw new Error(claimErr.message);
+    if (!claimedInvite) {
+      // Another concurrent request won the race and claimed it first.
+      throw new BusinessRuleError('This invite has already been used');
+    }
+
     // Get user display name
     const { data: user } = await supabaseAdmin.from('users').select('full_name').eq('id', userId).single();
     const displayName    = user?.full_name || 'New Member';
@@ -103,9 +137,6 @@ async function acceptInvite(req, res, next) {
       .single();
 
     if (memErr) throw new Error(memErr.message);
-
-    // Mark invite used
-    await supabaseAdmin.from('invite_links').update({ used_at: new Date().toISOString(), used_by_user_id: userId }).eq('id', invite.id);
 
     const workspace = invite.workspaces;
 

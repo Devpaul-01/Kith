@@ -25,12 +25,14 @@ function createNotificationWorker() {
         return;
       }
 
-      await supabaseAdmin
-        .from('notification_deliveries')
-        .update({ last_attempt_at: new Date().toISOString(), retry_count: supabaseAdmin.rpc ? undefined : undefined })
-        .eq('id', delivery_id);
-
-      // Increment retry_count via RPC-free approach
+      // Issue C5 fix: this used to be preceded by a separate, no-op
+      // `update({ retry_count: supabaseAdmin.rpc ? undefined : undefined })`
+      // call — a leftover from an aborted refactor that evaluated to
+      // `undefined` on both branches of the ternary and therefore never
+      // touched retry_count at all. It was pure dead weight: one wasted DB
+      // write on every single delivery attempt at this worker's volume
+      // (concurrency 10, rate-limited to 50/sec), immediately followed by
+      // the real fetch-then-increment below. Removed outright.
       const { data: current } = await supabaseAdmin
         .from('notification_deliveries').select('retry_count').eq('id', delivery_id).single();
       await supabaseAdmin
@@ -82,8 +84,8 @@ function createNotificationWorker() {
             subject: title,
             html: `
               <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px">
-                <h2 style="color:#1a1a1a">${title}</h2>
-                <p style="color:#444;font-size:16px">${body}</p>
+                <h2 style="color:#1a1a1a">${escapeHtml(title)}</h2>
+                <p style="color:#444;font-size:16px">${escapeHtml(body)}</p>
                 <hr style="border:1px solid #eee;margin:20px 0">
                 <p style="color:#888;font-size:12px">Kith — Family Finance Coordinator</p>
               </div>
@@ -113,6 +115,21 @@ function createNotificationWorker() {
       limiter:     { max: 50, duration: 1000 },
     }
   );
+}
+
+// Issue M12 fix: title/body ultimately originate from user-controlled
+// strings (container names, task titles, admin announcement text — see
+// notification.service.js's renderTemplate) and were previously
+// interpolated directly into this HTML email body with no escaping. A
+// container named e.g. `<img src=x onerror=...>` would render unescaped in
+// a transactional email. Minimal, dependency-free HTML entity escaping.
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 module.exports = { createNotificationWorker };

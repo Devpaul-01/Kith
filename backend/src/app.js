@@ -4,6 +4,7 @@ const express     = require('express');
 const helmet      = require('helmet');
 const cors        = require('cors');
 const compression = require('compression');
+const crypto      = require('crypto');
 
 const { requestId, requestLogger } = require('./middleware/requestLogger');
 const { errorHandler }             = require('./middleware/errorHandler');
@@ -18,8 +19,17 @@ const app = express();
 app.set('trust proxy', 1);
 
 app.use(helmet());
+
+// Issue L2 fix: removed the `|| '*'` fallback. `server.js`'s
+// validateEnvironment() already refuses to boot without FRONTEND_URL set,
+// so the fallback was unreachable dead code — but it was also misleading:
+// browsers reject wildcard origin + credentialed requests outright, so if
+// FRONTEND_URL were ever unset, cookie-based auth (the refresh_token
+// cookie) would silently stop working rather than silently becoming
+// insecure. Failing loud at startup (already the case via server.js) is
+// the correct behavior; this fallback just obscured that.
 app.use(cors({
-  origin:         process.env.FRONTEND_URL || '*',
+  origin:         process.env.FRONTEND_URL,
   credentials:    true,
   methods:        ['GET','POST','PATCH','PUT','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','X-Request-Id'],
@@ -100,12 +110,48 @@ if (process.env.BULL_BOARD_USERNAME && process.env.BULL_BOARD_PASSWORD) {
       serverAdapter,
     });
 
+    // Issue H5 fix: `.includes()` was a substring match, not an exact/CIDR
+    // match — e.g. an allowlisted "1.2.3.4" would also match a request IP
+    // of "21.2.3.40" or any string containing that substring. Now does an
+    // exact match, or a real (if minimal, IPv4-only) CIDR match for entries
+    // containing "/". For anything beyond simple IPv4 CIDR ranges, swap
+    // this helper for the `ipaddr.js` package.
+    function ipInCidr(ip, cidr) {
+      const [range, bitsStr] = cidr.split('/');
+      const bits = parseInt(bitsStr, 10);
+      const ipv4Pattern = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+      if (!ipv4Pattern.test(ip) || !ipv4Pattern.test(range) || Number.isNaN(bits)) return false;
+      const toInt = (addr) => addr.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
+      const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+      return (toInt(ip) & mask) === (toInt(range) & mask);
+    }
+
+    function isIpAllowed(reqIp, allowedIps) {
+      return allowedIps.some((entry) => {
+        if (entry === reqIp) return true;
+        if (entry.includes('/')) return ipInCidr(reqIp, entry);
+        return false;
+      });
+    }
+
+    // Issue H5 fix: Basic Auth credentials were compared with `!==`, which
+    // is not constant-time and is a (low-probability but real) timing
+    // side-channel against the admin dashboard password. Now uses
+    // crypto.timingSafeEqual, guarding against length mismatches (which
+    // timingSafeEqual throws on rather than returning false for).
+    function safeEqual(a, b) {
+      const bufA = Buffer.from(String(a ?? ''));
+      const bufB = Buffer.from(String(b ?? ''));
+      if (bufA.length !== bufB.length) return false;
+      return crypto.timingSafeEqual(bufA, bufB);
+    }
+
     const bullGuard = (req, res, next) => {
       const allowedIps = (process.env.ADMIN_IP_WHITELIST || '127.0.0.1,::1')
         .split(',')
         .map((s) => s.trim());
 
-      if (!allowedIps.some((ip) => (req.ip || '').includes(ip))) {
+      if (!isIpAllowed(req.ip || '', allowedIps)) {
         return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Access denied' } });
       }
 
@@ -115,10 +161,11 @@ if (process.env.BULL_BOARD_USERNAME && process.env.BULL_BOARD_PASSWORD) {
         return res.status(401).end();
       }
       const [user, pass] = Buffer.from(auth.slice(6), 'base64').toString().split(':');
-      if (
-        user !== process.env.BULL_BOARD_USERNAME ||
-        pass !== process.env.BULL_BOARD_PASSWORD
-      ) {
+      const credsOk =
+        safeEqual(user, process.env.BULL_BOARD_USERNAME) &&
+        safeEqual(pass, process.env.BULL_BOARD_PASSWORD);
+
+      if (!credsOk) {
         res.setHeader('WWW-Authenticate', 'Basic realm="Kith Admin"');
         return res.status(401).end();
       }
