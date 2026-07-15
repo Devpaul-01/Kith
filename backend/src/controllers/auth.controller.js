@@ -723,36 +723,28 @@ async function updateContacts(req, res, next) {
 
     const types = [...new Set(data.contacts.map((c) => c.type))];
 
-    await supabaseAdmin
-      .from('user_contacts')
-      .delete()
-      .eq('user_id', userId)
-      .in('type', types);
-
-    // Single batch upsert instead of a sequential per-contact loop.
-    const upsertRows = data.contacts.map((contact) => ({
-      user_id:      userId,
-      type:         contact.type,
-      label:        contact.label        || null,
-      value:        contact.value,
-      country_code: contact.country_code || null,
-      is_primary:   contact.is_primary   ?? false,
-    }));
-
-    const { error: upsertErr } = await supabaseAdmin
-      .from('user_contacts')
-      .upsert(upsertRows, { onConflict: 'user_id,type,value' });
-
-    if (upsertErr) throw new Error(upsertErr.message);
-
-    const { data: contacts, error } = await supabaseAdmin
-      .from('user_contacts')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at');
+    // Issue M17 fix: previously a separate DELETE (by type) followed by a
+    // batch UPSERT — if the upsert failed after the delete succeeded, the
+    // user would lose those contact methods with no rollback. Now a
+    // single atomic RPC (see migrations/0003_replace_user_contacts_atomic.sql),
+    // consistent with the pattern already used in upsertContact above.
+    // Also removes the need for a separate final SELECT — the RPC returns
+    // the resulting rows directly.
+    const { data: contacts, error } = await supabaseAdmin.rpc('replace_user_contacts_atomic', {
+      p_user_id:  userId,
+      p_types:    types,
+      p_contacts: data.contacts.map((contact) => ({
+        type:         contact.type,
+        label:        contact.label        || null,
+        value:        contact.value,
+        country_code: contact.country_code || null,
+        is_primary:   contact.is_primary   ?? false,
+      })),
+    });
 
     if (error) throw new Error(error.message);
-    success(res, { contacts });
+
+    success(res, { contacts: contacts || [] });
   } catch (err) { next(err); }
 }
 
