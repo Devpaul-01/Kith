@@ -1,19 +1,18 @@
 // src/controllers/dispute.controller.js
 const { supabaseAdmin } = require('../config/supabase');
-const { success }       = require('../utils/response');
+const { success, paginate } = require('../utils/response');
 const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
 const { createDisputeSchema, addDisputeNoteSchema, resolveDisputeSchema } = require('../validators/ledger.validator');
 const notification = require('../services/notification.service');
 const audit        = require('../services/audit.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
+const { getPagination } = require('../utils/pagination');
 
 async function listDisputes(req, res, next) {
   try {
     const { workspaceId } = req.params;
     const statusFilter    = req.query.status;
-    const page    = parseInt(req.query.page)     || 1;
-    const perPage = Math.min(100, parseInt(req.query.per_page) || 20);
-    const offset  = (page - 1) * perPage;
+    const { page, perPage, offset } = getPagination(req.query);
 
     let query = supabaseAdmin
       .from('disputes')
@@ -42,9 +41,7 @@ async function listDisputes(req, res, next) {
       ledger_entries: undefined, raised_by_member: undefined, resolved_by_member: undefined,
     }));
 
-    success(res, { disputes }, 200, {
-      pagination: { page, per_page: perPage, total: count || 0 },
-    });
+    paginate(res, { disputes }, count || 0, page, perPage);
   } catch (err) { next(err); }
 }
 
@@ -84,11 +81,9 @@ async function getDispute(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// Issue 5 fix: replaced two sequential writes with a single atomic RPC.
-// Previously: INSERT disputes → UPDATE ledger_entries.status
-// Risk: if the second write failed, an orphan dispute row remained while the
-// ledger entry stayed 'pending', leaving an inconsistent state.
-// Now: raise_dispute_atomic executes both inside a PostgreSQL transaction.
+// raise_dispute_atomic inserts the dispute row and updates the ledger
+// entry's status inside one Postgres transaction, so a failure partway
+// through can't leave an orphan dispute with the entry still 'pending'.
 
 async function raiseDispute(req, res, next) {
   try {
@@ -103,7 +98,7 @@ async function raiseDispute(req, res, next) {
     if (!isAdmin && entry.contributor_id !== callerId) throw new ForbiddenError('You can only dispute your own entries');
     if (!['confirmed', 'pending'].includes(entry.status)) throw new BusinessRuleError('Can only dispute confirmed or pending entries');
 
-    // Issue 5: atomic RPC replaces the two sequential writes
+    // Atomic RPC — see comment above this function.
     const { data: disputeData, error: rpcErr } = await supabaseAdmin.rpc('raise_dispute_atomic', {
       p_workspace_id:    workspaceId,
       p_ledger_entry_id: entryId,
@@ -153,18 +148,12 @@ async function addDisputeNote(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// Issue 5 fix: replaced two sequential writes with a single atomic RPC.
-// Previously: UPDATE disputes → UPDATE ledger_entries.status
-// Risk: if the second write failed, the dispute showed 'resolved' but the
-// ledger entry remained 'disputed', an inconsistent state.
-// Now: resolve_dispute_atomic executes both inside a PostgreSQL transaction.
+// resolve_dispute_atomic updates the dispute and the ledger entry's
+// status inside one Postgres transaction, so a failure partway through
+// can't leave the dispute 'resolved' while the entry stays 'disputed'.
 //
-// Issue M6 fix: the dispute_resolved notification previously sent a
-// hardcoded empty string for `container` (`variables: { container: '' }`),
-// so every dispute-resolved notification literally read "Dispute in  has
-// been resolved" — the function never actually looked up the related
-// container. Now joins disputes → ledger_entries → containers to populate
-// the real name.
+// The dispute_resolved notification below looks up the real container
+// name via a join (previously sent a hardcoded empty string).
 
 async function resolveDispute(req, res, next) {
   try {
@@ -182,7 +171,7 @@ async function resolveDispute(req, res, next) {
 
     const containerName = dispute.ledger_entries?.containers?.name || 'a container';
 
-    // Issue 5: atomic RPC replaces the two sequential writes
+    // Atomic RPC — see comment above this function.
     const now = new Date().toISOString();
     const { data: updatedData, error: rpcErr } = await supabaseAdmin.rpc('resolve_dispute_atomic', {
       p_dispute_id:      disputeId,

@@ -19,15 +19,16 @@
 // the migration — with zero observability into how often that happened.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { success }       = require('../utils/response');
+const { success, paginate } = require('../utils/response');
 const { NotFoundError, BusinessRuleError, ConflictError, ForbiddenError } = require('../utils/errors');
 const { createLedgerEntrySchema, updateLedgerEntrySchema, uploadFileSchema, confirmProofSchema, addCorrectionSchema } = require('../validators/ledger.validator');
-const { generateUploadUrl, generateDownloadUrl } = require('../services/storage.service');
+const { generateUploadUrl, generateDownloadUrl, verifyUploadedFile } = require('../services/storage.service');
 const notification = require('../services/notification.service');
 const audit        = require('../services/audit.service');
 const { exportLedgerCSV } = require('../services/export.service');
 const logger = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
+const { getPagination } = require('../utils/pagination');
 
 const IDEMPOTENCY_ENABLED = process.env.IDEMPOTENCY_ENABLED === 'true';
 if (!IDEMPOTENCY_ENABLED) {
@@ -42,9 +43,7 @@ async function listEntries(req, res, next) {
     const { workspaceId, containerId } = req.params;
     const isAdmin    = req.member.role === 'admin';
     const callerId   = req.member.id;
-    const page       = parseInt(req.query.page) || 1;
-    const perPage    = Math.min(100, parseInt(req.query.per_page) || 20);
-    const offset     = (page - 1) * perPage;
+    const { page, perPage, offset } = getPagination(req.query);
 
     let query = supabaseAdmin
       .from('ledger_entries')
@@ -92,16 +91,14 @@ async function listEntries(req, res, next) {
       confirmed_by_member: undefined,
     }));
 
-    success(res, { entries }, 200, {
-      pagination: { page, per_page: perPage, total: count || 0 },
-    });
+    paginate(res, { entries }, count || 0, page, perPage);
   } catch (err) { next(err); }
 }
 
-// ── Get single entry (Issue 5.1) ──────────────────────────────────
+// ── Get single entry ────────────────────────────────────────────────
 //
-// Issue 5.1 fix: new endpoint — previously no way to fetch a single ledger
-// entry by ID without loading the entire list. Respects admin/member scoping.
+// Fetches one ledger entry by id without loading the full list. Respects
+// admin/member scoping.
 
 async function getEntry(req, res, next) {
   try {
@@ -345,12 +342,11 @@ async function updateEntry(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Delete entry (Issue 5.2) ──────────────────────────────────────
+// ── Delete entry ──────────────────────────────────────────────────
 //
-// Issue 5.2 fix: new endpoint — allows deletion of pending (unconfirmed)
-// ledger entries. Admins can delete any pending/proof_uploaded entry.
-// Members can only delete their own pending entries.
-// Confirmed entries are immutable (use corrections instead).
+// Only pending/proof_uploaded entries can be deleted. Admins can delete
+// any such entry; members can only delete their own. Confirmed entries
+// are immutable — use addCorrection instead.
 
 async function deleteEntry(req, res, next) {
   try {
@@ -395,11 +391,10 @@ async function deleteEntry(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Ledger summary (Issue 5.3) ────────────────────────────────────
+// ── Ledger summary ──────────────────────────────────────────────────
 //
-// Issue 5.3 fix: new lightweight aggregate endpoint. Returns totals by status
-// without fetching full entry rows. Avoids loading the full list just for
-// dashboard-style aggregate counts.
+// Lightweight aggregate endpoint — returns totals by status without
+// fetching full entry rows, for dashboard-style aggregate counts.
 
 async function getLedgerSummary(req, res, next) {
   try {
@@ -470,6 +465,10 @@ async function confirmProof(req, res, next) {
     const { data: entry } = await supabaseAdmin.from('ledger_entries').select('*').eq('id', entryId).eq('container_id', containerId).maybeSingle();
     if (!entry) throw new NotFoundError('Entry not found');
     if (!isAdmin && entry.contributor_id !== req.member.id) throw new ForbiddenError('Access denied');
+
+    // Issue M13 fix: verify the uploaded file's actual bytes match its
+    // declared content type before trusting it as proof.
+    await verifyUploadedFile(data.file_path, data.mime_type);
 
     const fileObject    = { url: data.file_path, name: data.name, size: data.size, mime_type: data.mime_type, uploaded_by: req.member.id, uploaded_at: new Date().toISOString() };
     const currentProofs = Array.isArray(entry.proofs) ? entry.proofs : [];
@@ -597,12 +596,11 @@ async function getProofUrl(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Delete proof by index (Issue 5.9) ─────────────────────────────
+// ── Delete proof by index ───────────────────────────────────────────
 //
-// Issue 5.9 fix: new endpoint — allows removing a specific proof file from
-// a ledger entry's proofs array by its array index.
-// Admin can remove any proof; member can only remove their own.
-// Confirmed entries allow proof deletion only by admins (e.g. wrong file uploaded).
+// Removes a specific proof file from a ledger entry's proofs array by
+// index. Admin can remove any proof; a member can only remove their own,
+// and only from a non-confirmed entry.
 
 async function deleteProof(req, res, next) {
   try {

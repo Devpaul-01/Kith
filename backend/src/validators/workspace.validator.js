@@ -59,11 +59,10 @@ const updateSettingsSchema = z.object({
     .optional(),
 });
 
-// ── Announce (Issue 19) ────────────────────────────────────────────
+// ── Announce ──────────────────────────────────────────────────────
 //
-// Issue 19 fix: announceToWorkspace was validating `title` and `body` manually
-// inside the controller function with repetitive if/typeof/trim checks.
-// This schema centralises validation so the controller stays clean.
+// Centralized here (rather than manual if/typeof/trim checks in the
+// controller) so announceToWorkspace stays clean.
 
 const announceSchema = z.object({
   title:       z.string().min(1, 'title is required').max(200).trim(),
@@ -215,7 +214,7 @@ module.exports = {
   createWorkspaceSchema,
   updateWorkspaceSchema,
   updateSettingsSchema,
-  announceSchema,           // Issue 19: new export
+  announceSchema,
   createMemberSchema,
   updateMemberSchema,
   createGroupSchema,

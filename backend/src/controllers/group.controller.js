@@ -3,6 +3,7 @@ const { supabaseAdmin }      = require('../config/supabase');
 const { success, noContent } = require('../utils/response');
 const { NotFoundError }      = require('../utils/errors');
 const { createGroupSchema, updateGroupSchema, addGroupMembersSchema } = require('../validators/workspace.validator');
+const logger = require('../utils/logger');
 
 async function listGroups(req, res, next) {
   try {
@@ -54,12 +55,30 @@ async function createGroup(req, res, next) {
 
     if (error) throw new Error(error.message);
 
+    // Issue M4 fix: previously looped per member_id doing a SELECT then an
+    // INSERT (2 round trips × N members). Now batch-validates all member
+    // ids in one query, then batch-inserts all valid rows in one call —
+    // consistent with the batch-upsert pattern already used in
+    // auth.controller.js#updateContacts and participant.controller.js.
     if ((data.member_ids || []).length) {
-      for (const memberId of data.member_ids) {
-        const { data: memberCheck } = await supabaseAdmin
-          .from('workspace_members').select('id').eq('id', memberId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
-        if (memberCheck) {
-          await supabaseAdmin.from('group_members').insert({ group_id: group.id, workspace_member_id: memberId, added_by: req.member.id }, { ignoreDuplicates: true });
+      const { data: validMembers } = await supabaseAdmin
+        .from('workspace_members')
+        .select('id')
+        .eq('workspace_id', workspaceId)
+        .in('id', data.member_ids)
+        .is('deleted_at', null);
+
+      const validMemberIds = new Set((validMembers || []).map((m) => m.id));
+      const rows = data.member_ids
+        .filter((id) => validMemberIds.has(id))
+        .map((id) => ({ group_id: group.id, workspace_member_id: id, added_by: req.member.id }));
+
+      if (rows.length) {
+        const { error: gmErr } = await supabaseAdmin
+          .from('group_members')
+          .upsert(rows, { onConflict: 'group_id,workspace_member_id', ignoreDuplicates: true });
+        if (gmErr) {
+          logger.error('Failed to add initial members to new group', { groupId: group.id, error: gmErr.message });
         }
       }
     }
@@ -152,22 +171,42 @@ async function addGroupMembers(req, res, next) {
     const { data: groupCheck } = await supabaseAdmin.from('groups').select('id').eq('id', groupId).eq('workspace_id', workspaceId).maybeSingle();
     if (!groupCheck) throw new NotFoundError('Group not found');
 
+    // Issue M4 fix: previously looped per member_id doing a SELECT then an
+    // upsert (2 round trips × N members). Now batch-validates then
+    // batch-upserts in 2 total queries regardless of N.
+    const { data: validMembers } = await supabaseAdmin
+      .from('workspace_members')
+      .select('id')
+      .eq('workspace_id', workspaceId)
+      .in('id', data.member_ids)
+      .is('deleted_at', null);
+
+    const validMemberIds = new Set((validMembers || []).map((m) => m.id));
+    const validIds        = data.member_ids.filter((id) => validMemberIds.has(id));
+    const skippedInvalid   = data.member_ids.length - validIds.length;
+
     let added = 0, alreadyInGroup = 0;
 
-    for (const memberId of data.member_ids) {
-      const { data: memberCheck } = await supabaseAdmin.from('workspace_members').select('id').eq('id', memberId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
-      if (!memberCheck) continue;
+    if (validIds.length) {
+      const rows = validIds.map((id) => ({ group_id: groupId, workspace_member_id: id, added_by: req.member.id }));
 
-      const { data: inserted } = await supabaseAdmin
+      const { data: inserted, error } = await supabaseAdmin
         .from('group_members')
-        .upsert({ group_id: groupId, workspace_member_id: memberId, added_by: req.member.id }, { ignoreDuplicates: true, onConflict: 'group_id,workspace_member_id' })
-        .select('id')
-        .maybeSingle();
+        .upsert(rows, { ignoreDuplicates: true, onConflict: 'group_id,workspace_member_id' })
+        .select('id');
 
-      if (inserted) added++; else alreadyInGroup++;
+      if (error) throw new Error(error.message);
+
+      added          = (inserted || []).length;
+      alreadyInGroup = validIds.length - added;
     }
 
-    success(res, { added_count: added, already_in_group: alreadyInGroup });
+    // Preserves the original response contract: `already_in_group` covers
+    // any member_id that wasn't newly added, whether because it was
+    // invalid or because it was already in the group — the original loop
+    // didn't distinguish the two either (both fell into the same
+    // `continue` / increment path).
+    success(res, { added_count: added, already_in_group: alreadyInGroup + skippedInvalid });
   } catch (err) { next(err); }
 }
 

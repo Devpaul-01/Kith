@@ -27,6 +27,16 @@ async function createInvite(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// Issue L3 fix (documentation only, no behavior change): this
+// intentionally returns HTTP 200 with { is_valid: false, error } for every
+// failure case (not found / expired / used) rather than distinct 404/410
+// status codes. That's deliberate — this is a public, unauthenticated
+// endpoint, and using different HTTP statuses per failure reason would let
+// an attacker distinguish "token doesn't exist" from "token exists but
+// expired" from "token exists but already used" purely from status codes,
+// aiding invite-token enumeration. acceptInvite (below) is authenticated
+// and DOES use distinct error types/statuses, which is fine there since
+// the caller is already a known, authenticated user.
 async function previewInvite(req, res, next) {
   try {
     const { token } = req.params;

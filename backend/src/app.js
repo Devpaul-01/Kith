@@ -18,7 +18,21 @@ const app = express();
 // ── Security & core middleware ─────────────────────────────────────
 app.set('trust proxy', 1);
 
-app.use(helmet());
+// Issue L9 fix: helmet() was previously called with no configuration,
+// leaving CSP/HSTS/frameguard at whatever the installed helmet version's
+// defaults happen to be. Now explicit. Kept deliberately conservative
+// rather than a strict custom CSP: this process serves both a JSON API
+// (which doesn't render HTML, so CSP is largely inert for it) AND the
+// Bull Board admin dashboard (a full HTML app under /admin/queues) behind
+// the SAME helmet instance — an aggressive custom CSP tuned for the API
+// could break Bull Board's own asset loading. If Bull Board is ever split
+// onto its own process/origin, this can be tightened further with a real
+// CSP (script-src/style-src allowlists) instead of just the headers below.
+app.use(helmet({
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: false },
+  frameguard: { action: 'deny' },
+  referrerPolicy: { policy: 'no-referrer' },
+}));
 
 // Issue L2 fix: removed the `|| '*'` fallback. `server.js`'s
 // validateEnvironment() already refuses to boot without FRONTEND_URL set,

@@ -1,6 +1,6 @@
 // src/controllers/workspace.controller.js
 const { supabaseAdmin } = require('../config/supabase');
-const { success }       = require('../utils/response');
+const { success, paginate } = require('../utils/response');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const { uploadFileSchema }  = require('../validators/ledger.validator');
 const { generateUploadUrl } = require('../services/storage.service');
@@ -8,17 +8,18 @@ const {
   createWorkspaceSchema,
   updateWorkspaceSchema,
   updateSettingsSchema,
-  announceSchema,         // Issue 19: imported from validator
+  announceSchema,
 } = require('../validators/workspace.validator');
 const audit        = require('../services/audit.service');
 const notification = require('../services/notification.service');
-const logger       = require('../utils/logger');
+const logger        = require('../utils/logger');
+const { AUDIT_ACTIONS, describeAuditAction } = require('../constants/audit-actions');
+const { getPagination } = require('../utils/pagination');
 
 // ── List workspaces ────────────────────────────────────────────────
 //
-// Issue 8 fix: removed `plan` from the workspace join select and from the
-// shaped membership objects. `plan` is not a column on the workspaces table
-// and caused runtime query errors or undefined values on every list call.
+// Note: `plan` is intentionally NOT selected/shaped here — it isn't a
+// column on the workspaces table.
 
 async function listWorkspaces(req, res, next) {
   try {
@@ -35,7 +36,6 @@ async function listWorkspaces(req, res, next) {
 
     if (error) throw new Error(error.message);
 
-    // Issue 8: removed `plan` from the shape — column does not exist
     const memberships = (data || []).map((m) => ({
       member_id:      m.id,
       role:           m.role,
@@ -104,15 +104,30 @@ async function getAvatarUploadUrl(req, res, next) {
 }
 
 // ── Update workspace ───────────────────────────────────────────────
+//
+// Issue M7 fix: this was the only update handler in the codebase with no
+// explicit field whitelist — it spread the entire validated Zod object
+// directly into the DB update (`for (const [key, val] of
+// Object.entries(data))`), trusting the schema as the sole boundary. Every
+// other update handler (updateMember, updateTask, updateContainer,
+// updateParticipant) uses an explicit allowedFields array as defense in
+// depth against the schema ever admitting a field that shouldn't be
+// directly writable. Brought in line with that pattern here, on arguably
+// the most sensitive resource (workspace-level settings, including
+// `visibility`).
 
 async function updateWorkspace(req, res, next) {
   try {
     const data            = updateWorkspaceSchema.parse(req.body);
     const { workspaceId } = req.params;
 
+    const allowedFields = [
+      'name', 'base_currency', 'family_type', 'description', 'avatar_url', 'visibility',
+    ];
+
     const updates = {};
-    for (const [key, val] of Object.entries(data)) {
-      if (val !== undefined) updates[key] = val;
+    for (const field of allowedFields) {
+      if (data[field] !== undefined) updates[field] = data[field];
     }
 
     if (!Object.keys(updates).length) {
@@ -128,7 +143,7 @@ async function updateWorkspace(req, res, next) {
     if (error) throw new Error(error.message);
     if (!workspace) throw new NotFoundError('Workspace not found');
 
-    await audit.log({ ...audit.fromReq(req), action: 'workspace.settings_changed', targetType: 'workspace', targetId: workspaceId, metadata: { fields: Object.keys(data) } });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.WORKSPACE_SETTINGS_CHANGED, targetType: 'workspace', targetId: workspaceId, metadata: { fields: Object.keys(updates).filter((k) => k !== 'updated_at') } });
 
     success(res, { workspace });
   } catch (err) { next(err); }
@@ -147,46 +162,21 @@ async function deleteWorkspace(req, res, next) {
     if (error) throw new Error(error.message);
     if (!data) throw new NotFoundError('Workspace not found');
 
-    await audit.log({ ...audit.fromReq(req), action: 'workspace.deleted', targetType: 'workspace', targetId: workspaceId });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.WORKSPACE_DELETED, targetType: 'workspace', targetId: workspaceId });
 
     success(res, { message: 'Workspace deleted.' });
   } catch (err) { next(err); }
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────
-
-function getActivityDescription(action, metadata) {
-  const actions = {
-    'container.completed':              'completed a container',
-    'container.archived':               'archived a container',
-    'container.deleted':                'deleted a container',
-    'container.settings_changed':       'updated container settings',
-    'container.participants_added':     'added participants to a container',
-    'container.converted_to_recurring': 'converted event to recurring pool',
-    'ledger.confirmed':                 'confirmed a contribution',
-    'ledger.submitted':                 'submitted a contribution',
-    'ledger.corrected':                 'added a correction',
-    'dispute.raised':                   'raised a dispute',
-    'dispute.resolved':                 'resolved a dispute',
-    'workspace.settings_changed':       'updated workspace settings',
-    'workspace.deleted':                'deleted workspace',
-    'member.removed':                   'removed a member',
-    'cycle.override_applied':           'applied cycle override',
-    'task.created':                     'created a task',
-    'task.completed':                   'completed a task',
-    'task.confirmed':                   'confirmed a task',
-  };
-
-  const baseAction = actions[action] || action.replace(/\./g, ' ');
-
-  if (metadata?.fields?.length)            return `changed ${metadata.fields.join(', ')}`;
-  if (metadata?.keys?.length)              return `updated ${metadata.keys.join(', ')}`;
-  if (metadata?.added_count !== undefined) {
-    const s = metadata.added_count !== 1 ? 's' : '';
-    return `added ${metadata.added_count} participant${s}`;
-  }
-  return baseAction;
-}
+//
+// Issue M3 fix: the hand-synced `actions` lookup table previously lived
+// here and had to be kept in lockstep by hand with every `action:` string
+// literal scattered across the other controllers. Replaced with
+// describeAuditAction() from constants/audit-actions.js, which shares the
+// exact same AUDIT_ACTIONS values those controllers now import — a typo
+// or a forgotten update in either place is no longer possible since
+// there's only one place.
 
 async function getDashboard(req, res, next) {
   try {
@@ -323,7 +313,7 @@ async function getDashboard(req, res, next) {
     const enrichedActivity = (activity || []).map((a) => ({
       ...a,
       actor_name:   a.actor_member?.display_name || 'System',
-      description:  getActivityDescription(a.action, a.metadata),
+      description:  describeAuditAction(a.action, a.metadata),
       actor_member: undefined,
     }));
 
@@ -379,7 +369,7 @@ async function updateSettings(req, res, next) {
       if (error) throw new Error(error.message);
     }
 
-    await audit.log({ ...audit.fromReq(req), action: 'workspace.settings_changed', targetType: 'workspace', targetId: workspaceId, metadata: { keys: Object.keys(data) } });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.WORKSPACE_SETTINGS_CHANGED, targetType: 'workspace', targetId: workspaceId, metadata: { keys: Object.keys(data) } });
 
     const { data: allRows, error: fetchErr } = await supabaseAdmin
       .from('workspace_settings').select('setting_key, setting_value').eq('workspace_id', workspaceId);
@@ -394,14 +384,10 @@ async function updateSettings(req, res, next) {
 }
 
 // ── Admin Announcement ─────────────────────────────────────────────
-//
-// Issue 19 fix: replaced manual if/typeof/trim validation with
-// announceSchema.parse(), which is cleaner and keeps validation in one place.
 
 async function announceToWorkspace(req, res, next) {
   try {
     const { workspaceId }              = req.params;
-    // Issue 19: use validated schema instead of manual checks
     const { title, body, target_role } = announceSchema.parse(req.body);
 
     let query = supabaseAdmin
@@ -436,21 +422,31 @@ async function announceToWorkspace(req, res, next) {
       variables:     { title, body },
     });
 
-    await audit.log({ ...audit.fromReq(req), action: 'workspace.announcement_sent', targetType: 'workspace', targetId: workspaceId, metadata: { title, recipient_count: recipientIds.length, target_role: target_role || 'all' } });
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.WORKSPACE_ANNOUNCEMENT_SENT, targetType: 'workspace', targetId: workspaceId, metadata: { title, recipient_count: recipientIds.length, target_role: target_role || 'all' } });
 
     success(res, { sent_count: recipientIds.length });
   } catch (err) { next(err); }
 }
 
 // ── Audit Log ──────────────────────────────────────────────────────
+//
+// Issue M15 fix: getAuditLog and exportAuditLog previously duplicated the
+// same filter-building block (action/actor_member_id/from/to) verbatim.
+// Extracted into applyAuditLogFilters() so the filtering logic can't drift
+// between the paginated view and the CSV export.
+
+function applyAuditLogFilters(query, { action, actor_member_id, from, to }) {
+  if (action)          query = query.eq('action', action);
+  if (actor_member_id) query = query.eq('actor_member_id', actor_member_id);
+  if (from)            query = query.gte('created_at', from);
+  if (to)              query = query.lte('created_at', to);
+  return query;
+}
 
 async function getAuditLog(req, res, next) {
   try {
-    const { workspaceId }                        = req.params;
-    const page    = parseInt(req.query.page)     || 1;
-    const perPage = Math.min(100, parseInt(req.query.per_page) || 20);
-    const offset  = (page - 1) * perPage;
-    const { action, actor_member_id, from, to }  = req.query;
+    const { workspaceId }            = req.params;
+    const { page, perPage, offset }  = getPagination(req.query);
 
     let query = supabaseAdmin
       .from('audit_log')
@@ -459,10 +455,7 @@ async function getAuditLog(req, res, next) {
       .order('created_at', { ascending: false })
       .range(offset, offset + perPage - 1);
 
-    if (action)          query = query.eq('action', action);
-    if (actor_member_id) query = query.eq('actor_member_id', actor_member_id);
-    if (from)            query = query.gte('created_at', from);
-    if (to)              query = query.lte('created_at', to);
+    query = applyAuditLogFilters(query, req.query);
 
     const { data, error, count } = await query;
     if (error) throw new Error(error.message);
@@ -473,16 +466,14 @@ async function getAuditLog(req, res, next) {
       actor_member: undefined,
     }));
 
-    success(res, { entries }, 200, {
-      pagination: { page, per_page: perPage, total: count || 0 },
-    });
+    paginate(res, { entries }, count || 0, page, perPage);
   } catch (err) { next(err); }
 }
 
 async function exportAuditLog(req, res, next) {
   try {
     const { workspaceId } = req.params;
-    const { action, actor_member_id, from, to, limit = 1000 } = req.query;
+    const { limit = 1000 } = req.query;
 
     let query = supabaseAdmin
       .from('audit_log')
@@ -491,10 +482,7 @@ async function exportAuditLog(req, res, next) {
       .order('created_at', { ascending: false })
       .limit(Math.min(parseInt(limit), 10000));
 
-    if (action)          query = query.eq('action', action);
-    if (actor_member_id) query = query.eq('actor_member_id', actor_member_id);
-    if (from)            query = query.gte('created_at', from);
-    if (to)              query = query.lte('created_at', to);
+    query = applyAuditLogFilters(query, req.query);
 
     const { data } = await query;
 
@@ -589,12 +577,22 @@ async function getOverdueSummary(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Search (Issue 10) ──────────────────────────────────────────────
+// ── Search ─────────────────────────────────────────────────────────
 //
-// Issue 10 fix: new cross-entity search endpoint exposed as GET /search.
-// Searches active members (by display_name) and containers (by name) in
+// Cross-entity search across active members (by display_name) and
+// containers (by name) in
 // parallel. Results are typed so the client can render them differently.
 // Scoped to the current workspace; requires active membership (via requireMembership).
+//
+// Issue L7 fix: `%` and `_` are ILIKE wildcard metacharacters. A user
+// typing either into the search box previously got non-obvious matching
+// behavior (broader or narrower than intended) because they were
+// interpolated into the pattern unescaped. Now escaped before building
+// the `%...%` pattern.
+
+function escapeIlike(str) {
+  return str.replace(/[%_\\]/g, (ch) => `\\${ch}`);
+}
 
 async function searchWorkspace(req, res, next) {
   try {
@@ -606,6 +604,8 @@ async function searchWorkspace(req, res, next) {
       return success(res, { results: [] });
     }
 
+    const pattern = `%${escapeIlike(query)}%`;
+
     const [{ data: members }, { data: containers }] = await Promise.all([
       supabaseAdmin
         .from('workspace_members')
@@ -613,7 +613,7 @@ async function searchWorkspace(req, res, next) {
         .eq('workspace_id', workspaceId)
         .eq('is_active', true)
         .is('deleted_at', null)
-        .ilike('display_name', `%${query}%`)
+        .ilike('display_name', pattern)
         .limit(limit),
 
       supabaseAdmin
@@ -621,7 +621,7 @@ async function searchWorkspace(req, res, next) {
         .select('id, name, container_type, status')
         .eq('workspace_id', workspaceId)
         .is('deleted_at', null)
-        .ilike('name', `%${query}%`)
+        .ilike('name', pattern)
         .limit(limit),
     ]);
 
@@ -648,5 +648,5 @@ module.exports = {
   getAuditLog,
   exportAuditLog,
   getOverdueSummary,
-  searchWorkspace,    // Issue 10: new export
+  searchWorkspace,
 };

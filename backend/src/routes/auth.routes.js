@@ -21,10 +21,10 @@ router.post('/forgot-password', authLimiter, ctrl.forgotPassword);
 // Get Google OAuth redirect URL — frontend opens this URL
 router.get('/google/url', ctrl.getGoogleAuthUrl);
 
-// Issue 5.5: Exchange Google OAuth code for a session after redirect
+// Exchange Google OAuth code for a session after redirect
 router.post('/google/callback', authLimiter, ctrl.googleCallback);
 
-// Issue 5.4: Exchange Supabase OTP token (from email verification link) for a session
+// Exchange Supabase OTP token (from email verification link) for a session
 router.post('/verify-email', authLimiter, ctrl.verifyEmail);
 
 // ── Authenticated ─────────────────────────────────────────────────
@@ -32,14 +32,14 @@ router.post('/verify-email', authLimiter, ctrl.verifyEmail);
 // Logout — invalidates the current session
 router.post('/logout', requireAuth, ctrl.logout);
 
-// Issue 5.6: Logout from all devices — revokes all sessions for the user
+// Logout from all devices — revokes all sessions for the user
 router.post('/logout-all-devices', requireAuth, ctrl.logoutAllDevices);
 
 // Reset password — ONLY for the password-recovery link flow (requires the
 // short-lived recovery JWT; enforced in the controller via isRecoverySession)
 router.post('/reset-password', requireAuth, ctrl.resetPassword);
 
-// Issue H2: change password for an already-logged-in user, from account
+// Change password for an already-logged-in user, from account
 // settings. Requires current_password — distinct from the recovery-link
 // flow above.
 router.post('/change-password', requireAuth, ctrl.changePassword);
@@ -71,7 +71,7 @@ router.post('/push-token', requireAuth, loadDbUser, ctrl.registerPushToken);
 // Toggle push notifications and email digest on/off
 router.patch('/notification-preferences', requireAuth, loadDbUser, ctrl.updateNotificationPrefs);
 
-// Issue 21: GDPR data export — queues an async job; result emailed to user
+// GDPR data export — queues an async job; result emailed to user
 router.post('/data-export', requireAuth, loadDbUser, ctrl.requestDataExport);
 
 module.exports = router;
