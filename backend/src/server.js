@@ -67,6 +67,14 @@ async function start() {
     });
   });
 
+  // Issue L10 fix: explicit timeouts instead of relying on Node defaults.
+  // keepAliveTimeout must stay LOWER than any upstream load balancer's own
+  // idle timeout (e.g. ALB defaults to 60s) to avoid a race where the LB
+  // reuses a connection Node has already started closing. headersTimeout
+  // must be greater than keepAliveTimeout per Node's own requirement.
+  server.keepAliveTimeout = 65 * 1000;
+  server.headersTimeout   = 66 * 1000;
+
   // Graceful shutdown
   const shutdown = (signal) => {
     logger.info(`${signal} received — shutting down gracefully`);

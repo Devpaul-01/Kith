@@ -11,7 +11,7 @@ const {
 } = require('../validators/auth.validator');
 const { uploadFileSchema }  = require('../validators/ledger.validator');
 const { generateUploadUrl } = require('../services/storage.service');
-// Issue 21: queue import for data export
+// Used by requestDataExport below
 const { getQueue } = require('../queues');
 const logger = require('../utils/logger');
 
@@ -28,20 +28,34 @@ function getAuthClient() {
   return supabaseAuth;
 }
 
+// Issue L5 fix: previously matched purely on error.message substrings,
+// which is brittle against Supabase SDK/API wording changes. Newer
+// supabase-js/GoTrue versions expose a stable `error.code` (and
+// `error.status`) that should be preferred. Message-substring matching is
+// kept as a fallback for older SDK versions / error shapes where `code`
+// isn't populated, rather than removed outright — this is a safety net,
+// not a primary mechanism.
 function mapSupabaseAuthError(error) {
-  const msg = error?.message || '';
-  if (msg.includes('already registered') || msg.includes('User already registered'))
+  const code = error?.code || '';
+  const msg  = error?.message || '';
+
+  if (code === 'user_already_exists' || msg.includes('already registered') || msg.includes('User already registered'))
     return new ConflictError('An account with this email already exists. Sign in instead.');
-  if (msg.includes('Email not confirmed'))
+
+  if (code === 'email_not_confirmed' || msg.includes('Email not confirmed'))
     return new BusinessRuleError(
       'Please verify your email address before logging in. Check your inbox for a verification link.'
     );
-  if (msg.includes('Invalid login credentials') || msg.includes('invalid_grant'))
+
+  if (code === 'invalid_credentials' || msg.includes('Invalid login credentials') || msg.includes('invalid_grant'))
     return new UnauthorizedError('Invalid email or password.');
-  if (msg.includes('Email rate limit exceeded'))
+
+  if (code === 'over_email_send_rate_limit' || msg.includes('Email rate limit exceeded'))
     return new AppError('Too many emails sent. Please try again later.', 429, 'RATE_LIMITED');
-  if (msg.includes('Password should be'))
+
+  if (code === 'weak_password' || msg.includes('Password should be'))
     return new ValidationError(msg, 'password');
+
   return new AppError(msg || 'Authentication error', 400, 'AUTH_ERROR');
 }
 
@@ -169,7 +183,7 @@ async function login(req, res, next) {
       base_currency:  m.workspaces?.base_currency,
     }));
 
-    // Issue 1 fix: path changed from '/api/auth/refresh' to '/v1/auth/refresh'
+    // Must match the path this cookie is cleared/refreshed on (see logout, refreshToken).
     res.cookie('refresh_token', authData.session.refresh_token, {
       httpOnly: true,
       secure:   process.env.NODE_ENV === 'production',
@@ -206,7 +220,7 @@ async function refreshToken(req, res, next) {
 
     if (error) return next(new UnauthorizedError('Invalid or expired refresh token.'));
 
-    // Issue 1 fix: path changed from '/api/auth/refresh' to '/v1/auth/refresh'
+    // Must match the path this cookie is cleared/refreshed on (see logout, refreshToken).
     res.cookie('refresh_token', refreshData.session.refresh_token, {
       httpOnly: true,
       secure:   process.env.NODE_ENV === 'production',
@@ -227,7 +241,7 @@ async function refreshToken(req, res, next) {
 
 async function logout(req, res, next) {
   try {
-    // Issue 1 fix: path changed from '/api/auth/refresh' to '/v1/auth/refresh'
+    // Must match the path this cookie is cleared/refreshed on (see logout, refreshToken).
     res.clearCookie('refresh_token', { path: '/v1/auth/refresh' });
 
     const { error } = await supabaseAdmin.auth.admin.signOut(req.user.id);
@@ -236,7 +250,7 @@ async function logout(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Logout all devices (Issue 5.6) ───────────────────────────────
+// ── Logout all devices ──────────────────────────────────────────
 
 async function logoutAllDevices(req, res, next) {
   try {
@@ -376,6 +390,16 @@ async function changePassword(req, res, next) {
 // any, it actually relies on, since this now rejects anything not on that
 // list instead of blindly trusting it.
 
+// Issue L8 fix (documentation only): this app does not itself set or
+// validate an OAuth `state` parameter — that responsibility is delegated
+// entirely to Supabase's GoTrue /authorize endpoint, which is expected to
+// generate and verify its own CSRF state internally as part of the
+// standard OAuth authorization-code flow. This is a reasonable default
+// for most Supabase projects, but it's an assumption about Supabase's
+// internals rather than something verified in this codebase — worth
+// confirming against Supabase's current documentation/behavior for your
+// project's GoTrue version if this flow is ever audited for CSRF
+// specifically.
 function isAllowedGoogleRedirect(url) {
   if (!url) return false;
   if (url.startsWith(process.env.FRONTEND_URL)) return true;
@@ -401,7 +425,7 @@ async function getGoogleAuthUrl(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Google OAuth callback (Issue 5.5) ─────────────────────────────
+// ── Google OAuth callback ─────────────────────────────────────────
 
 async function googleCallback(req, res, next) {
   try {
@@ -434,7 +458,7 @@ async function googleCallback(req, res, next) {
       }
     }
 
-    // Issue 1 fix: correct path used here too
+    // Must match the path this cookie is cleared/refreshed on (see logout, refreshToken).
     res.cookie('refresh_token', session.refresh_token, {
       httpOnly: true,
       secure:   process.env.NODE_ENV === 'production',
@@ -452,7 +476,7 @@ async function googleCallback(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Verify email (Issue 5.4) ──────────────────────────────────────
+// ── Verify email ─────────────────────────────────────────────────
 
 async function verifyEmail(req, res, next) {
   try {
@@ -530,19 +554,13 @@ async function register(req, res, next) {
 
 // ── Get current user ──────────────────────────────────────────────
 //
-// Issue 2 fix: removed the first (dead-code) duplicate definition of getMe
-// that appeared between the Login comment block and the login function.
-//
-// Issue 7 fix: req.dbUser is already populated by loadDbUser middleware on
-// this route (GET /auth/me uses requireAuth, loadDbUser, ctrl.getMe).
-// The previous implementation ignored req.dbUser and ran a second
-// supabaseAdmin.from('users').select('*') query — an unnecessary round-trip.
+// GET /auth/me runs requireAuth, loadDbUser, then this handler — req.dbUser
+// is already populated, so this reuses it instead of a second query.
 
 async function getMe(req, res, next) {
   try {
     const userId = req.user.id;
 
-    // Issue 7: use req.dbUser already populated by loadDbUser — no second query
     const user = req.dbUser || null;
 
     const { data: membershipsData, error: mErr } = await supabaseAdmin
@@ -637,11 +655,11 @@ async function getUserContacts(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Add or update a single contact (Issue 13 — atomic RPC) ────────
+// ── Add or update a single contact ────────────────────────────────
 //
-// Issue 13 fix: replaced two sequential writes (UPDATE is_primary=false, then
-// UPSERT) with a single atomic RPC to eliminate the TOCTOU race condition that
-// could result in multiple contacts of the same type having is_primary=true.
+// upsert_primary_contact runs the is_primary=false demotion and the
+// upsert atomically, so two concurrent calls can't both end up with
+// is_primary=true for the same contact type.
 
 async function upsertContact(req, res, next) {
   try {
@@ -666,11 +684,10 @@ async function upsertContact(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Delete a contact by ID (Issue 4 — 404 on missing) ─────────────
+// ── Delete a contact by ID ────────────────────────────────────────
 //
-// Issue 4 fix: the previous implementation did not check whether any row was
-// actually deleted, returning 200 even for non-existent contactIds.
-// Now uses .select('id').maybeSingle() to detect no-op deletes.
+// .select('id').maybeSingle() detects a no-op delete (nothing matched)
+// so a non-existent contactId returns 404 instead of a false-positive 200.
 
 async function deleteContact(req, res, next) {
   try {
@@ -692,18 +709,12 @@ async function deleteContact(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Update contacts — bulk replace (Issue 12 — batch upsert) ──────
+// ── Update contacts — bulk replace ────────────────────────────────
 //
-// Issue 12 fix: replaced serial for...of loop (N round-trips) with a single
-// batch upsert, consistent with how the workers handle bulk writes.
-//
-// NOTE (Issue M17 — flagged, not yet fixed): this remains a two-step,
-// non-atomic write (DELETE by type, then batch UPSERT). If the upsert fails
-// after the delete succeeds, the user loses those contact methods with no
-// rollback — the same class of bug already fixed via RPC in upsertContact
-// just above. Wrapping this in a `replace_user_contacts_atomic` RPC is
-// planned for the next batch once the current schema is available (needs
-// real `user_contacts` column names for the migration).
+// M17 (open): this is still a two-step, non-atomic write (DELETE by type,
+// then batch UPSERT) — the same TOCTOU class of bug already fixed via RPC
+// in upsertContact just above. Needs a `replace_user_contacts_atomic` RPC
+// once the real user_contacts schema is available (see migrations/).
 
 async function updateContacts(req, res, next) {
   try {
@@ -718,7 +729,7 @@ async function updateContacts(req, res, next) {
       .eq('user_id', userId)
       .in('type', types);
 
-    // Issue 12: single batch upsert instead of N sequential upserts
+    // Single batch upsert instead of a sequential per-contact loop.
     const upsertRows = data.contacts.map((contact) => ({
       user_id:      userId,
       type:         contact.type,
@@ -796,10 +807,10 @@ async function updateNotificationPrefs(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Request data export (Issue 21) ───────────────────────────────
+// ── Request data export (GDPR) ───────────────────────────────────
 //
-// Issue 21 fix: was a no-op stub. Now fetches the user's workspace memberships
-// and enqueues an async job that exports ledger data and emails it to the user.
+// Fetches the user's workspace memberships and enqueues an async job that
+// exports ledger/task data and emails it to the user.
 
 async function requestDataExport(req, res, next) {
   try {

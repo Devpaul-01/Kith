@@ -1,14 +1,13 @@
 // src/controllers/notification.controller.js
 const { supabaseAdmin } = require('../config/supabase');
-const { success }       = require('../utils/response');
+const { success, paginate } = require('../utils/response');
 const { NotFoundError } = require('../utils/errors');
+const { getPagination } = require('../utils/pagination');
 
 async function listNotifications(req, res, next) {
   try {
     const memberId = req.member.id;
-    const page     = parseInt(req.query.page) || 1;
-    const perPage  = Math.min(100, parseInt(req.query.per_page) || 20);
-    const offset   = (page - 1) * perPage;
+    const { page, perPage, offset } = getPagination(req.query);
 
     let query = supabaseAdmin
       .from('notifications')
@@ -25,9 +24,7 @@ async function listNotifications(req, res, next) {
       supabaseAdmin.from('notifications').select('*', { count: 'exact', head: true }).eq('recipient_id', memberId).eq('is_read', false),
     ]);
 
-    success(res, { notifications: notifications || [], unread_count: unreadCount || 0 }, 200, {
-      pagination: { page, per_page: perPage, total: count || 0 },
-    });
+    paginate(res, { notifications: notifications || [], unread_count: unreadCount || 0 }, count || 0, page, perPage);
   } catch (err) { next(err); }
 }
 

@@ -11,11 +11,10 @@ const audit        = require('../services/audit.service');
 const { getQueue } = require('../queues');
 const logger       = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
+const { getPagination } = require('../utils/pagination');
+const { paginate } = require('../utils/response');
 
 // ── List containers ────────────────────────────────────────────────
-//
-// Issue 9 confirmation: ledger_entries join is present and correct.
-// No change required — the original code already joins ledger_entries.
 
 async function listContainers(req, res, next) {
   try {
@@ -274,15 +273,12 @@ async function completeContainer(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Convert to Recurring (Issue 5) ────────────────────────────────
+// ── Convert to Recurring ──────────────────────────────────────────
 //
-// Issue 5 fix: replaced two sequential writes (INSERT container, UPSERT
-// participants) with a single atomic RPC call. Previously, if the participant
-// upsert failed after the container insert succeeded, a new orphan recurring
-// container would exist with no participants, leaving an inconsistent state
-// that required manual cleanup.
-// Now: convert_event_to_recurring_atomic executes both operations inside a
-// PostgreSQL transaction, rolling back if either fails.
+// convert_event_to_recurring_atomic runs the container insert and
+// participant upsert inside one Postgres transaction, so a failure
+// partway through can't leave an orphan recurring container with no
+// participants.
 
 async function convertToRecurring(req, res, next) {
   try {
@@ -297,7 +293,7 @@ async function convertToRecurring(req, res, next) {
     if (source.container_type !== 'event') throw new BusinessRuleError('Only event containers can be converted to recurring');
     if (!['active', 'completed'].includes(source.status)) throw new BusinessRuleError('Container must be active or completed to convert');
 
-    // Issue 5: single atomic RPC replaces two sequential writes
+    // Atomic RPC — see comment above convertToRecurring.
     const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc('convert_event_to_recurring_atomic', {
       p_source_container_id: containerId,
       p_workspace_id:        workspaceId,
@@ -518,9 +514,7 @@ async function listCycles(req, res, next) {
   try {
     const { containerId } = req.params;
     const statusFilter    = req.query['status'];
-    const page    = parseInt(req.query.page) || 1;
-    const perPage = Math.min(100, parseInt(req.query.per_page) || 20);
-    const offset  = (page - 1) * perPage;
+    const { page, perPage, offset } = getPagination(req.query);
 
     let query = supabaseAdmin.from('container_cycles').select('*', { count: 'exact' }).eq('container_id', containerId).order('cycle_number', { ascending: false }).range(offset, offset + perPage - 1);
     if (statusFilter) query = query.eq('status', statusFilter);
@@ -528,7 +522,7 @@ async function listCycles(req, res, next) {
     const { data, error, count } = await query;
     if (error) throw new Error(error.message);
 
-    success(res, { cycles: data || [], meta: { total: count || 0, pagination: { page, per_page: perPage } } });
+    paginate(res, { cycles: data || [] }, count || 0, page, perPage);
   } catch (err) { next(err); }
 }
 

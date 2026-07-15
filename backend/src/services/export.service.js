@@ -59,8 +59,8 @@ async function exportLedgerCSV({ workspaceId, containerId, from, to }) {
   });
 }
 
-async function exportTasksCSV({ containerId }) {
-  const { data, error } = await supabaseAdmin
+async function exportTasksCSV({ containerId, assignedTo = null }) {
+  let query = supabaseAdmin
     .from('container_tasks')
     .select(`
       id, title, description, due_date, status, completed_at, completion_note,
@@ -70,6 +70,14 @@ async function exportTasksCSV({ containerId }) {
     .is('deleted_at', null)
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: true });
+
+  // Issue L6 fix: previously only the admin path used this shared service
+  // function; the member-scoped path in task.controller.js#exportTasks
+  // reimplemented its own escape()/headers/row-building inline instead of
+  // adding a filter here. Now both paths share one CSV builder.
+  if (assignedTo) query = query.eq('assigned_to', assignedTo);
+
+  const { data, error } = await query;
 
   if (error) throw new Error(error.message);
 

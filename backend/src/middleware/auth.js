@@ -119,16 +119,15 @@ async function requireAuth(req, res, next) {
  * Loads a targeted set of user columns and attaches to req.dbUser.
  * Must be called after requireAuth.
  *
- * Issue 6 fix: replaced select('*') with an explicit column list so this
- * hot-path middleware does not over-fetch on every authenticated request.
- * If any controller needs additional fields, add them here rather than
- * issuing a separate query in the controller.
+ * Uses an explicit column list rather than select('*') since this is a
+ * hot-path middleware run on every authenticated request. If a controller
+ * needs an additional field, add it here rather than issuing a separate
+ * query in the controller.
  */
 async function loadDbUser(req, res, next) {
   try {
     if (!req.user) throw new UnauthorizedError();
 
-    // Issue 6: explicit column list instead of select('*')
     const { data, error } = await supabaseAdmin
       .from('users')
       .select('id, email, full_name, avatar_url, timezone, preferred_language, push_enabled, email_digest_enabled, deleted_at')

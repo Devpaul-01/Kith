@@ -3,13 +3,42 @@ const { supabaseAdmin }      = require('../config/supabase');
 const { success, noContent } = require('../utils/response');
 const { NotFoundError }      = require('../utils/errors');
 const { createMilestoneSchema, updateMilestoneSchema, uploadFileSchema, confirmProofSchema } = require('../validators/ledger.validator');
-const { generateUploadUrl } = require('../services/storage.service');
+const { generateUploadUrl, verifyUploadedFile } = require('../services/storage.service');
+
+// Issue M11 fix: containers-completed and milestones are two independent,
+// independently-limited, independently-sorted sources merged in memory.
+// The previous implementation applied one shared `before` cursor (derived
+// from the last item of the merged, sliced page) to BOTH sources' next-page
+// queries. That's not composable: if source A contributed more items to
+// page 1 than source B, some of source B's already-fetched-but-unused
+// items (dates between the merged cutoff and B's own fetch limit) would
+// never be reachable on page 2 — a real skip, not just a theoretical one,
+// once the two sources have an uneven split.
+//
+// Fixed with a per-source cursor instead of one shared cursor: the
+// response now includes `next_cursor: { before_container, before_milestone }`
+// reflecting exactly how far into EACH source this page consumed. The
+// client passes both back verbatim for the next page instead of a single
+// `before`. This keeps pagination exact without needing a heap-based
+// streaming paginator or any server-side session state.
+//
+// FRONTEND DEPENDENCY: the timeline screen's "load more" must switch from
+// passing a single `before` param to passing `before_container` and
+// `before_milestone` from the previous response's `next_cursor`. Backward
+// compatible for the FIRST page (a single legacy `before` is still
+// accepted and applied to both sources, matching the old first-page
+// behavior) — only pagination past page 1 needs the client update.
 
 async function getTimeline(req, res, next) {
   try {
     const { workspaceId } = req.params;
     const limit  = Math.min(100, parseInt(req.query.limit) || 50);
-    const before = req.query.before;
+
+    // Back-compat: a bare `before` still seeds both cursors (correct for
+    // the first "load more" call); per-source cursors take precedence once
+    // the client has them from a previous response.
+    const beforeContainer = req.query.before_container || req.query.before;
+    const beforeMilestone = req.query.before_milestone || req.query.before;
 
     let cQuery = supabaseAdmin
       .from('containers')
@@ -20,7 +49,7 @@ async function getTimeline(req, res, next) {
       .order('completed_at', { ascending: false })
       .limit(limit);
 
-    if (before) cQuery = cQuery.lt('completed_at', before);
+    if (beforeContainer) cQuery = cQuery.lt('completed_at', beforeContainer);
 
     let mQuery = supabaseAdmin
       .from('milestones')
@@ -30,7 +59,7 @@ async function getTimeline(req, res, next) {
       .order('milestone_date', { ascending: false })
       .limit(limit);
 
-    if (before) mQuery = mQuery.lt('milestone_date', before);
+    if (beforeMilestone) mQuery = mQuery.lt('milestone_date', beforeMilestone);
 
     const [{ data: containers }, { data: milestones }] = await Promise.all([cQuery, mQuery]);
 
@@ -41,7 +70,21 @@ async function getTimeline(req, res, next) {
       .sort((a, b) => new Date(b.date) - new Date(a.date))
       .slice(0, limit);
 
-    success(res, { items });
+    // The per-source cursor advances to the LAST item actually fetched
+    // from that source (not the last item that made it into the merged,
+    // sliced page) — so nothing fetched-but-unused is ever skipped on the
+    // next call.
+    const lastContainer = (containers  || [])[containers?.length  - 1];
+    const lastMilestone = (milestones  || [])[milestones?.length  - 1];
+
+    success(res, {
+      items,
+      next_cursor: {
+        before_container: lastContainer?.completed_at    || null,
+        before_milestone: lastMilestone?.milestone_date  || null,
+      },
+      has_more: (containers?.length === limit) || (milestones?.length === limit),
+    });
   } catch (err) { next(err); }
 }
 
@@ -61,12 +104,7 @@ async function createMilestone(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Get single milestone (Issue 5.7) ──────────────────────────────
-//
-// Issue 5.7 fix: this function was missing entirely. The route
-// GET /milestones/:milestoneId was declared but called a non-existent
-// export, causing a runtime "msCtrl.getMilestone is not a function" crash
-// on every request to that endpoint.
+// ── Get single milestone ────────────────────────────────────────────
 
 async function getMilestone(req, res, next) {
   try {
@@ -139,6 +177,10 @@ async function confirmMilestonePhoto(req, res, next) {
     const { data: milestone } = await supabaseAdmin.from('milestones').select('*').eq('id', milestoneId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
     if (!milestone) throw new NotFoundError('Milestone not found');
 
+    // Issue M13 fix: verify the uploaded file's actual bytes match its
+    // declared content type before trusting it as a milestone photo.
+    await verifyUploadedFile(data.file_path, data.mime_type);
+
     const fileObject    = { url: data.file_path, name: data.name, size: data.size, mime_type: data.mime_type, uploaded_by: req.member.id, uploaded_at: new Date().toISOString() };
     const currentPhotos = Array.isArray(milestone.photos) ? milestone.photos : [];
 
@@ -157,7 +199,7 @@ async function confirmMilestonePhoto(req, res, next) {
 module.exports = {
   getTimeline,
   createMilestone,
-  getMilestone,          // Issue 5.7: was missing — added
+  getMilestone,
   updateMilestone,
   deleteMilestone,
   getMilestonePhotoUploadUrl,

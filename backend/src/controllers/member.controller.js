@@ -114,23 +114,17 @@ async function getMember(req, res, next) {
 
 // ── Update member ──────────────────────────────────────────────────
 //
-// Issue 15 fix: removed the inline `if (!isAdmin && !isSelf) throw ForbiddenError`
-// check at the top of this function. Authorization is now enforced at the route
-// layer via `requireSelfOrAdmin()` in workspace.routes.js before this function
-// is ever called. Keeping duplicate checks in both layers was confusing and
-// made the authorization surface harder to audit.
-// The admin-only field restriction check is still here — that is field-level
-// (not resource-level) authorization and belongs in the controller.
+// Resource-level authorization (caller must be an admin OR the member
+// being updated) is enforced at the route layer via requireSelfOrAdmin()
+// in workspace.routes.js, not duplicated here. The admin-only field
+// restriction below is field-level authorization and belongs in the
+// controller.
 
 async function updateMember(req, res, next) {
   try {
     const data                      = updateMemberSchema.parse(req.body);
     const { workspaceId, memberId } = req.params;
     const isAdmin                   = req.member.role === 'admin';
-
-    // Issue 15: removed top-level `if (!isAdmin && !isSelf) throw ForbiddenError`
-    // requireSelfOrAdmin() in the route already guarantees this caller is either
-    // an admin OR the member being updated.
 
     const adminOnlyFields      = ['role', 'is_proxy', 'proxy_managed_by', 'is_active', 'admin_notes', 'relationship_category'];
     const memberEditableFields = ['display_name', 'relationship_to_head', 'date_of_birth'];
