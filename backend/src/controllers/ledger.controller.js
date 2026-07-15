@@ -1,22 +1,15 @@
 // src/controllers/ledger.controller.js
 //
-// IDEMPOTENCY KEY — DB MIGRATION REQUIRED
-// Before idempotency key checking is active, run:
+// IDEMPOTENCY KEY
+// VERIFIED AGAINST LIVE SCHEMA (kith_schema.txt): ledger_entries already
+// has `idempotency_key text` plus a UNIQUE constraint
+// (ledger_entries_idempotency_key_key) — the migration this comment used
+// to say was still pending has already been applied. Idempotency checking
+// is therefore enabled by default below; set IDEMPOTENCY_ENABLED=false to
+// disable if needed.
 //
-//   ALTER TABLE ledger_entries
-//     ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
-//     ADD CONSTRAINT ledger_entries_idempotency_key_key UNIQUE (idempotency_key);
-//
-// Once that migration is applied, clients should send:
-//   X-Idempotency-Key: <uuid-per-submission>
-// on POST /ledger to guarantee exactly-once recording.
-//
-// Issue M16 fix: set IDEMPOTENCY_ENABLED=true in the environment once the
-// migration above has actually been applied. Until then, the idempotency
-// check below is skipped outright (with a one-time startup log) rather
-// than probing for a missing column via a try/catch that silently
-// swallowed ALL errors — including transient network failures unrelated to
-// the migration — with zero observability into how often that happened.
+// Clients should send X-Idempotency-Key: <uuid-per-submission> on
+// POST /ledger to guarantee exactly-once recording.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { success, paginate } = require('../utils/response');
@@ -30,10 +23,13 @@ const logger = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { getPagination } = require('../utils/pagination');
 
-const IDEMPOTENCY_ENABLED = process.env.IDEMPOTENCY_ENABLED === 'true';
+// M16 fix: previously required an explicit opt-in (IDEMPOTENCY_ENABLED
+// unset defaulted to disabled) because the migration's status was
+// unconfirmed. Now that the schema confirms the column + unique
+// constraint already exist in production, this defaults to enabled.
+const IDEMPOTENCY_ENABLED = process.env.IDEMPOTENCY_ENABLED !== 'false';
 if (!IDEMPOTENCY_ENABLED) {
-  logger.warn('Ledger idempotency-key checking is DISABLED (IDEMPOTENCY_ENABLED is not "true"). ' +
-    'Set it once the ledger_entries.idempotency_key migration has been applied.');
+  logger.warn('Ledger idempotency-key checking is explicitly DISABLED via IDEMPOTENCY_ENABLED=false.');
 }
 
 // ── List entries ──────────────────────────────────────────────────

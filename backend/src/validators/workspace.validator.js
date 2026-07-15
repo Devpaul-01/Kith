@@ -5,24 +5,24 @@ const { SUPPORTED_CURRENCIES } = require('./auth.validator');
 // ── Workspace ──────────────────────────────────────────────────────
 
 // Issue M8 fix: createWorkspaceSchema and updateWorkspaceSchema previously
-// declared two different family_type enums inline — create allowed
-// ['extended','event','pool'], update allowed 8 values including several
-// (nuclear, blended, community, other, association) that could never be
-// set at creation time. This read as an oversight rather than a deliberate
-// design choice, so both schemas now share one list, mirroring how
-// SUPPORTED_CURRENCIES is already shared from auth.validator.js.
+// declared two DIFFERENT family_type enums inline — create allowed
+// ['extended','event','pool'], update allowed 8 values. Both schemas now
+// share one list.
 //
-// SCHEMA VERIFICATION NEEDED: this list is the union of both prior enums
-// (the more permissive option, so no previously-valid value on either
-// schema becomes invalid). Please confirm against any CHECK constraint on
-// workspaces.family_type in the real schema once available — if the
-// database itself restricts creation to a narrower set, that constraint
-// should be the source of truth and this list should be narrowed to match
-// (with the update schema's extra values treated as legacy/migration-only,
-// documented explicitly rather than silently allowed).
-const FAMILY_TYPES = [
-  'extended', 'nuclear', 'blended', 'community', 'other', 'association', 'event', 'pool',
-];
+// VERIFIED AGAINST LIVE SCHEMA (kith_schema.txt): the actual DB constraint
+// is narrower than either of the two enums that were in the app code:
+//
+//   CONSTRAINT workspaces_family_type_check
+//     CHECK (family_type = ANY (ARRAY['extended', 'event', 'pool']))
+//
+// (Note: the earlier draft of this fix — before the schema was available —
+// widened both schemas to the union of both, which would have been WRONG:
+// updateWorkspace would have accepted 'nuclear'/'blended'/'community'/
+// 'other'/'association' at the API layer only to have Postgres reject the
+// write with a 23514 check-violation, surfaced to the client as an opaque
+// 500 rather than a clean 400 validation error. Narrowed to match the real
+// constraint instead.)
+const FAMILY_TYPES = ['extended', 'event', 'pool'];
 
 const createWorkspaceSchema = z.object({
   name:          z.string().min(2).max(80),
