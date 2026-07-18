@@ -14,6 +14,9 @@ const {
 const { generateUploadUrl, verifyUploadedFile } = require('../services/storage.service');
 const notification           = require('../services/notification.service');
 const { exportTasksCSV }     = require('../services/export.service');
+const audit                  = require('../services/audit.service');
+const { AUDIT_ACTIONS }      = require('../constants/audit-actions');
+const { getSort }            = require('../utils/sorting');
 
 // ── Shared helper ─────────────────────────────────────────────────
 
@@ -48,12 +51,10 @@ async function listTasks(req, res, next) {
     const isAdmin          = req.member.role === 'admin';
     const assignedFilter   = req.query['filter[assigned_to]'];
     const statusFilter     = req.query['filter[status]'];
-    const sort             = req.query.sort || 'sort_order';
 
-    const ascending = !sort.startsWith('-');
-    const sortField = sort.replace('-', '');
-    const safeSort  = ['sort_order', 'due_date', 'created_at', 'status'].includes(sortField)
-      ? sortField : 'sort_order';
+    // Audit 6.2: shared sort helper (utils/sorting.js) instead of an ad
+    // hoc copy of the same whitelist logic.
+    const { field: safeSort, ascending } = getSort(req.query, { allowed: ['sort_order', 'due_date', 'created_at', 'status'], defaultField: 'sort_order' });
 
     let query = supabaseAdmin
       .from('container_tasks')
@@ -120,6 +121,11 @@ async function createTask(req, res, next) {
       await notification.send({ type: 'task_assigned', workspaceId, recipientIds: [data.assigned_to], referenceType: 'task', referenceId: task.id, variables: { actor: req.member.displayName, task_title: data.title } });
     }
 
+    // Audit finding 5.1: task.controller.js previously never called
+    // audit.log anywhere, despite TASK_CREATED/TASK_COMPLETED/TASK_CONFIRMED
+    // all being defined in constants/audit-actions.js.
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.TASK_CREATED, targetType: 'task', targetId: task.id, metadata: { title: task.title } });
+
     success(res, { task }, 201);
   } catch (err) { next(err); }
 }
@@ -171,6 +177,7 @@ async function updateTask(req, res, next) {
     if (updates.status === 'completed') {
       const { data: admins } = await supabaseAdmin.from('workspace_members').select('id').eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true);
       await notification.send({ type: 'task_completed', workspaceId, recipientIds: (admins || []).map((a) => a.id), referenceType: 'task', referenceId: taskId, variables: { actor: req.member.displayName, task_title: task.title } });
+      await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.TASK_COMPLETED, targetType: 'task', targetId: taskId, metadata: { title: task.title } });
     }
 
     if (isAdmin && data.assigned_to && data.assigned_to !== task.assigned_to) {
@@ -257,6 +264,8 @@ async function adminConfirmTask(req, res, next) {
     if (task.assigned_to) {
       await notification.send({ type: 'task_confirmed', workspaceId, recipientIds: [task.assigned_to], referenceType: 'task', referenceId: taskId, variables: { actor: req.member.displayName, task_title: task.title } });
     }
+
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.TASK_CONFIRMED, targetType: 'task', targetId: taskId, metadata: { title: task.title } });
 
     success(res, { task: updated });
   } catch (err) { next(err); }

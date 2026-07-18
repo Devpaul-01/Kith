@@ -44,16 +44,12 @@ try {
 
 // ── Background workers ─────────────────────────────────────────────
 //
-// Bugfix (found during Issue L1/N3 cleanup pass): createNotificationOutboxWorker
-// is exported by background.workers.js and has a cron schedule registered
-// in queues/scheduler.js ('notification-outbox-scan', every 5 minutes,
-// targeting 'notification-outbox-queue') — but it was never actually
-// instantiated or added to the `workers` array below. That means the
-// outbox safety-net job (which re-enqueues notification deliveries stuck
-// in 'pending'/'failed' for 5+ minutes) fired into its queue on schedule
-// with no Worker ever listening on it — jobs would accumulate unprocessed
-// indefinitely instead of being retried. Now wired in like every other
-// worker.
+// createNotificationOutboxWorker is exported by background.workers.js and
+// has a cron schedule registered in queues/scheduler.js
+// ('notification-outbox-scan', every 5 minutes, targeting
+// 'notification-outbox-queue') — it must be instantiated and added to the
+// `workers` array below or the outbox safety-net job fires into its queue
+// on schedule with nothing listening on it.
 let createReminderWorker, createCycleGenerationWorker, createCycleLifecycleWorker,
     createTaskOverdueWorker, createInviteCleanupWorker, createEngagementCheckWorker,
     createNotificationOutboxWorker;
@@ -107,7 +103,7 @@ async function startWorkers() {
     createInviteCleanupWorker(),
     createEngagementCheckWorker(),
     createDataExportWorker(),
-    createNotificationOutboxWorker(), // bugfix: was previously missing entirely
+    createNotificationOutboxWorker(),
   ];
 
   const workerNames = [
@@ -119,7 +115,7 @@ async function startWorkers() {
     'inviteCleanup',
     'engagementCheck',
     'dataExport',
-    'notificationOutbox', // bugfix: was previously missing entirely
+    'notificationOutbox',
   ];
 
   let failedWorkers = 0;

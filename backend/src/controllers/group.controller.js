@@ -3,6 +3,8 @@ const { supabaseAdmin }      = require('../config/supabase');
 const { success, noContent } = require('../utils/response');
 const { NotFoundError }      = require('../utils/errors');
 const { createGroupSchema, updateGroupSchema, addGroupMembersSchema } = require('../validators/workspace.validator');
+const audit = require('../services/audit.service');
+const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const logger = require('../utils/logger');
 
 async function listGroups(req, res, next) {
@@ -55,11 +57,9 @@ async function createGroup(req, res, next) {
 
     if (error) throw new Error(error.message);
 
-    // Issue M4 fix: previously looped per member_id doing a SELECT then an
-    // INSERT (2 round trips × N members). Now batch-validates all member
-    // ids in one query, then batch-inserts all valid rows in one call —
-    // consistent with the batch-upsert pattern already used in
-    // auth.controller.js#updateContacts and participant.controller.js.
+    // Batch-validates all member ids in one query, then batch-inserts all
+    // valid rows in one call — consistent with the batch-upsert pattern
+    // used in auth.controller.js#updateContacts and participant.controller.js.
     if ((data.member_ids || []).length) {
       const { data: validMembers } = await supabaseAdmin
         .from('workspace_members')
@@ -82,6 +82,11 @@ async function createGroup(req, res, next) {
         }
       }
     }
+
+    // Audit finding 5.1: group.controller.js previously never logged
+    // anything — creating/updating/deleting a group, or adding/removing
+    // members, was completely silent in the activity feed.
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.GROUP_CREATED, targetType: 'group', targetId: group.id, metadata: { name: group.name, initial_member_count: (data.member_ids || []).length } });
 
     success(res, { group }, 201);
   } catch (err) { next(err); }
@@ -159,6 +164,8 @@ async function updateGroup(req, res, next) {
     if (error) throw new Error(error.message);
     if (!group) throw new NotFoundError('Group not found');
 
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.GROUP_UPDATED, targetType: 'group', targetId: groupId, metadata: { fields: Object.keys(updates).filter((k) => k !== 'updated_at') } });
+
     success(res, { group });
   } catch (err) { next(err); }
 }
@@ -171,9 +178,7 @@ async function addGroupMembers(req, res, next) {
     const { data: groupCheck } = await supabaseAdmin.from('groups').select('id').eq('id', groupId).eq('workspace_id', workspaceId).maybeSingle();
     if (!groupCheck) throw new NotFoundError('Group not found');
 
-    // Issue M4 fix: previously looped per member_id doing a SELECT then an
-    // upsert (2 round trips × N members). Now batch-validates then
-    // batch-upserts in 2 total queries regardless of N.
+    // Batch-validates then batch-upserts in 2 total queries regardless of N.
     const { data: validMembers } = await supabaseAdmin
       .from('workspace_members')
       .select('id')
@@ -201,19 +206,35 @@ async function addGroupMembers(req, res, next) {
       alreadyInGroup = validIds.length - added;
     }
 
+    if (added > 0) {
+      await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.GROUP_MEMBERS_ADDED, targetType: 'group', targetId: groupId, metadata: { added_count: added } });
+    }
+
     // Preserves the original response contract: `already_in_group` covers
     // any member_id that wasn't newly added, whether because it was
     // invalid or because it was already in the group — the original loop
     // didn't distinguish the two either (both fell into the same
     // `continue` / increment path).
     success(res, { added_count: added, already_in_group: alreadyInGroup + skippedInvalid });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    next(err); 
+  }
 }
 
 async function removeGroupMember(req, res, next) {
   try {
     const { groupId, memberId } = req.params;
-    await supabaseAdmin.from('group_members').delete().eq('group_id', groupId).eq('workspace_member_id', memberId);
+    const { error, count } = await supabaseAdmin
+      .from('group_members')
+      .delete({ count: 'exact' })
+      .eq('group_id', groupId)
+      .eq('workspace_member_id', memberId);
+
+    if (error) throw new Error(error.message);
+    if (count > 0) {
+      await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.GROUP_MEMBER_REMOVED, targetType: 'group', targetId: groupId, metadata: { workspace_member_id: memberId } });
+    }
+
     noContent(res);
   } catch (err) { next(err); }
 }
@@ -224,6 +245,9 @@ async function deleteGroup(req, res, next) {
     const { data, error } = await supabaseAdmin.from('groups').delete().eq('id', groupId).eq('workspace_id', workspaceId).select('id').maybeSingle();
     if (error) throw new Error(error.message);
     if (!data) throw new NotFoundError('Group not found');
+
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.GROUP_DELETED, targetType: 'group', targetId: groupId });
+
     success(res, { message: 'Group deleted.' });
   } catch (err) { next(err); }
 }

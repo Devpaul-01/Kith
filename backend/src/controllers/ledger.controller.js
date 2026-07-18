@@ -22,6 +22,7 @@ const { exportLedgerCSV } = require('../services/export.service');
 const logger = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { getPagination } = require('../utils/pagination');
+const { getSort } = require('../utils/sorting');
 
 // M16 fix: previously required an explicit opt-in (IDEMPOTENCY_ENABLED
 // unset defaulted to disabled) because the migration's status was
@@ -67,10 +68,13 @@ async function listEntries(req, res, next) {
     if (fromDate) query = query.gte('recorded_at', fromDate);
     if (toDate)   query = query.lte('recorded_at', toDate);
 
-    const sortParam = req.query.sort || '-recorded_at';
-    const ascending = !sortParam.startsWith('-');
-    const sortField = sortParam.replace('-', '');
-    const safeSort  = ['recorded_at', 'base_amount', 'status', 'original_amount'].includes(sortField) ? sortField : 'recorded_at';
+    // Audit 6.2: shared sort helper (utils/sorting.js) instead of an ad
+    // hoc copy of the same whitelist logic. Default remains newest-first.
+    const { field: safeSort, ascending } = getSort(req.query, {
+      allowed: ['recorded_at', 'base_amount', 'status', 'original_amount'],
+      defaultField: 'recorded_at',
+      defaultDescending: true,
+    });
 
     query = query.order(safeSort, { ascending }).range(offset, offset + perPage - 1);
 
