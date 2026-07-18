@@ -89,6 +89,109 @@ function createReminderWorker() {
         }
       }
 
+      // Notification finding (audit 5.5): 'overdue_summary_admin' was a
+      // fully defined template that nothing ever sent. Reusing the same
+      // overdueTargets fetched above (no extra query), group by container
+      // and notify that container's workspace admins with one summary per
+      // container per day, rather than spamming an individual notification
+      // per overdue contributor.
+      const overdueByContainer = new Map();
+      for (const target of (overdueTargets || [])) {
+        if (!target.container || target.container.status !== 'active') continue;
+        const key = target.container.id;
+        if (!overdueByContainer.has(key)) {
+          overdueByContainer.set(key, { container: target.container, count: 0 });
+        }
+        overdueByContainer.get(key).count += 1;
+      }
+
+      for (const { container, count } of overdueByContainer.values()) {
+        try {
+          const { data: admins } = await supabaseAdmin
+            .from('workspace_members')
+            .select('id')
+            .eq('workspace_id', container.workspace_id)
+            .eq('role', 'admin')
+            .eq('is_active', true)
+            .is('deleted_at', null);
+
+          await notification.send({
+            type:          'overdue_summary_admin',
+            workspaceId:   container.workspace_id,
+            recipientIds:  (admins || []).map((a) => a.id),
+            referenceType: 'container',
+            referenceId:   container.id,
+            variables:     { count, container: container.name },
+            dedupKey:      `overdue_summary_admin:${container.id}:${scanDate}`,
+          });
+        } catch (err) {
+          logger.error('Reminder scan: failed to send overdue_summary_admin', { containerId: container.id, error: err.message });
+        }
+      }
+
+      // Notification finding (audit 5.5): 'cycle_closing_soon' was a
+      // fully defined template that nothing ever sent, despite
+      // cycle_started/overdue reminders already being sent by this same
+      // worker. Notify participants of open recurring-pool cycles ending
+      // within the next 3 days who still have an outstanding balance for
+      // that cycle.
+      const closingSoonDate = new Date();
+      closingSoonDate.setDate(closingSoonDate.getDate() + 3);
+      const closingSoonStr = closingSoonDate.toISOString().split('T')[0];
+
+      const { data: closingSoonCycles } = await supabaseAdmin
+        .from('container_cycles')
+        .select('id, cycle_end, container_id, containers!inner(id, name, workspace_id, status)')
+        .eq('status', 'open')
+        .gte('cycle_end', scanDate)
+        .lte('cycle_end', closingSoonStr);
+
+      for (const cycle of (closingSoonCycles || [])) {
+        if (!cycle.containers || cycle.containers.status !== 'active') continue;
+
+        try {
+          const [{ data: participants }, { data: cycleLedger }] = await Promise.all([
+            supabaseAdmin
+              .from('container_participants')
+              .select('workspace_member_id, contributor_targets(target_amount, target_currency, cycle_id, is_current)')
+              .eq('container_id', cycle.container_id)
+              .eq('money_enabled', true),
+            supabaseAdmin
+              .from('ledger_entries')
+              .select('contributor_id, base_amount')
+              .eq('cycle_id', cycle.id)
+              .eq('status', 'confirmed'),
+          ]);
+
+          for (const p of (participants || [])) {
+            const cycleTarget = (p.contributor_targets || []).find((t) => t.cycle_id === cycle.id && t.is_current);
+            if (!cycleTarget) continue;
+
+            const paid = (cycleLedger || [])
+              .filter((le) => le.contributor_id === p.workspace_member_id)
+              .reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
+            const outstanding = parseFloat(cycleTarget.target_amount) - paid;
+            if (outstanding <= 0) continue;
+
+            await notification.send({
+              type:          'cycle_closing_soon',
+              workspaceId:   cycle.containers.workspace_id,
+              recipientIds:  [p.workspace_member_id],
+              referenceType: 'container',
+              referenceId:   cycle.container_id,
+              variables: {
+                container:   cycle.containers.name,
+                due_date:    cycle.cycle_end,
+                outstanding: `${outstanding.toFixed(2)} ${cycleTarget.target_currency}`,
+              },
+              dedupKey: `cycle_closing_soon:${cycle.id}:${p.workspace_member_id}:${scanDate}`,
+            });
+          }
+        } catch (err) {
+          logger.error('Reminder scan: failed to send cycle_closing_soon', { cycleId: cycle.id, error: err.message });
+        }
+      }
+
       logger.info('Reminder scan complete', { scanDate });
     },
     { connection: getRedis(), concurrency: 1 }
@@ -175,6 +278,7 @@ function createCycleGenerationWorker() {
         let cycleEnd = new Date(nextStart);
 
         switch (container.recurrence_cadence) {
+          case 'weekly':    cycleEnd.setDate(cycleEnd.getDate() + 6); break;
           case 'monthly':   cycleEnd.setMonth(cycleEnd.getMonth() + 1);           cycleEnd.setDate(cycleEnd.getDate() - 1); break;
           case 'quarterly': cycleEnd.setMonth(cycleEnd.getMonth() + 3);           cycleEnd.setDate(cycleEnd.getDate() - 1); break;
           case 'yearly':    cycleEnd.setFullYear(cycleEnd.getFullYear() + 1);     cycleEnd.setDate(cycleEnd.getDate() - 1); break;

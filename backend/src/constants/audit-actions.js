@@ -1,24 +1,26 @@
 // src/constants/audit-actions.js
 //
-// Issue M3 / N5 fix: audit action strings like 'container.completed',
-// 'ledger.confirmed', 'dispute.raised' were previously hardcoded as string
-// literals scattered across container.controller.js, dispute.controller.js,
-// ledger.controller.js, invite.controller.js, workspace.controller.js,
-// participant.controller.js, and member.controller.js — while
-// workspace.controller.js separately maintained a hand-synced lookup table
-// (getActivityDescription's `actions` object) that had to be kept in
-// lockstep with every one of those literals by hand. A typo in either place
-// (e.g. 'container.compelted') would fail silently: getActivityDescription
-// just falls through to its generic fallback with no error and no test to
-// catch it.
+// One frozen enum-like object is the single source of truth for audit
+// action strings. Every `audit.log({ action: ... })` call site imports
+// AUDIT_ACTIONS instead of typing the string, and the human-readable
+// description map lives right next to it so the two can never drift out
+// of sync.
 //
-// Now: one frozen enum-like object is the single source of truth. Every
-// `audit.log({ action: ... })` call site imports AUDIT_ACTIONS instead of
-// typing the string, and the human-readable description map lives right
-// next to it so the two can never drift out of sync.
+// Coverage note (audit finding 5.1): this file previously defined
+// TASK_CREATED / TASK_COMPLETED / TASK_CONFIRMED / CONTAINER_SETTINGS_CHANGED
+// with no call site actually using them, and had no actions at all for
+// groups, container creation, or direct member creation — silent gaps in
+// the activity feed / admin audit log for some of the highest
+// trust-sensitivity actions in the app (who created a savings pool, who
+// added someone to a group, who marked a chore done). Both the missing
+// call sites AND the missing constants (CONTAINER_CREATED, GROUP_*,
+// MEMBER_CREATED) have been added in this change set — see
+// container.controller.js, group.controller.js, member.controller.js,
+// task.controller.js.
 
 const AUDIT_ACTIONS = Object.freeze({
   // Containers
+  CONTAINER_CREATED:                'container.created',
   CONTAINER_COMPLETED:              'container.completed',
   CONTAINER_ARCHIVED:               'container.archived',
   CONTAINER_DELETED:                'container.deleted',
@@ -43,9 +45,17 @@ const AUDIT_ACTIONS = Object.freeze({
   WORKSPACE_ANNOUNCEMENT_SENT: 'workspace.announcement_sent',
 
   // Members
+  MEMBER_CREATED:  'member.created',
   MEMBER_INVITED:  'member.invited',
   MEMBER_ACCEPTED: 'member.accepted',
   MEMBER_REMOVED:  'member.removed',
+
+  // Groups
+  GROUP_CREATED:        'group.created',
+  GROUP_UPDATED:        'group.updated',
+  GROUP_DELETED:        'group.deleted',
+  GROUP_MEMBERS_ADDED:  'group.members_added',
+  GROUP_MEMBER_REMOVED: 'group.member_removed',
 
   // Cycles
   CYCLE_OVERRIDE_APPLIED: 'cycle.override_applied',
@@ -56,10 +66,11 @@ const AUDIT_ACTIONS = Object.freeze({
   TASK_CONFIRMED: 'task.confirmed',
 });
 
-// Human-readable description used by workspace.controller.js's activity
-// feed. Kept in the same file as the actions themselves so they cannot
-// drift out of sync the way two separately-maintained lists could.
+// Human-readable description used by the workspace activity feed. Kept
+// in the same file as the actions themselves so they cannot drift out of
+// sync the way two separately-maintained lists could.
 const AUDIT_ACTION_DESCRIPTIONS = Object.freeze({
+  [AUDIT_ACTIONS.CONTAINER_CREATED]:                'created a container',
   [AUDIT_ACTIONS.CONTAINER_COMPLETED]:              'completed a container',
   [AUDIT_ACTIONS.CONTAINER_ARCHIVED]:               'archived a container',
   [AUDIT_ACTIONS.CONTAINER_DELETED]:                'deleted a container',
@@ -76,9 +87,15 @@ const AUDIT_ACTION_DESCRIPTIONS = Object.freeze({
   [AUDIT_ACTIONS.WORKSPACE_SETTINGS_CHANGED]:       'updated workspace settings',
   [AUDIT_ACTIONS.WORKSPACE_DELETED]:                'deleted workspace',
   [AUDIT_ACTIONS.WORKSPACE_ANNOUNCEMENT_SENT]:      'sent an announcement',
+  [AUDIT_ACTIONS.MEMBER_CREATED]:                   'added a member',
   [AUDIT_ACTIONS.MEMBER_INVITED]:                   'invited a new member',
   [AUDIT_ACTIONS.MEMBER_ACCEPTED]:                  'joined the workspace',
   [AUDIT_ACTIONS.MEMBER_REMOVED]:                   'removed a member',
+  [AUDIT_ACTIONS.GROUP_CREATED]:                    'created a group',
+  [AUDIT_ACTIONS.GROUP_UPDATED]:                    'updated a group',
+  [AUDIT_ACTIONS.GROUP_DELETED]:                    'deleted a group',
+  [AUDIT_ACTIONS.GROUP_MEMBERS_ADDED]:               'added members to a group',
+  [AUDIT_ACTIONS.GROUP_MEMBER_REMOVED]:              'removed a member from a group',
   [AUDIT_ACTIONS.CYCLE_OVERRIDE_APPLIED]:           'applied cycle override',
   [AUDIT_ACTIONS.TASK_CREATED]:                     'created a task',
   [AUDIT_ACTIONS.TASK_COMPLETED]:                   'completed a task',
@@ -86,9 +103,8 @@ const AUDIT_ACTION_DESCRIPTIONS = Object.freeze({
 });
 
 /**
- * Human-readable description for an audit action, with the same
- * metadata-aware overrides workspace.controller.js's getActivityDescription
- * previously implemented inline.
+ * Human-readable description for an audit action, with metadata-aware
+ * overrides for actions whose description depends on what changed.
  */
 function describeAuditAction(action, metadata) {
   if (metadata?.fields?.length) return `changed ${metadata.fields.join(', ')}`;

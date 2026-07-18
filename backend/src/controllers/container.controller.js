@@ -13,13 +13,13 @@ const logger       = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { getPagination } = require('../utils/pagination');
 const { paginate } = require('../utils/response');
+const { getSort } = require('../utils/sorting');
 
 // ── List containers ────────────────────────────────────────────────
 
 async function listContainers(req, res, next) {
   try {
     const { workspaceId } = req.params;
-    const { sort }        = req.query;
     const typeFilter      = req.query['type'];
     const statusFilter    = req.query['status'];
 
@@ -32,10 +32,10 @@ async function listContainers(req, res, next) {
     if (typeFilter)   query = query.eq('container_type', typeFilter);
     if (statusFilter) query = query.eq('status', statusFilter);
 
-    const dir      = sort?.startsWith('-') ? false : true;
-    const field    = sort?.replace('-', '') || 'created_at';
-    const safeSort = ['created_at', 'name', 'event_date'].includes(field) ? field : 'created_at';
-    query = query.order(safeSort, { ascending: dir });
+    // Audit 6.2: sort whitelist logic shared via utils/sorting.js instead
+    // of each list endpoint re-implementing its own copy.
+    const { field: safeSort, ascending } = getSort(req.query, { allowed: ['created_at', 'name', 'event_date'], defaultField: 'created_at' });
+    query = query.order(safeSort, { ascending });
 
     const { data, error } = await query;
     if (error) throw new Error(error.message);
@@ -127,6 +127,10 @@ async function createContainer(req, res, next) {
         });
       }
     }
+
+    // Audit finding 5.1: container creation was previously never logged,
+    // despite CONTAINER_SETTINGS_CHANGED existing for the update path.
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.CONTAINER_CREATED, targetType: 'container', targetId: container.id, metadata: { name: container.name, container_type: container.container_type } });
 
     success(res, { container }, 201);
   } catch (err) { next(err); }
@@ -237,6 +241,12 @@ async function updateContainer(req, res, next) {
       .from('containers').update(updates).eq('id', containerId).select().single();
 
     if (error) throw new Error(error.message);
+
+    // Audit finding 5.1: updateContainer never logged CONTAINER_SETTINGS_CHANGED
+    // despite its workspace-level sibling (updateWorkspace) correctly logging
+    // WORKSPACE_SETTINGS_CHANGED on every field change.
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.CONTAINER_SETTINGS_CHANGED, targetType: 'container', targetId: containerId, metadata: { fields: Object.keys(updates).filter((k) => k !== 'updated_at') } });
+
     success(res, { container });
   } catch (err) { next(err); }
 }

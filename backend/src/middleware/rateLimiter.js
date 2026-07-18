@@ -1,32 +1,44 @@
 // src/middleware/rateLimiter.js
 //
-// Issue C3 fix: rate limiting was previously backed by the default in-memory
-// store, which is scoped per Node process. The moment this API runs on more
-// than one instance (required to serve hundreds/thousands of users behind a
-// load balancer), each instance keeps its own independent counters and the
-// effective limit becomes `max × instance_count` with zero coordination —
-// silently defeating brute-force protection on auth endpoints.
+// Rate limiting is backed by the shared Redis instance already used for
+// BullMQ, via rate-limit-redis, so limits are correctly shared across
+// every instance behind the load balancer instead of each instance
+// keeping its own independent in-memory counters.
 //
-// Now backed by the same Redis instance already used for BullMQ, via
-// rate-limit-redis. Requires `rate-limit-redis` in package.json:
-//     npm install rate-limit-redis
+// Two distinct limiters cover two distinct threat models:
 //
-// Issue H4 fix: the default express-rate-limit key generator is IP-based,
-// even though `generalLimiter` was named/intended as a per-user limit. Now
-// keyed by `req.user.id` when available (post-auth routes), falling back to
-// IP only for pre-auth routes (signup/login) where no user identity exists
-// yet. This also fixes the false-positive case of many legitimate users
-// behind the same NAT/corporate IP sharing one bucket.
+//   generalLimiter   — mounted globally in app.js, BEFORE any auth
+//                       middleware runs on any route (including public
+//                       ones). req.user is therefore never populated at
+//                       the point this limiter's keyGenerator executes,
+//                       so it is IP-keyed by design, not by accident.
+//                       It exists to give every request — authenticated
+//                       or not — a baseline defense-in-depth ceiling.
+//
+//   userGeneralLimiter — mounted AFTER requireAuth (inside
+//                       workspace.routes.js and auth.routes.js's
+//                       authenticated section), where req.user.id is
+//                       guaranteed to be populated. This is the limiter
+//                       that actually delivers per-user throttling —
+//                       e.g. many legitimate users behind one shared
+//                       corporate/campus NAT no longer share a single
+//                       bucket for authenticated, workspace-scoped
+//                       traffic, which was the whole point of keying by
+//                       user in the first place.
+//
+// (Previously a single `generalLimiter` claimed to be per-user via
+// `req.user?.id || req.ip`, but because it was mounted before auth ran
+// anywhere, req.user was always undefined and it silently fell back to
+// IP on 100% of traffic — see audit finding 2.3. Splitting into two
+// limiters, each correctly scoped to where the identity it needs is
+// actually available, fixes this without weakening the pre-auth
+// baseline.)
 
 const rateLimit = require('express-rate-limit');
 const RedisStore = require('rate-limit-redis');
 const { getRedis } = require('../config/redis');
 const logger = require('../utils/logger');
 
-// Build a Redis-backed store with a unique prefix per limiter.
-// Falls back to the in-memory default (with a loud warning) if Redis is
-// unavailable, so a Redis outage degrades rate limiting rather than
-// crashing the whole API.
 function buildStore(prefix) {
   try {
     const redis = getRedis();
@@ -44,14 +56,13 @@ function buildStore(prefix) {
   }
 }
 
-// Per-user key when authenticated, per-IP otherwise (pre-auth routes).
+// Per-user key — only safe to use on limiters mounted AFTER requireAuth.
 const perUserKey = (req) => req.user?.id || req.ip;
 
-// Pre-auth routes (signup/login/forgot-password) have no req.user yet —
-// these are intentionally keyed by IP only.
+// Pre-auth / identity-agnostic routes are keyed by IP only.
 const perIpKey = (req) => req.ip;
 
-const createLimiter = (prefix, windowMs, max, message, { keyGenerator = perUserKey } = {}) =>
+const createLimiter = (prefix, windowMs, max, message, { keyGenerator = perIpKey } = {}) =>
   rateLimit({
     windowMs,
     max,
@@ -78,7 +89,8 @@ const inviteLimiter = createLimiter(
   'rl:invite:',
   60 * 60 * 1000,
   10,
-  'Too many invite attempts. Try again later.'
+  'Too many invite attempts. Try again later.',
+  { keyGenerator: perUserKey }
 );
 
 // File upload URL generation: 20 / hour per user
@@ -86,15 +98,50 @@ const uploadLimiter = createLimiter(
   'rl:upload:',
   60 * 60 * 1000,
   20,
-  'Upload limit reached. Try again later.'
+  'Upload limit reached. Try again later.',
+  { keyGenerator: perUserKey }
 );
 
-// General API: 200 / min per user
+// Public, unauthenticated lookup endpoints (invite preview, public
+// container view): tighter IP-based limiter tuned specifically against
+// token-space enumeration, since generalLimiter's 200/min is too loose
+// to be a meaningful anti-enumeration control on its own (audit 8.2).
+const publicLookupLimiter = createLimiter(
+  'rl:public-lookup:',
+  60 * 1000,
+  30,
+  'Too many requests. Please slow down and try again shortly.',
+  { keyGenerator: perIpKey }
+);
+
+// General API baseline: 200 / min per IP. Mounted globally, before auth
+// resolves — this is intentionally IP-based (see header comment above).
 const generalLimiter = createLimiter(
-  'rl:general:',
+  'rl:general-ip:',
   60 * 1000,
   200,
-  'Request limit reached. Slow down.'
+  'Request limit reached. Slow down.',
+  { keyGenerator: perIpKey }
 );
 
-module.exports = { authLimiter, inviteLimiter, uploadLimiter, generalLimiter };
+// General API, per authenticated user: 200 / min per user. Mount this
+// AFTER requireAuth on authenticated route trees (workspace.routes.js,
+// auth.routes.js's authenticated section) — this is the limiter that
+// actually protects a single heavy user without penalizing everyone else
+// behind the same NAT/IP.
+const userGeneralLimiter = createLimiter(
+  'rl:general-user:',
+  60 * 1000,
+  200,
+  'Request limit reached. Slow down.',
+  { keyGenerator: perUserKey }
+);
+
+module.exports = {
+  authLimiter,
+  inviteLimiter,
+  uploadLimiter,
+  publicLookupLimiter,
+  generalLimiter,
+  userGeneralLimiter,
+};

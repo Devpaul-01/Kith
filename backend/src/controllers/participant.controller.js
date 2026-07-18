@@ -225,6 +225,31 @@ async function updateParticipant(req, res, next) {
       return success(res, { participant: p });
     }
 
+    // Audit finding 5.4: container.controller.js#updateContainer already
+    // blocks disabling money tracking on a container with existing ledger
+    // entries; this per-participant toggle had no equivalent guard,
+    // allowing money_enabled=false while confirmed ledger_entries still
+    // exist for that participant in this container. `error` is checked
+    // explicitly (fail-closed), matching the pattern used everywhere else
+    // this class of guard appears (updateContainer, deleteContainer,
+    // removeParticipant, deleteMember).
+    if (updates.money_enabled === false) {
+      const { data: participantRow } = await supabaseAdmin
+        .from('container_participants').select('workspace_member_id').eq('id', participantId).eq('container_id', containerId).maybeSingle();
+
+      if (participantRow) {
+        const { count, error: countErr } = await supabaseAdmin
+          .from('ledger_entries')
+          .select('*', { count: 'exact', head: true })
+          .eq('container_id', containerId)
+          .eq('contributor_id', participantRow.workspace_member_id)
+          .eq('status', 'confirmed');
+
+        if (countErr) throw new Error(countErr.message);
+        if (count > 0) throw new BusinessRuleError('Cannot disable money tracking for a participant with confirmed ledger entries');
+      }
+    }
+
     const { data: participant, error } = await supabaseAdmin
       .from('container_participants').update(updates).eq('id', participantId).eq('container_id', containerId).select().maybeSingle();
 

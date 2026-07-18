@@ -53,6 +53,14 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(requestId);
 app.use(requestLogger);
+// Audit finding 2.3 (Critical, resolved): this global, pre-auth mount
+// means req.user is never populated when generalLimiter's keyGenerator
+// runs, so it is — correctly and by design now — an IP-based baseline
+// covering every request, authenticated or not. The per-user guarantee
+// this limiter used to (incorrectly) claim to provide now lives in
+// userGeneralLimiter, mounted separately AFTER requireAuth inside
+// routes/workspace.routes.js, where req.user.id actually exists. See
+// middleware/rateLimiter.js for the full explanation.
 app.use(generalLimiter);
 const cookieParser = require('cookie-parser');
 app.use(cookieParser());

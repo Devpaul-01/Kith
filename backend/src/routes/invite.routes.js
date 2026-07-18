@@ -2,10 +2,10 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/invite.controller');
 const { requireAuth } = require('../middleware/auth');
-const { inviteLimiter } = require('../middleware/rateLimiter');
+const { inviteLimiter, publicLookupLimiter } = require('../middleware/rateLimiter');
 
-// Public — no auth required
-router.get('/:token/preview', ctrl.previewInvite);
+// Public — no auth required (audit 8.2: tighter anti-enumeration limiter)
+router.get('/:token/preview', publicLookupLimiter, ctrl.previewInvite);
 
 // Authenticated
 router.post('/:token/accept', inviteLimiter, requireAuth, ctrl.acceptInvite);

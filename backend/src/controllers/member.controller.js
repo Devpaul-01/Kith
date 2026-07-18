@@ -4,15 +4,19 @@ const { success, noContent } = require('../utils/response');
 const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
 const { createMemberSchema, updateMemberSchema } = require('../validators/workspace.validator');
 const audit = require('../services/audit.service');
+const notification = require('../services/notification.service');
 const logger = require('../utils/logger');
 const { computeEngagement } = require('../services/engagement.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
+const { containsPattern } = require('../utils/ilike');
+const { invalidateMembership } = require('../services/membership-cache.service');
+const { getSort } = require('../utils/sorting');
 
 async function listMembers(req, res, next) {
   try {
     const { workspaceId }     = req.params;
     const isAdmin             = req.member.role === 'admin';
-    const { search, sort }    = req.query;
+    const { search }          = req.query;
     const filterRole          = req.query['filter[role]'];
     const filterProxy         = req.query['filter[is_proxy]'];
 
@@ -24,11 +28,14 @@ async function listMembers(req, res, next) {
 
     if (filterRole  !== undefined) query = query.eq('role', filterRole);
     if (filterProxy !== undefined) query = query.eq('is_proxy', filterProxy === 'true');
-    if (search) query = query.ilike('display_name', `%${search}%`);
+    // Issue L7-class fix: search input is escaped before being embedded in
+    // the ILIKE pattern (shared with workspace.controller.js#searchWorkspace
+    // via utils/ilike.js) so a literal '%' or '_' in the search term can't
+    // silently widen/narrow the match (audit finding 5.3).
+    if (search) query = query.ilike('display_name', containsPattern(search));
 
-    const sortField = sort?.replace('-', '') || 'display_name';
-    const ascending = !sort?.startsWith('-');
-    const safeSort  = ['display_name', 'joined_at'].includes(sortField) ? sortField : 'display_name';
+    // Audit 6.2: shared sort helper (utils/sorting.js).
+    const { field: safeSort, ascending } = getSort(req.query, { allowed: ['display_name', 'joined_at'], defaultField: 'display_name' });
     query = query.order(safeSort, { ascending });
 
     const { data, error } = await query;
@@ -85,6 +92,13 @@ async function createMember(req, res, next) {
       .single();
 
     if (error) throw new Error(error.message);
+
+    // Audit finding 5.1: createMember previously never logged anything —
+    // a direct add-a-member action (distinct from the invite-link flow,
+    // which already logs MEMBER_INVITED / MEMBER_ACCEPTED) was completely
+    // silent in the activity feed and admin audit log.
+    await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.MEMBER_CREATED, targetType: 'workspace_member', targetId: member.id, metadata: { display_name: member.display_name, is_proxy: member.is_proxy } });
+
     success(res, { member }, 201);
   } catch (err) { next(err); }
 }
@@ -137,7 +151,7 @@ async function updateMember(req, res, next) {
     }
 
     const { data: current, error: fetchErr } = await supabaseAdmin
-      .from('workspace_members').select('*').eq('id', memberId).eq('workspace_id', workspaceId).maybeSingle();
+      .from('workspace_members').select('*, users:user_id(id)').eq('id', memberId).eq('workspace_id', workspaceId).maybeSingle();
 
     if (fetchErr) throw new Error(fetchErr.message);
     if (!current) throw new NotFoundError('Member not found');
@@ -165,11 +179,9 @@ async function updateMember(req, res, next) {
       : memberEditableFields;
 
     const updates = {};
-    // Issue M4-adjacent fix: profile-audit inserts were previously done one
-    // row at a time inside this loop (await'd sequentially). Now collected
-    // and written in a single batch insert after the loop, consistent with
-    // the batch-upsert pattern already used elsewhere (auth.controller.js
-    // updateContacts).
+    // Profile-audit rows are collected and written in a single batch
+    // insert after the loop rather than per-field, consistent with the
+    // batch-upsert pattern used elsewhere (auth.controller.js#updateContacts).
     const auditRows = [];
     for (const field of allowedFields) {
       if (data[field] !== undefined) {
@@ -203,6 +215,16 @@ async function updateMember(req, res, next) {
       }
     }
 
+    // Authorization-relevant fields (role / is_active / is_proxy /
+    // proxy_managed_by) changed — invalidate this member's cached
+    // requireMembership entry immediately rather than waiting out the
+    // (up to 30s) cache TTL, so a demotion/deactivation takes effect on
+    // the member's very next request. See membership-cache.service.js.
+    const authRelevantChanged = ['role', 'is_active', 'is_proxy', 'proxy_managed_by'].some((f) => updates[f] !== undefined);
+    if (authRelevantChanged && current.users?.id) {
+      await invalidateMembership(workspaceId, current.users.id);
+    }
+
     success(res, { member });
   } catch (err) { next(err); }
 }
@@ -213,7 +235,7 @@ async function deleteMember(req, res, next) {
     const { force }                 = req.query;
 
     const { data: target, error: fetchErr } = await supabaseAdmin
-      .from('workspace_members').select('*').eq('id', memberId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
+      .from('workspace_members').select('*, users:user_id(id)').eq('id', memberId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
 
     if (fetchErr) throw new Error(fetchErr.message);
     if (!target) throw new NotFoundError('Member not found');
@@ -224,22 +246,49 @@ async function deleteMember(req, res, next) {
       if ((admins || []).length <= 1) throw new BusinessRuleError('Cannot remove the last admin');
     }
 
-    // Issue C6 fix: `error` was previously ignored on this count query — the
-    // same fail-open pattern as container.controller.js's deleteContainer.
-    // A failed count query would silently fall through to `hasEntries =
-    // false`, allowing a member with confirmed ledger entries to be
-    // hard-deleted (`force=true`) if the guard itself couldn't be verified.
+    // `error` is checked explicitly here (not just `data`) — a failed
+    // count query fails CLOSED (blocks hard-delete) rather than silently
+    // falling through to `hasEntries = false`.
     const { count, error: countErr } = await supabaseAdmin
       .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('contributor_id', memberId).eq('status', 'confirmed');
     if (countErr) throw new Error(countErr.message);
     const hasEntries = count > 0;
 
+    let hardDeleted = false;
+
     if (hasEntries && force === 'true') {
       throw new BusinessRuleError('Cannot hard-delete a member with confirmed ledger entries');
     } else if (!hasEntries && force === 'true') {
       await supabaseAdmin.from('workspace_members').delete().eq('id', memberId);
+      hardDeleted = true;
     } else {
       await supabaseAdmin.from('workspace_members').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', memberId);
+    }
+
+    // Notification finding (audit 5.5): 'member_removed' was a fully
+    // defined template that nothing ever sent. Only sent on the
+    // soft-delete path — on a hard delete the row (and any notification
+    // referencing it via recipient_id, which cascades) is gone by the
+    // time delivery would run, so there's no safe recipient to notify.
+    if (!hardDeleted) {
+      try {
+        await notification.send({
+          type:          'member_removed',
+          workspaceId,
+          recipientIds:  [memberId],
+          referenceType: 'member',
+          referenceId:   memberId,
+          variables:     { workspace: req.workspace?.name || 'the workspace' },
+        });
+      } catch (notifErr) {
+        logger.error('Failed to send member_removed notification', { memberId, error: notifErr.message });
+      }
+    }
+
+    // Removed members should lose access immediately, not after the
+    // membership cache's TTL expires.
+    if (target.users?.id) {
+      await invalidateMembership(workspaceId, target.users.id);
     }
 
     await audit.log({ ...audit.fromReq(req), action: AUDIT_ACTIONS.MEMBER_REMOVED, targetType: 'workspace_member', targetId: memberId });
@@ -308,14 +357,9 @@ async function getContributionSummary(req, res, next) {
 
 // ── Member engagement ──────────────────────────────────────────────
 //
-// Issue M1 fix: this previously ran 2 queries PER MEMBER via
-// `Promise.all((members||[]).map(async (m) => {...}))` — O(2N) round trips
-// for the exact same computation `background.workers.js`'s
-// `createEngagementCheckWorker` already batches into 2 total queries via
-// upfront fetch + in-memory Map lookups. Now delegates to the shared
-// `services/engagement.service.js` helper (imported at the top of this
-// file) so both the worker and this endpoint share one implementation
-// instead of two divergent ones.
+// Delegates to the shared services/engagement.service.js helper so both
+// this endpoint and background.workers.js's engagement-check worker
+// share one batched (2-query, not O(2N)) implementation.
 
 async function getMemberEngagement(req, res, next) {
   try {

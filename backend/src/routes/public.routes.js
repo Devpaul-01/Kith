@@ -14,12 +14,17 @@ const router  = require('express').Router();
 const iCtrl   = require('../controllers/invite.controller');
 const cCtrl   = require('../controllers/container.controller');
 const { requireAuth, loadDbUser } = require('../middleware/auth');
-const { inviteLimiter } = require('../middleware/rateLimiter');
+const { inviteLimiter, publicLookupLimiter } = require('../middleware/rateLimiter');
 
 // ── Invite preview (public) ───────────────────────────────────────
 // Shows workspace name, inviter, and active containers — no login needed.
 // Used for the /invite/:token landing page.
-router.get('/invites/:token', iCtrl.previewInvite);
+//
+// Audit finding 8.2: unauthenticated lookup endpoints had no rate limit
+// of their own — only generalLimiter's loose 200/min IP-based baseline
+// applied, which isn't tuned against token-space enumeration. Tightened
+// with publicLookupLimiter (30/min per IP) specifically for this reason.
+router.get('/invites/:token', publicLookupLimiter, iCtrl.previewInvite);
 
 // ── Invite acceptance (authenticated) ────────────────────────────
 // The user must be logged in (or just signed up) to accept an invite.
@@ -35,6 +40,6 @@ router.post(
 // ── Public container summary (public) ────────────────────────────
 // Shared read-only view of a container. Privacy is controlled by
 // containers.public_show_names — names are omitted if false.
-router.get('/containers/:publicToken', cCtrl.getPublicContainer);
+router.get('/containers/:publicToken', publicLookupLimiter, cCtrl.getPublicContainer);
 
 module.exports = router;
