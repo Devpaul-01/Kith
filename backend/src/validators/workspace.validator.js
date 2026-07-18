@@ -22,7 +22,8 @@ const { SUPPORTED_CURRENCIES } = require('./auth.validator');
 // write with a 23514 check-violation, surfaced to the client as an opaque
 // 500 rather than a clean 400 validation error. Narrowed to match the real
 // constraint instead.)
-const FAMILY_TYPES = ['extended', 'event', 'pool'];
+const FAMILY_TYPES = ['nuclear','extended','blended','community','association','other'];
+
 
 const createWorkspaceSchema = z.object({
   name:          z.string().min(2).max(80),
@@ -136,12 +137,10 @@ const createContainerSchema = z
       .enum(['celebration', 'memorial', 'financial', 'logistical', 'other'])
       .optional()
       .default('other'),
-    // Recurring
-    recurrence_cadence: z
-      .enum(['monthly', 'weekly', 'quarterly', 'yearly', 'custom'])
-      .optional(),
-    recurrence_days:     z.number().int().min(1).optional(),
-    recurrence_start:    z.string().date().optional(),
+    // Recurring — now accepts null, matching how the frontend actually serializes "unused"
+    recurrence_cadence:  z.enum(['monthly', 'weekly', 'quarterly', 'yearly', 'custom']).optional().nullable(),
+    recurrence_days:     z.number().int().min(1).optional().nullable(),
+    recurrence_start:    z.string().date().optional().nullable(),
     recurrence_end:      z.string().date().optional().nullable(),
     carry_forward_unpaid: z.boolean().optional().default(false),
     // Money

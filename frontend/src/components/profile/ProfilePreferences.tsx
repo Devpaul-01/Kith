@@ -6,7 +6,6 @@ import { Card } from '@/components/ui/Card';
 import { Select } from '@/components/ui/Select';
 import showToast from '@/lib/toast';
 import type { User } from '@/types/models';
-import { getFCMToken } from '@/services/firebase'; // Add this import
 
 const LANGUAGES = [
   { value: 'en', label: 'English' },
@@ -29,26 +28,7 @@ export function ProfilePreferences({ user }: ProfilePreferencesProps) {
   const { setDbUser, memberships } = useAuthStore();
 
   const updatePushEnabled = useMutation({
-    mutationFn: async (push_enabled: boolean) => {
-      // If enabling push notifications, request permission and get FCM token
-      if (push_enabled) {
-        try {
-          const token = await getFCMToken();
-          if (token) {
-            // Register token with backend
-            await authService.registerPushToken(token, 'web');
-            console.log('FCM token registered successfully');
-          } else {
-            console.log('Could not get FCM token');
-          }
-        } catch (error) {
-          console.error('Error getting FCM token:', error);
-        }
-      }
-      
-      // Update user preference
-      return authService.updateProfile({ push_enabled });
-    },
+    mutationFn: (push_enabled: boolean) => authService.updateProfile({ push_enabled }),
     onSuccess: (data: any) => {
       setDbUser(data.user, memberships);
       const enabled = data.user.push_enabled;
@@ -108,10 +88,7 @@ export function ProfilePreferences({ user }: ProfilePreferencesProps) {
               type="checkbox"
               className="peer opacity-0 w-0 h-0"
               checked={user.push_enabled}
-              onChange={(e) => {
-                const newValue = e.target.checked;
-                updatePushEnabled.mutate(newValue);
-              }}
+              onChange={(e) => updatePushEnabled.mutate(e.target.checked)}
             />
             <div className="absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 rounded-full peer-checked:bg-primary transition-colors before:absolute before:content-[''] before:h-4 before:w-4 before:left-0.5 before:bottom-0.5 before:bg-white before:rounded-full before:transition-transform peer-checked:before:translate-x-5" />
           </div>

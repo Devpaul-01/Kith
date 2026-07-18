@@ -1,4 +1,5 @@
 // services/firebase.ts
+/*
 import { initializeApp } from 'firebase/app';
 import { getMessaging, getToken, isSupported } from 'firebase/messaging';
 
@@ -40,3 +41,4 @@ export async function getFCMToken(): Promise<string | null> {
     return null;
   }
 }
+*/

@@ -1,0 +1,27 @@
+refine to confirm email for manial users 
+fix erroe detiail mismatch 
+
+
+fix rate limiter 
+
+fix : :23:59 error: Unhandled error Could not find the function public.convert_event_to_recurring_atomic(p_carry_forward_unpaid, p_created_by, p_new_name, p_recurrence_cadence, p_recurrence_days, p_recurrence_end, p_recurrence_start, p_source_container_id, p_workspace_id) in the schema cache {"request_id":"req_6ecf27828740555c","stack":"Error: Could not find the function public.convert_event_to_recurring_atomic(p_carry_forward_unpaid, p_created_by, p_new_name, p_recurrence_cadence, p_recurrence_days, p_recurrence_end, p_recurrence_start, p_source_container_id, p_workspace_id) in the schema cache\n    at convertToRecurring (C:\\Users\\user\\Desktop\\Kith\\backend\\src\\controllers\\container.controller.js:325:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"}
+08:23:59 error: POST /v1/workspaces/fc1cf381-4595-4ac6-9f3c-f9080e82a
+
+workspace_member_id":"9e3da3cc-11cb-48cd-a140-e89de8e9e8ca"}
+08:28:09 error: Unhandled error Could not find the function public.raise_dispute_atomic(p_ledger_entry_id, p_raised_by, p_reason, p_workspace_id) in the schema cache {"request_id":"req_b805c6f256254c61","stack":"Error: Could not find the function public.raise_dispute_atomic(p_ledger_entry_id, p_raised_by, p_reason, p_workspace_id) in the schema cache\n    at raiseDispute (C:\\Users\\user\\Desktop\\Kith\\backend\\src\\controllers\\dispute.controller.js:108:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:10
+
+refine signup page to move gogoleAOuth 
+
+fix this: 07:39:30 info: GET /count {"request_id":"req_47c36380b1896ac0","method":"GET","path":"/count","status":304,"duration_ms":1344,"user_id":"24246b8c-c60a-4492-adca-3189a6da7682","workspace_member_id":"9e3da3cc-11cb-48cd-a140-e89de8e9e8ca"}
+07:39:48 error: Unhandled error Could not find the function public.upsert_primary_contact(p_country_code, p_is_primary, p_label, p_type, p_user_id, p_value) in the schema cache {"request_id":"req_af8711533ea2c1d8","stack":"Error: Could not find the function public.upsert_primary_contact(p_country_code, p_is_primary, p_label, p_type, p_user_id, p_value) in the schema cache\n    at upsertContact (C:\\Users\\user\\Desktop\\Kith\\backend\\src\\controllers\\auth.controller.js:774:22)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"}
+07:39:48 error: POST /v1/auth/contacts {"request_id":"req_af8711533ea2c1d8","method":"POST","path":"/v1/auth/contacts","status":500,"duration_ms":1221,"user_id":"24246b8c-c60a-4492-adca-3189a6da7682"}
+change ifles when done 
+
+
+
+
+imolemantign redis caching 
+fix dashboared issue with deepseek 
+
+
+fix redis store issue 

@@ -27,9 +27,12 @@ const SUPPORTED_CURRENCIES = [
 ];
 
 const FAMILY_TYPES = [
+  { value: 'nuclear', label: 'Nuclear Family' },
   { value: 'extended', label: 'Extended Family' },
-  { value: 'event', label: 'Event Group' },
-  { value: 'pool', label: 'Contribution Pool' },
+  { value: 'blended', label: 'Blended Family' },
+  { value: 'community', label: 'Community' },
+  { value: 'association', label: 'Association' },
+  { value: 'other', label: 'Other' },
 ];
 
 const VISIBILITY_OPTIONS = [
@@ -41,7 +44,7 @@ const generalSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters').max(80),
   description: z.string().max(500).optional().nullable(),
   base_currency: z.string().min(1, 'Currency is required'),
-  family_type: z.enum(['extended', 'event', 'pool']),
+  family_type: z.enum(['nuclear','extended','blended','community','association','other']),
   visibility: z.enum(['private', 'public']),
 });
 

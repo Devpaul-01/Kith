@@ -19,31 +19,30 @@
 // behind the same NAT/corporate IP sharing one bucket.
 
 const rateLimit = require('express-rate-limit');
-const { RedisStore } = require('rate-limit-redis');
+const RedisStore = require('rate-limit-redis');
 const { getRedis } = require('../config/redis');
 const logger = require('../utils/logger');
 
-// Build a shared Redis-backed store. Falls back to the in-memory default
-// (with a loud warning) if Redis is unavailable, so a Redis outage degrades
-// rate limiting rather than crashing the whole API.
-function buildStore() {
+// Build a Redis-backed store with a unique prefix per limiter.
+// Falls back to the in-memory default (with a loud warning) if Redis is
+// unavailable, so a Redis outage degrades rate limiting rather than
+// crashing the whole API.
+function buildStore(prefix) {
   try {
     const redis = getRedis();
     if (!redis || typeof redis.call !== 'function') {
-      logger.warn('Rate limiter: Redis client unavailable or missing .call() — falling back to in-memory store. Rate limits will NOT be shared across instances.');
+      logger.warn(`Rate limiter [${prefix}]: Redis client unavailable or missing .call() — falling back to in-memory store. Rate limits will NOT be shared across instances.`);
       return undefined;
     }
     return new RedisStore({
       sendCommand: (...args) => redis.call(...args),
-      prefix: 'rl:',
+      prefix,
     });
   } catch (err) {
-    logger.warn('Rate limiter: failed to initialize Redis store — falling back to in-memory store', { error: err.message });
+    logger.warn(`Rate limiter [${prefix}]: failed to initialize Redis store — falling back to in-memory store`, { error: err.message });
     return undefined;
   }
 }
-
-const store = buildStore();
 
 // Per-user key when authenticated, per-IP otherwise (pre-auth routes).
 const perUserKey = (req) => req.user?.id || req.ip;
@@ -52,11 +51,11 @@ const perUserKey = (req) => req.user?.id || req.ip;
 // these are intentionally keyed by IP only.
 const perIpKey = (req) => req.ip;
 
-const createLimiter = (windowMs, max, message, { keyGenerator = perUserKey } = {}) =>
+const createLimiter = (prefix, windowMs, max, message, { keyGenerator = perUserKey } = {}) =>
   rateLimit({
     windowMs,
     max,
-    store,
+    store: buildStore(prefix),
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator,
@@ -66,6 +65,7 @@ const createLimiter = (windowMs, max, message, { keyGenerator = perUserKey } = {
 
 // Auth endpoints: 5 / min per IP (no authenticated identity exists yet)
 const authLimiter = createLimiter(
+  'rl:auth:',
   60 * 1000,
   5,
   'Too many auth attempts. Try again in a minute.',
@@ -75,6 +75,7 @@ const authLimiter = createLimiter(
 // Invite acceptance: 10 / hour per user (requireAuth runs before this in
 // the route chain, so req.user is populated) — falls back to IP if not.
 const inviteLimiter = createLimiter(
+  'rl:invite:',
   60 * 60 * 1000,
   10,
   'Too many invite attempts. Try again later.'
@@ -82,6 +83,7 @@ const inviteLimiter = createLimiter(
 
 // File upload URL generation: 20 / hour per user
 const uploadLimiter = createLimiter(
+  'rl:upload:',
   60 * 60 * 1000,
   20,
   'Upload limit reached. Try again later.'
@@ -89,6 +91,7 @@ const uploadLimiter = createLimiter(
 
 // General API: 200 / min per user
 const generalLimiter = createLimiter(
+  'rl:general:',
   60 * 1000,
   200,
   'Request limit reached. Slow down.'

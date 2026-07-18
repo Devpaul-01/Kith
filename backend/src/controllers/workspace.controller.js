@@ -199,11 +199,12 @@ async function getDashboard(req, res, next) {
           .limit(10)
       : Promise.resolve({ data: [] });
 
+    // ── FIX: Split contributor_targets into separate queries ──────────────
     const [
       { data: allMembers,    error: membersError },
       { data: rawContainers, error: containersError },
       { data: pools,         error: poolsError },
-      { data: targets,       error: targetsError },
+      { data: targetsData,   error: targetsError },
       { data: activity,      error: activityError },
       { count: unreadCount,  error: notifError },
       { data: pending },
@@ -231,15 +232,15 @@ async function getDashboard(req, res, next) {
         .is('deleted_at', null)
         .order('created_at', { ascending: false }),
 
+      // ── FIX: Simple query without the problematic embed ────────────────
       supabaseAdmin
         .from('contributor_targets')
         .select(`
-          target_amount, target_currency, due_date,
-          container_participant:container_participants!container_participant_id(
-            workspace_member_id,
-            workspace_members!inner(display_name)
-          ),
-          container:containers!container_id(name, workspace_id)
+          target_amount,
+          target_currency,
+          due_date,
+          container_participant_id,
+          container_id
         `)
         .eq('is_current', true)
         .gte('due_date', todayStr)
@@ -261,6 +262,40 @@ async function getDashboard(req, res, next) {
       pendingConfirmationsQuery,
     ]);
 
+    // ── FIX: Manually resolve member names for targets ────────────────────
+    let memberNamesMap = {};
+    let containerNamesMap = {};
+
+    if (targetsData && targetsData.length > 0) {
+      const participantIds = [...new Set(targetsData.map(t => t.container_participant_id).filter(Boolean))];
+      
+      if (participantIds.length > 0) {
+        const { data: participants } = await supabaseAdmin
+          .from('container_participants')
+          .select('id, workspace_member_id, workspace_members!inner(display_name)')
+          .in('id', participantIds);
+        
+        const participantMap = {};
+        (participants || []).forEach(p => {
+          participantMap[p.id] = p.workspace_members?.display_name || null;
+        });
+        memberNamesMap = participantMap;
+      }
+      
+      const containerIds = [...new Set(targetsData.map(t => t.container_id).filter(Boolean))];
+      if (containerIds.length > 0) {
+        const { data: containers } = await supabaseAdmin
+          .from('containers')
+          .select('id, name')
+          .in('id', containerIds);
+        containerNamesMap = (containers || []).reduce((acc, c) => { 
+          acc[c.id] = c.name; 
+          return acc; 
+        }, {});
+      }
+    }
+
+    // ── Log non-critical errors (optional) ──────────────────────────────
     if (membersError)    logger.warn('Dashboard members query error',    { workspaceId, error: membersError.message });
     if (containersError) logger.warn('Dashboard containers query error', { workspaceId, error: containersError.message });
     if (poolsError)      logger.warn('Dashboard pools query error',      { workspaceId, error: poolsError.message });
@@ -268,6 +303,7 @@ async function getDashboard(req, res, next) {
     if (activityError)   logger.warn('Dashboard activity query error',   { workspaceId, error: activityError.message });
     if (notifError)      logger.warn('Dashboard notifications error',    { workspaceId, error: notifError.message });
 
+    // ── Build response ────────────────────────────────────────────────────
     const active = (allMembers || []).filter((m) => m.is_active && !m.deleted_at);
     const summary = {
       member_count: active.length,
@@ -281,7 +317,20 @@ async function getDashboard(req, res, next) {
       const participantCount   = (c.container_participants || []).length;
       const daysUntil          = c.event_date ? Math.ceil((new Date(c.event_date) - new Date()) / 86400000) : null;
       const progressPct        = c.budget_target && totalConfirmedBase ? Math.round((totalConfirmedBase / c.budget_target) * 100) : null;
-      return { id: c.id, name: c.name, subtitle: c.subtitle, event_date: c.event_date, enable_money: c.enable_money, enable_tasks: c.enable_tasks, budget_target: c.budget_target, budget_currency: c.budget_currency, total_confirmed_base: totalConfirmedBase, participant_count: participantCount, days_until: daysUntil, progress_pct: progressPct };
+      return { 
+        id: c.id, 
+        name: c.name, 
+        subtitle: c.subtitle, 
+        event_date: c.event_date, 
+        enable_money: c.enable_money, 
+        enable_tasks: c.enable_tasks, 
+        budget_target: c.budget_target, 
+        budget_currency: c.budget_currency, 
+        total_confirmed_base: totalConfirmedBase, 
+        participant_count: participantCount, 
+        days_until: daysUntil, 
+        progress_pct: progressPct 
+      };
     });
 
     const recurringPools = (pools || []).map((p) => {
@@ -289,16 +338,20 @@ async function getDashboard(req, res, next) {
       return { id: p.id, name: p.name, current_cycle: currentCycle };
     });
 
-    const upcomingDeadlines = (targets || [])
-      .filter((t) => t.container?.workspace_id === workspaceId)
-      .map((t) => ({
-        type:           'contribution',
-        member_name:    t.container_participant?.workspace_members?.display_name,
-        title:          `${t.target_amount} ${t.target_currency}`,
-        container_name: t.container?.name,
-        due_date:       t.due_date,
-        days_until:     Math.ceil((new Date(t.due_date) - new Date()) / 86400000),
-      }));
+    // ── FIX: Build deadlines with resolved names ──────────────────────────
+    const upcomingDeadlines = (targetsData || [])
+      .filter((t) => t.container_id)
+      .map((t) => {
+        const participantId = t.container_participant_id;
+        return {
+          type:           'contribution',
+          member_name:    memberNamesMap[participantId] || null,
+          title:          `${t.target_amount} ${t.target_currency}`,
+          container_name: containerNamesMap[t.container_id] || null,
+          due_date:       t.due_date,
+          days_until:     t.due_date ? Math.ceil((new Date(t.due_date) - new Date()) / 86400000) : null,
+        };
+      });
 
     const pendingConfirmations = isAdmin
       ? (pending || []).map((le) => ({
