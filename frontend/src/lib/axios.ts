@@ -28,6 +28,6 @@ api.interceptors.response.use(
         window.location.href='/login?reason=session_expired';
       }
     }
-    return Promise.reject(parseApiError(error));
+    return Promise.reject(error);
   }
 );

@@ -62,7 +62,28 @@ async function listContainers(req, res, next) {
 
 async function createContainer(req, res, next) {
   try {
-    const data            = createContainerSchema.parse(req.body);
+    const result = createContainerSchema.safeParse(req.body);
+
+    if (!result.success) {
+      logger.error('createContainerSchema validation failed', {
+        workspaceId: req.params.workspaceId,
+        body: req.body,
+        issues: result.error.issues, // <-- this is what you actually need to see
+      });
+
+      return res.status(400).json({
+        error: {
+          message: 'Validation failed',
+          issues: result.error.issues.map(i => ({
+            path: i.path.join('.'),
+            message: i.message,
+            code: i.code,
+          })),
+        },
+      });
+    }
+
+    const data = result.data;
     const { workspaceId } = req.params;
 
     const { data: container, error } = await supabaseAdmin
@@ -100,11 +121,6 @@ async function createContainer(req, res, next) {
           { attempts: 3 }
         );
       } catch (queueErr) {
-        // The container row already exists at this point — a queue outage
-        // shouldn't turn a successful create into a 500 for the client.
-        // Cycle generation also runs on a daily maintenance schedule
-        // (see queues/scheduler.js: 'cycle-gen-maintenance'), so a missed
-        // enqueue here is self-healing rather than silently lost forever.
         logger.error('Failed to enqueue initial cycle generation — will be picked up by daily maintenance job', {
           containerId: container.id,
           error: queueErr.message,

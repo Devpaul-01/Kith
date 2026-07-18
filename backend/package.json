@@ -18,6 +18,7 @@
     "@supabase/supabase-js": "^2.39.0",
     "bullmq": "^5.1.1",
     "compression": "^1.7.4",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "csv-stringify": "^6.4.6",
     "dotenv": "^16.4.1",
@@ -28,6 +29,7 @@
     "ioredis": "^5.3.2",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.11.3",
+    "rate-limit-redis": "^4.0.0",
     "resend": "^3.1.0",
     "uuid": "^9.0.0",
     "winston": "^3.11.0",
@@ -38,16 +40,19 @@
     "nodemon": "^3.0.3"
   },
   "jest": {
-    "setupFilesAfterEnv": ["./tests/setup.js"],
+    "setupFilesAfterEnv": [
+      "./tests/setup.js"
+    ],
     "testEnvironment": "node",
-    "testMatch": ["**/tests/**/*.test.js"],
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ],
     "coverageDirectory": "coverage",
     "collectCoverageFrom": [
       "src/**/*.js",
       "!src/server.js"
     ]
   },
-
   "engines": {
     "node": ">=18.0.0"
   }

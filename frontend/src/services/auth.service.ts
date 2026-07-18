@@ -30,8 +30,6 @@ upsertContact: (data: { type: string; value: string; label?: string; country_cod
 deleteContact: (contactId: string): Promise<{ message: string }> =>
   api.delete(`/v1/auth/contacts/${contactId}`).then(r => r.data),
   // In auth.service.ts
-registerPushToken: (token: string, platform: 'web' | 'ios' | 'android') =>
-  api.post('/v1/auth/push-token', { token, platform }).then(r => r.data),
 
 // Update profile with all fields
 updateProfile: (data: {

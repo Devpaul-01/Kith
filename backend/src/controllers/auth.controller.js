@@ -147,60 +147,152 @@ async function signup(req, res, next) {
 // ── Login ─────────────────────────────────────────────────────────
 
 async function login(req, res, next) {
+  const startTime = Date.now();
+  const requestId = req.headers['x-request-id'] || `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const clientIp = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+
+  console.log(`[LOGIN] ${requestId} ⚡ START`, {
+    ip: clientIp,
+    userAgent: req.headers['user-agent'],
+    timestamp: new Date().toISOString(),
+  });
+
   try {
+    // ── Step 1: Validate request body ──────────────────────────────────────
+    console.log(`[LOGIN] ${requestId} Validating request body...`);
+
     const data = loginSchema.parse(req.body);
     const client = getAuthClient();
 
-    const { data: authData, error } = await client.auth.signInWithPassword({
-      email: data.email, password: data.password,
+    console.log(`[LOGIN] ${requestId} Validation passed`, {
+      email: data.email?.toLowerCase(),
+      emailLength: data.email?.length,
+      hasPassword: !!data.password,
     });
-    if (error) return next(mapSupabaseAuthError(error));
+
+    // ── Step 2: Attempt Supabase sign-in ──────────────────────────────────
+    console.log(`[LOGIN] ${requestId} Calling Supabase auth.signInWithPassword...`);
+    const authStart = Date.now();
+
+    const { data: authData, error } = await client.auth.signInWithPassword({
+      email: data.email,
+      password: data.password,
+    });
+
+    console.log(`[LOGIN] ${requestId} Supabase auth response:`, {
+      success: !!authData,
+      hasError: !!error,
+      errorMessage: error?.message || null,
+      errorStatus: error?.status || null,
+      userId: authData?.user?.id || null,
+      userEmail: authData?.user?.email || null,
+      hasSession: !!authData?.session,
+      elapsed: `${Date.now() - authStart}ms`,
+    });
+
+    if (error) {
+      console.warn(`[LOGIN] ${requestId} ❌ Auth failed:`, {
+        error: error.message,
+        status: error.status,
+        elapsed: `${Date.now() - startTime}ms`,
+      });
+      return next(mapSupabaseAuthError(error));
+    }
+
+    const userId = authData.user.id;
+    console.log(`[LOGIN] ${requestId} Auth successful for userId: ${userId}`);
+
+    // ── Step 3: Fetch user profile + memberships ──────────────────────────
+    console.log(`[LOGIN] ${requestId} Fetching user profile and memberships...`);
+    const dbStart = Date.now();
 
     const [userResult, membershipsResult] = await Promise.all([
       supabaseAdmin
         .from('users')
         .select('*')
-        .eq('id', authData.user.id)
+        .eq('id', userId)
         .is('deleted_at', null)
         .maybeSingle(),
       supabaseAdmin
         .from('workspace_members')
         .select('id, role, workspace_id, display_name, workspaces!inner(name, base_currency)')
-        .eq('user_id', authData.user.id)
+        .eq('user_id', userId)
         .eq('is_active', true)
         .is('deleted_at', null),
     ]);
 
-    const userData        = userResult.data;
+    console.log(`[LOGIN] ${requestId} DB queries complete:`, {
+      userFound: !!userResult.data,
+      userError: userResult.error?.message || null,
+      membershipsCount: membershipsResult.data?.length || 0,
+      membershipsError: membershipsResult.error?.message || null,
+      elapsed: `${Date.now() - dbStart}ms`,
+    });
+
+    const userData = userResult.data;
     const membershipsData = membershipsResult.data || [];
 
+    // ── Step 4: Shape memberships ──────────────────────────────────────────
     const shapedMemberships = membershipsData.map((m) => ({
-      member_id:      m.id,
-      role:           m.role,
-      workspace_id:   m.workspace_id,
-      display_name:   m.display_name,
+      member_id: m.id,
+      role: m.role,
+      workspace_id: m.workspace_id,
+      display_name: m.display_name,
       workspace_name: m.workspaces?.name,
-      base_currency:  m.workspaces?.base_currency,
+      base_currency: m.workspaces?.base_currency,
     }));
 
-    // Must match the path this cookie is cleared/refreshed on (see logout, refreshToken).
-    res.cookie('refresh_token', authData.session.refresh_token, {
-      httpOnly: true,
-      secure:   process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge:   30 * 24 * 60 * 60 * 1000,
-      path:     '/v1/auth/refresh',
+    console.log(`[LOGIN] ${requestId} Shaped memberships:`, {
+      count: shapedMemberships.length,
+      workspaces: shapedMemberships.map(m => ({
+        id: m.workspace_id,
+        name: m.workspace_name,
+        role: m.role,
+      })),
     });
 
-    success(res, {
-      access_token: authData.session.access_token,
-      expires_in:   authData.session.expires_in,
-      token_type:   'Bearer',
-      user:         userData || null,
-      memberships:  shapedMemberships,
-      profile_setup_required: !userData,
+    // ── Step 5: Set refresh token cookie ──────────────────────────────────
+    console.log(`[LOGIN] ${requestId} Setting refresh token cookie...`);
+
+    res.cookie('refresh_token', authData.session.refresh_token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      path: '/v1/auth/refresh',
     });
-  } catch (err) { next(err); }
+
+    // ── Step 6: Return success response ────────────────────────────────────
+    const responsePayload = {
+      access_token: authData.session.access_token,
+      expires_in: authData.session.expires_in,
+      token_type: 'Bearer',
+      user: userData || null,
+      memberships: shapedMemberships,
+      profile_setup_required: !userData,
+    };
+
+    console.log(`[LOGIN] ${requestId} ✅ SUCCESS`, {
+      userId,
+      userEmail: authData.user.email,
+      hasProfile: !!userData,
+      profileSetupRequired: !userData,
+      membershipsCount: shapedMemberships.length,
+      elapsed: `${Date.now() - startTime}ms`,
+    });
+
+    success(res, responsePayload);
+
+  } catch (err) {
+    console.error(`[LOGIN] ${requestId} ❌ UNEXPECTED ERROR:`, {
+      error: err.message,
+      stack: err.stack,
+      name: err.name,
+      code: err.code,
+      elapsed: `${Date.now() - startTime}ms`,
+    });
+    next(err);
+  }
 }
 
 // ── Refresh ───────────────────────────────────────────────────────
