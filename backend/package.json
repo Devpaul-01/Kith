@@ -2,11 +2,11 @@
   "name": "kith-backend",
   "version": "1.0.0",
   "description": "Kith — Family Coordination Platform Backend API",
-  "main": "src/server.js",
+  "main": "src/start-all.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node src/start-all.js",
     "test": "jest",
-    "dev": "nodemon src/server.js",
+    "dev": "nodemon src/start-all.js",
     "worker": "node src/workers/index.js",
     "scheduler": "node src/queues/scheduler.js",
     "lint": "eslint src/"
@@ -50,7 +50,7 @@
     "coverageDirectory": "coverage",
     "collectCoverageFrom": [
       "src/**/*.js",
-      "!src/server.js"
+      "!src/start-all.js"
     ]
   },
   "engines": {
