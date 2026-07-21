@@ -5,9 +5,9 @@ const logger = require('../utils/logger');
 
 const BUCKET = process.env.STORAGE_BUCKET_NAME || 'kith-files';
 
-// Issue M13 fix: validateUpload() below only ever checked CLIENT-DECLARED
+// validateUpload() below only ever checks CLIENT-DECLARED
 // content_type/file_size before issuing a signed direct-to-storage upload
-// URL — nothing re-validated the actual uploaded bytes afterward. A client
+// URL — nothing re-validates the actual uploaded bytes afterward. A client
 // could declare "image/jpeg" and upload anything (e.g. an HTML file with
 // an embedded script, served back with an image content-type). Every
 // upload flow in this app (ledger proofs, task proofs, milestone photos)
@@ -18,7 +18,7 @@ const BUCKET = process.env.STORAGE_BUCKET_NAME || 'kith-files';
 // Set FILE_VERIFICATION_ENABLED=false to disable if this proves too costly
 // at scale (it downloads the full file to check its signature bytes) —
 // defaults to enabled since this is a security control, not a convenience
-// feature like the idempotency-key flag elsewhere in the codebase.
+// feature.
 const FILE_VERIFICATION_ENABLED = process.env.FILE_VERIFICATION_ENABLED !== 'false';
 
 // First-N-bytes signatures for the file types this app actually accepts
@@ -82,23 +82,23 @@ async function verifyUploadedFile(filePath, declaredContentType) {
 }
 
 const MAX_SIZES = {
-  proof:          10 * 1024 * 1024,  // 10 MB
-  task_proof:     10 * 1024 * 1024,  // 10 MB
-  cover_photo:    10 * 1024 * 1024,  // 10 MB
-  outcome_file:   50 * 1024 * 1024,  // 50 MB
-  milestone_photo:10 * 1024 * 1024,  // 10 MB
-  avatar:          5 * 1024 * 1024,  //  5 MB
-  workspace_avatar: 5 * 1024 * 1024, //  5 MB  // ← ADD THIS
+  proof:            10 * 1024 * 1024,  // 10 MB
+  task_proof:       10 * 1024 * 1024,  // 10 MB
+  cover_photo:      10 * 1024 * 1024,  // 10 MB
+  outcome_file:     50 * 1024 * 1024,  // 50 MB
+  milestone_photo:  10 * 1024 * 1024,  // 10 MB
+  avatar:            5 * 1024 * 1024,  //  5 MB
+  workspace_avatar:  5 * 1024 * 1024,  //  5 MB
 };
 
 const ALLOWED_TYPES = {
-  proof:          ['image/jpeg','image/png','image/webp','image/gif','application/pdf'],
-  task_proof:     ['image/jpeg','image/png','image/webp','image/gif','application/pdf'],
-  cover_photo:    ['image/jpeg','image/png','image/webp','image/gif'],
-  outcome_file:   ['image/jpeg','image/png','image/webp','image/gif','application/pdf'],
-  milestone_photo:['image/jpeg','image/png','image/webp','image/gif'],
-  avatar:         ['image/jpeg','image/png','image/webp'],
-  workspace_avatar: ['image/jpeg','image/png','image/webp'],  // ← ADD THIS
+  proof:            ['image/jpeg','image/png','image/webp','image/gif','application/pdf'],
+  task_proof:       ['image/jpeg','image/png','image/webp','image/gif','application/pdf'],
+  cover_photo:      ['image/jpeg','image/png','image/webp','image/gif'],
+  outcome_file:     ['image/jpeg','image/png','image/webp','image/gif','application/pdf'],
+  milestone_photo:  ['image/jpeg','image/png','image/webp','image/gif'],
+  avatar:           ['image/jpeg','image/png','image/webp'],
+  workspace_avatar: ['image/jpeg','image/png','image/webp'],
 };
 
 function validateUpload(fileType, contentType, fileSize) {
@@ -121,7 +121,6 @@ function validateUpload(fileType, contentType, fileSize) {
     throw new BusinessRuleError(`File type "${contentType}" is not allowed for ${fileType}`);
   }
 }
-
 
 /**
  * Generate a signed upload URL for Supabase Storage.

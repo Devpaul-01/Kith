@@ -10,7 +10,6 @@
 // gives you a single command for local use.
 //
 // Usage:  node src/start-all.js
-// (wire this up as the "dev"/"start" script in package.json)
 
 require('dotenv').config();
 

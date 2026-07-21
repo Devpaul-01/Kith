@@ -4,34 +4,9 @@ const { SUPPORTED_CURRENCIES } = require('./auth.validator');
 
 // ── Workspace ──────────────────────────────────────────────────────
 
-// Issue M8 fix: createWorkspaceSchema and updateWorkspaceSchema previously
-// declared two DIFFERENT family_type enums inline. Both schemas now share
-// one list.
-//
-// Audit finding 2.1 (resolved): this list was previously wider than the
-// live DB constraint (which only allowed extended/event/pool), so a
-// request with e.g. family_type: 'nuclear' passed validation here and
-// then 500'd at the database layer. Resolved by widening the DATABASE to
-// match this already-shipped validator surface — see
-// migrations/0004_widen_family_type_and_recurrence_cadence.sql — rather
-// than narrowing the validator, since narrowing would have been a
-// breaking API change for any client already sending these values.
 const FAMILY_TYPES = ['nuclear','extended','blended','community','association','other'];
 
-// Fixes audit finding 2.2: createContainerSchema and convertToRecurringSchema
-// previously validated the SAME containers.recurrence_cadence column with
-// two different, hand-maintained enums 20 lines apart — one of which
-// (createContainerSchema's) included 'weekly', a value the DB's CHECK
-// constraint rejected, so a perfectly reasonable request could pass Zod
-// validation and then 500 at the database layer.
-//
-// Migration 0004_widen_family_type_and_recurrence_cadence.sql widens the
-// DB constraint to include 'weekly' (matching what this validator already
-// advertised to clients), and background.workers.js's cycle-generation
-// worker now has a `case 'weekly'` so the value is actually honored end
-// to end, not just accepted and then silently treated as monthly.
 const RECURRENCE_CADENCES = ['monthly', 'weekly', 'quarterly', 'yearly', 'custom'];
-
 
 const createWorkspaceSchema = z.object({
   name:          z.string().min(2).max(80),
@@ -69,9 +44,6 @@ const updateSettingsSchema = z.object({
 });
 
 // ── Announce ──────────────────────────────────────────────────────
-//
-// Centralized here (rather than manual if/typeof/trim checks in the
-// controller) so announceToWorkspace stays clean.
 
 const announceSchema = z.object({
   title:       z.string().min(1, 'title is required').max(200).trim(),
@@ -145,7 +117,7 @@ const createContainerSchema = z
       .enum(['celebration', 'memorial', 'financial', 'logistical', 'other'])
       .optional()
       .default('other'),
-    // Recurring — now accepts null, matching how the frontend actually serializes "unused"
+    // Recurring — accepts null, matching how the frontend serializes "unused"
     recurrence_cadence:  z.enum(RECURRENCE_CADENCES).optional().nullable(),
     recurrence_days:     z.number().int().min(1).optional().nullable(),
     recurrence_start:    z.string().date().optional().nullable(),
@@ -231,6 +203,6 @@ module.exports = {
   updateContainerSchema,
   completeContainerSchema,
   convertToRecurringSchema,
-  FAMILY_TYPES, // Issue M8: exported so it stays the single source of truth
+  FAMILY_TYPES,
   RECURRENCE_CADENCES,
 };

@@ -6,17 +6,9 @@
 // When a cron fires, BullMQ enqueues a job INTO THAT SAME QUEUE.
 // A Worker listening on that queue then picks it up.
 //
-// WRONG (old):  scheduler adds 'reminder-scan' → 'kith-scheduler' queue
-//               ReminderWorker listens to      → 'reminder-queue'
-//               Result: job fires, nobody processes it. ❌
-//
-// CORRECT (now): scheduler adds 'reminder-scan' → 'reminder-queue'
-//                ReminderWorker listens to       → 'reminder-queue'
-//                Result: cron fires, worker processes it. ✅
-//
-// Each queue owns its own repeatable schedule. We just need one
-// Queue instance per target queue to register the cron, then the
-// workers that already listen to those queues handle execution.
+// Each queue owns its own repeatable schedule — one Queue instance per
+// target queue registers the cron, and the worker that already listens
+// to that queue handles execution.
 
 require('dotenv').config();
 const { Queue } = require('bullmq');
@@ -117,10 +109,6 @@ if (require.main === module) {
   setupScheduler()
     .then(() => {
       logger.info('Scheduler registration complete. Queues are live.');
-      // Keep process alive — BullMQ needs an open Redis connection
-      // to maintain the repeatable job keys.
-      // In production, the worker process calls setupScheduler() instead,
-      // so you don't need this process running separately.
     })
     .catch((err) => {
       logger.error('Scheduler failed', { error: err.message });

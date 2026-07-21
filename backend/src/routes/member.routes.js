@@ -1,9 +1,8 @@
 // src/routes/member.routes.js
 //
-// Extracted from workspace.routes.js (audit finding 3.5). Mounted at
-// /v1/workspaces/:workspaceId/members by the parent workspace router —
-// mergeParams:true so :workspaceId (and req.member/req.workspace set by
-// requireMembership upstream) remain available here.
+// Mounted at /v1/workspaces/:workspaceId/members by the parent workspace
+// router — mergeParams:true so :workspaceId (and req.member/req.workspace
+// set by requireMembership upstream) remain available here.
 const router = require('express').Router({ mergeParams: true });
 const mCtrl = require('../controllers/member.controller');
 const { requireAdmin, requireSelfOrAdmin } = require('../middleware/role');

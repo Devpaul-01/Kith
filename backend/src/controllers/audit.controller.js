@@ -1,9 +1,7 @@
 // src/controllers/audit.controller.js
 //
-// Service-layer refactor: query-building (applyAuditLogFilters) and CSV
-// generation now live in services/audit_log.service.js. This file only
-// parses the request, calls the service, and shapes the HTTP response
-// (pagination envelope vs. CSV attachment headers).
+// Thin HTTP adapter: parses the request, calls the service, and shapes
+// the HTTP response (pagination envelope vs. CSV attachment headers).
 
 const { paginate } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');

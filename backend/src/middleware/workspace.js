@@ -20,10 +20,10 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  *
  * `bank_details` is intentionally NOT selected here — nothing in the
  * codebase reads req.workspace.bankDetails, so fetching it into every
- * single workspace-scoped request was pure overhead on a sensitive jsonb
- * column with no consumer (audit finding 7.3). If a future endpoint
- * genuinely needs it, fetch it explicitly in that controller instead of
- * reintroducing it here.
+ * single workspace-scoped request would be pure overhead on a sensitive
+ * jsonb column with no consumer. If a future endpoint genuinely needs
+ * it, fetch it explicitly in that controller instead of reintroducing
+ * it here.
  */
 async function requireMembership(req, res, next) {
   try {

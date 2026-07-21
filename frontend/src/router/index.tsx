@@ -1,6 +1,8 @@
 import{lazy,Suspense}from'react';
 import{createBrowserRouter,Navigate}from'react-router-dom';
 import{ProtectedRoute}from'./ProtectedRoute';
+import{LandingRoute}from'./LandingRoute';
+
 import{ProfileGuard}from'./ProfileGuard';
 import{WorkspaceGuard}from'./WorkspaceGuard';
 import{AdminRoute}from'./AdminRoute';
@@ -39,15 +41,18 @@ const TimelinePage=lazy(()=>import('@/pages/timeline/TimelinePage'));
 const NotificationsPage=lazy(()=>import('@/pages/notifications/NotificationsPage'));
 const ProfileSettingsPage=lazy(()=>import('@/pages/settings/ProfileSettingsPage'));
 const WorkspaceSettingsPage=lazy(()=>import('@/pages/settings/WorkspaceSettingsPage'));
+const NotificationSettingsPage=lazy(()=>import('@/pages/settings/NotificationSettingsPage'));
 const ActivitiesPage = lazy(() => import('@/pages/activities/ActivitiesPage'));
-const NotifSettingsPage=lazy(()=>import('@/pages/settings/NotificationSettingsPage'));
+const LandingPage =lazy(()=>import('@/pages/landing/LandingPage'));
+
 export const router=createBrowserRouter([
-  {path:'/',element:<Navigate to="/login" replace/>},
+  
   {element:<AuthLayout/>,children:[
     {path:'/login',element:S(LoginPage)},{path:'/signup',element:S(SignupPage)},
     {path:'/signup/verify-email',element:S(VerifyEmailPage)},{path:'/auth/forgot-password',element:S(ForgotPasswordPage)},
     {path:'/auth/reset-password',element:S(ResetPasswordPage)},{path:'/auth/callback',element:S(CallbackPage)},
     {path:'/register',element:S(RegisterPage)},
+    {path:'/',element:<LandingRoute/>,children:[{index:true,element:S(LandingPage)}]},
   ]},
   {element:<PublicLayout/>,children:[{path:'/invite/:token',element:S(InvitePage)},{path:'/event/:publicToken',element:S(PublicContainerPage)}]},
   {element:<ProtectedRoute/>,children:[{element:<ProfileGuard/>,children:[
@@ -59,7 +64,7 @@ export const router=createBrowserRouter([
       {path:'/app/containers/:id/ledger',element:S(ContainerLedgerPage)},{path:'/app/containers/:id/tasks',element:S(ContainerTasksPage)},
       {path:'/app/containers/:id/summary',element:S(ContainerSummaryPage)},
       {path:'/app/members',element:S(MemberListPage)},{path:'/app/members/:id',element:S(MemberDetailPage)},
-  { path: '/app/members/engagement', element: <MemberEngagementPage /> },
+      {path:'/app/members/engagement',element:S(MemberEngagementPage)},
       {path:'/app/timeline',element:S(TimelinePage)},{path:'/app/notifications',element:S(NotificationsPage)},
       {path:'/app/settings/profile', element:S(ProfileSettingsPage)},{path:'/app/settings/notifications',element:S(NotifSettingsPage)},
       {element:<AdminRoute/>,children:[

@@ -1,9 +1,8 @@
 // src/controllers/search.controller.js
 //
-// Service-layer refactor: this controller previously contained the
-// query-building/escaping/shaping logic directly. That logic now lives in
-// services/search.service.js — this file is a thin HTTP adapter: parse
-// request, call service, format response, forward errors.
+// Thin HTTP adapter: parse request, call service, format response,
+// forward errors. Query-building/escaping/shaping logic lives in
+// services/search.service.js.
 
 const { success } = require('../utils/response');
 const searchService = require('../services/search.service');

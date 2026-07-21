@@ -5,19 +5,10 @@ const { UnauthorizedError } = require('../utils/errors');
 const { TTL, lastSeenKey } = require('../config/redis-keys');
 const logger = require('../utils/logger');
 
-// last_seen_at is debounced so a user making 50 calls in a session
-// doesn't trigger 50 writes for a field that only needs minute-level
-// granularity.
-//
-// Previously an in-memory Map, which meant each instance behind the load
-// balancer independently allowed one write per user per window (worst
-// case `instance_count` writes per window instead of 1) — a known,
-// documented limitation. Now backed by Redis (the same connection
-// already used for BullMQ and rate limiting elsewhere in this file's own
-// request pipeline — see rateLimiter.js), using a `SET ... NX EX` claim:
-// only the request that successfully claims the key across the WHOLE
-// fleet performs the write, giving true single-writer-per-window
-// behavior regardless of instance count.
+// last_seen_at is debounced via a Redis `SET ... NX EX` claim so only the
+// request that successfully claims the key across the whole fleet
+// performs the write — true single-writer-per-window behavior regardless
+// of instance count.
 //
 // Fails open: if Redis is unavailable, we skip the debounce and just
 // don't write last_seen_at for that request rather than blocking auth on
@@ -25,9 +16,6 @@ const logger = require('../utils/logger');
 async function shouldUpdateLastSeen(userId) {
   try {
     const redis = getRedis();
-    // ioredis: set(key, value, 'EX', seconds, 'NX') resolves to 'OK' if
-    // the key was set (i.e. it did not already exist), or null if a
-    // debounce window is already active for this user.
     const result = await redis.set(lastSeenKey(userId), '1', 'EX', TTL.LAST_SEEN_DEBOUNCE_SECONDS, 'NX');
     return result === 'OK';
   } catch (err) {

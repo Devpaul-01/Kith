@@ -1,7 +1,6 @@
 // src/controllers/task.controller.js
 //
-// Service-layer refactor: task CRUD/proof/export logic now lives in
-// services/task.service.js.
+// Task CRUD/proof/export logic lives in services/task.service.js.
 
 const { noContent, success } = require('../utils/response');
 const {

@@ -19,20 +19,7 @@
 //                       workspace.routes.js and auth.routes.js's
 //                       authenticated section), where req.user.id is
 //                       guaranteed to be populated. This is the limiter
-//                       that actually delivers per-user throttling —
-//                       e.g. many legitimate users behind one shared
-//                       corporate/campus NAT no longer share a single
-//                       bucket for authenticated, workspace-scoped
-//                       traffic, which was the whole point of keying by
-//                       user in the first place.
-//
-// (Previously a single `generalLimiter` claimed to be per-user via
-// `req.user?.id || req.ip`, but because it was mounted before auth ran
-// anywhere, req.user was always undefined and it silently fell back to
-// IP on 100% of traffic — see audit finding 2.3. Splitting into two
-// limiters, each correctly scoped to where the identity it needs is
-// actually available, fixes this without weakening the pre-auth
-// baseline.)
+//                       that actually delivers per-user throttling.
 
 const rateLimit = require('express-rate-limit');
 const RedisStore = require('rate-limit-redis');
@@ -83,8 +70,7 @@ const authLimiter = createLimiter(
   { keyGenerator: perIpKey }
 );
 
-// Invite acceptance: 10 / hour per user (requireAuth runs before this in
-// the route chain, so req.user is populated) — falls back to IP if not.
+// Invite acceptance: 10 / hour per user
 const inviteLimiter = createLimiter(
   'rl:invite:',
   60 * 60 * 1000,
@@ -103,9 +89,8 @@ const uploadLimiter = createLimiter(
 );
 
 // Public, unauthenticated lookup endpoints (invite preview, public
-// container view): tighter IP-based limiter tuned specifically against
-// token-space enumeration, since generalLimiter's 200/min is too loose
-// to be a meaningful anti-enumeration control on its own (audit 8.2).
+// container view): tighter IP-based limiter tuned against token-space
+// enumeration, since generalLimiter's 200/min is too loose on its own.
 const publicLookupLimiter = createLimiter(
   'rl:public-lookup:',
   60 * 1000,
@@ -124,11 +109,8 @@ const generalLimiter = createLimiter(
   { keyGenerator: perIpKey }
 );
 
-// General API, per authenticated user: 200 / min per user. Mount this
-// AFTER requireAuth on authenticated route trees (workspace.routes.js,
-// auth.routes.js's authenticated section) — this is the limiter that
-// actually protects a single heavy user without penalizing everyone else
-// behind the same NAT/IP.
+// General API, per authenticated user: 200 / min per user. Mounted AFTER
+// requireAuth on authenticated route trees.
 const userGeneralLimiter = createLimiter(
   'rl:general-user:',
   60 * 1000,

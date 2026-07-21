@@ -18,30 +18,26 @@ const app = express();
 // ── Security & core middleware ─────────────────────────────────────
 app.set('trust proxy', 1);
 
-// Issue L9 fix: helmet() was previously called with no configuration,
-// leaving CSP/HSTS/frameguard at whatever the installed helmet version's
-// defaults happen to be. Now explicit. Kept deliberately conservative
-// rather than a strict custom CSP: this process serves both a JSON API
-// (which doesn't render HTML, so CSP is largely inert for it) AND the
-// Bull Board admin dashboard (a full HTML app under /admin/queues) behind
-// the SAME helmet instance — an aggressive custom CSP tuned for the API
-// could break Bull Board's own asset loading. If Bull Board is ever split
-// onto its own process/origin, this can be tightened further with a real
-// CSP (script-src/style-src allowlists) instead of just the headers below.
+// Kept deliberately conservative rather than a strict custom CSP: this
+// process serves both a JSON API (which doesn't render HTML, so CSP is
+// largely inert for it) AND the Bull Board admin dashboard (a full HTML
+// app under /admin/queues) behind the SAME helmet instance — an
+// aggressive custom CSP tuned for the API could break Bull Board's own
+// asset loading. If Bull Board is ever split onto its own process/
+// origin, this can be tightened further with a real CSP (script-src/
+// style-src allowlists) instead of just the headers below.
 app.use(helmet({
   hsts: { maxAge: 31536000, includeSubDomains: true, preload: false },
   frameguard: { action: 'deny' },
   referrerPolicy: { policy: 'no-referrer' },
 }));
 
-// Issue L2 fix: removed the `|| '*'` fallback. `server.js`'s
-// validateEnvironment() already refuses to boot without FRONTEND_URL set,
-// so the fallback was unreachable dead code — but it was also misleading:
-// browsers reject wildcard origin + credentialed requests outright, so if
-// FRONTEND_URL were ever unset, cookie-based auth (the refresh_token
-// cookie) would silently stop working rather than silently becoming
-// insecure. Failing loud at startup (already the case via server.js) is
-// the correct behavior; this fallback just obscured that.
+// No `|| '*'` fallback: server.js's validateEnvironment() already refuses
+// to boot without FRONTEND_URL set. Browsers reject wildcard origin +
+// credentialed requests outright, so if FRONTEND_URL were ever unset,
+// cookie-based auth (the refresh_token cookie) would silently stop
+// working rather than silently becoming insecure. Failing loud at
+// startup is the correct behavior.
 app.use(cors({
   origin:         process.env.FRONTEND_URL,
   credentials:    true,
@@ -53,14 +49,13 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(requestId);
 app.use(requestLogger);
-// Audit finding 2.3 (Critical, resolved): this global, pre-auth mount
-// means req.user is never populated when generalLimiter's keyGenerator
-// runs, so it is — correctly and by design now — an IP-based baseline
-// covering every request, authenticated or not. The per-user guarantee
-// this limiter used to (incorrectly) claim to provide now lives in
-// userGeneralLimiter, mounted separately AFTER requireAuth inside
-// routes/workspace.routes.js, where req.user.id actually exists. See
-// middleware/rateLimiter.js for the full explanation.
+// This global, pre-auth mount means req.user is never populated when
+// generalLimiter's keyGenerator runs, so it is — correctly and by design
+// — an IP-based baseline covering every request, authenticated or not.
+// The per-user guarantee lives in userGeneralLimiter, mounted separately
+// AFTER requireAuth inside routes/workspace.routes.js, where req.user.id
+// actually exists. See middleware/rateLimiter.js for the full
+// explanation.
 app.use(generalLimiter);
 const cookieParser = require('cookie-parser');
 app.use(cookieParser());
@@ -85,22 +80,16 @@ app.get('/health', async (req, res) => {
 });
 
 // ── Auth routes (public + authenticated) ──────────────────────────
-// Includes: signup, login, refresh, forgot-password, google/url,
-//           logout, reset-password, register, me, profile, avatar, etc.
 app.use('/v1/auth', require('./routes/auth.routes'));
 
 // ── Public routes (no auth required, except invite accept) ────────
-// GET  /v1/public/invites/:token          — invite preview
-// POST /v1/public/invites/:token/accept   — accept invite (auth required)
-// GET  /v1/public/containers/:publicToken — shared container view
 app.use('/v1/public', require('./routes/public.routes'));
 
 // ── Legacy invite routes (kept for backwards compatibility) ────────
-// These were in the original implementation and may already be in use.
 app.use('/v1/invites', require('./routes/invite.routes'));
 
 // ── Workspace list + creation (no workspaceId in path) ────────────
-// 9.1: Dedicated top-level endpoints for workspace switcher + onboarding.
+// Dedicated top-level endpoints for workspace switcher + onboarding.
 // Must be mounted BEFORE the /:workspaceId router to avoid conflicts.
 app.get('/v1/workspaces',  requireAuth, loadDbUser, workspaceCtrl.listWorkspaces);
 app.post('/v1/workspaces', requireAuth, loadDbUser, workspaceCtrl.createWorkspace);
@@ -111,10 +100,6 @@ app.post('/v1/workspaces', requireAuth, loadDbUser, workspaceCtrl.createWorkspac
 app.use('/v1/workspaces/:workspaceId', require('./routes/workspace.routes'));
 
 // ── Notification routes (user-scoped, not workspace-scoped) ───────
-// GET  /v1/notifications/count     — lightweight badge poll
-// GET  /v1/notifications           — paginated list
-// PATCH /v1/notifications/read-all — mark all read
-// PATCH /v1/notifications/:id/read — mark one read
 app.use('/v1/notifications', require('./routes/notification.routes'));
 
 // ── Bull Board (queue monitor — IP-restricted + basic auth) ────────
@@ -132,12 +117,10 @@ if (process.env.BULL_BOARD_USERNAME && process.env.BULL_BOARD_PASSWORD) {
       serverAdapter,
     });
 
-    // Issue H5 fix: `.includes()` was a substring match, not an exact/CIDR
-    // match — e.g. an allowlisted "1.2.3.4" would also match a request IP
-    // of "21.2.3.40" or any string containing that substring. Now does an
-    // exact match, or a real (if minimal, IPv4-only) CIDR match for entries
-    // containing "/". For anything beyond simple IPv4 CIDR ranges, swap
-    // this helper for the `ipaddr.js` package.
+    // Exact IP match, or a real (if minimal, IPv4-only) CIDR match for
+    // entries containing "/". A naive `.includes()` substring match would
+    // let an allowlisted "1.2.3.4" also match "21.2.3.40". For anything
+    // beyond simple IPv4 CIDR ranges, swap this helper for `ipaddr.js`.
     function ipInCidr(ip, cidr) {
       const [range, bitsStr] = cidr.split('/');
       const bits = parseInt(bitsStr, 10);
@@ -156,11 +139,10 @@ if (process.env.BULL_BOARD_USERNAME && process.env.BULL_BOARD_PASSWORD) {
       });
     }
 
-    // Issue H5 fix: Basic Auth credentials were compared with `!==`, which
-    // is not constant-time and is a (low-probability but real) timing
-    // side-channel against the admin dashboard password. Now uses
-    // crypto.timingSafeEqual, guarding against length mismatches (which
-    // timingSafeEqual throws on rather than returning false for).
+    // crypto.timingSafeEqual guards against a timing side-channel on the
+    // admin dashboard password (naive `!==` comparison is not
+    // constant-time), and guards against length mismatches (which
+    // timingSafeEqual itself throws on rather than returning false for).
     function safeEqual(a, b) {
       const bufA = Buffer.from(String(a ?? ''));
       const bufB = Buffer.from(String(b ?? ''));

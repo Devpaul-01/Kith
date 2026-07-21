@@ -1,8 +1,7 @@
 // src/services/participant.service.js
 //
-// Extracted from participant.controller.js as part of the service-layer
-// refactor. Preserves the batch-validate/batch-upsert pattern (issue M4)
-// and the atomic set_contributor_target_atomic RPC usage (issue H1).
+// Preserves the batch-validate/batch-upsert pattern and the atomic
+// set_contributor_target_atomic RPC usage.
 
 const { supabaseAdmin }      = require('../config/supabase');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
@@ -193,8 +192,8 @@ async function updateParticipant({ containerId, participantId, data }) {
     return p;
   }
 
-  // Audit finding 5.4: mirrors the container-level guard on disabling
-  // money tracking with existing ledger entries.
+  // Mirrors the container-level guard on disabling money tracking with
+  // existing ledger entries.
   if (updates.money_enabled === false) {
     const { data: participantRow } = await supabaseAdmin
       .from('container_participants').select('workspace_member_id').eq('id', participantId).eq('container_id', containerId).maybeSingle();
@@ -244,8 +243,8 @@ async function setTarget({ containerId, participantId, amount, currency, due_dat
   if (!participant) throw new NotFoundError('Participant not found');
   if (!participant.containers?.enable_money) throw new BusinessRuleError('Container does not have money tracking enabled');
 
-  // Issue H1 fix: single atomic RPC instead of three sequential,
-  // non-transactional writes.
+  // Single atomic RPC instead of three sequential, non-transactional
+  // writes.
   const { data: rpcResult, error } = await supabaseAdmin.rpc('set_contributor_target_atomic', {
     p_container_participant_id: participantId,
     p_container_id:             containerId,

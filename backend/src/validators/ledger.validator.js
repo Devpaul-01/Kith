@@ -53,16 +53,6 @@ const createLedgerEntrySchema = z.object({
   original_amount: z.number().positive(),
   original_currency: z.string().min(3).max(5),
   base_amount: z.number().positive(),
-  // Issue M9 fix: previously any unrecognized string silently mapped to
-  // 'other' via .transform(), swallowing client bugs and garbage input
-  // alike with no validation error — inconsistent with the otherwise
-  // strict validation posture used everywhere else in this schema file.
-  // Now: recognized synonyms are still normalized (so existing clients
-  // sending "Bank Transfer" or "Cash" keep working unchanged), but
-  // anything NOT in the known synonym list is rejected as a validation
-  // error instead of being silently coerced. Implemented as a transform
-  // with ctx.addIssue (rather than .pipe(), which needs a newer Zod
-  // version) so this doesn't depend on an unconfirmed Zod version.
   payment_method: z
     .string()
     .transform((val, ctx) => {

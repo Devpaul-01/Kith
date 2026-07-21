@@ -14,7 +14,7 @@ const redisOptions = {
 let redis;
 
 function getRedis() {
-  
+
   if (!redis) {
     redis = new Redis(process.env.REDIS_URL, redisOptions);
     redis.on('error', (err) => logger.error('Redis error', { error: err.message }));

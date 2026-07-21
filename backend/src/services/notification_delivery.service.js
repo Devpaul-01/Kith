@@ -1,21 +1,19 @@
 // src/services/notification_delivery.service.js
 //
-// Extracted from workers/notification.worker.js as part of the
-// service-layer refactor. This is a distinct concern from
-// services/notification.service.js (which decides *what* to send and
-// enqueues the delivery job) and from
+// Distinct from services/notification.service.js (which decides *what*
+// to send and enqueues the delivery job) and from
 // services/notification_inbox.service.js (which lets a recipient read
-// their own inbox) — this module is "actually deliver one job's payload
-// via push or email," including idempotency, retry bookkeeping, and
-// token-rotation checks, exactly as in the original worker.
+// their own inbox) — this module actually delivers one job's payload via
+// push or email, including idempotency, retry bookkeeping, and
+// token-rotation checks.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { getMessaging }  = require('../config/firebase');
 const { getResend }     = require('../config/resend');
 const logger            = require('../utils/logger');
 
-// Issue M12 fix: title/body ultimately originate from user-controlled
-// strings (container names, task titles, admin announcement text — see
+// title/body ultimately originate from user-controlled strings (container
+// names, task titles, admin announcement text — see
 // notification.service.js's renderTemplate) and must be escaped before
 // interpolation into HTML email bodies.
 function escapeHtml(str) {
@@ -31,7 +29,7 @@ async function deliverNotification(jobData) {
   const {
     notification_id, delivery_id, channel,
     recipient_user_id, push_token, push_token_platform, push_enabled,
-    email, title, body, reference_type, reference_id, workspace_id,
+    email, email_digest_enabled, title, body, reference_type, reference_id, workspace_id,
   } = jobData;
 
   // Idempotency check
@@ -83,7 +81,18 @@ async function deliverNotification(jobData) {
 
     } else if (channel === 'email') {
       const resend = getResend();
-      if (!resend || !email) {
+
+      // Bug fix: this previously only checked that Resend was configured
+      // and that an email address existed — it never checked the
+      // recipient's own email_digest_enabled preference, so a user who
+      // turned email notifications off in Settings still received an
+      // email for every dispute, announcement, contribution, etc. This
+      // mirrors the push branch above, which correctly gates on
+      // push_enabled. `=== false` (not `!email_digest_enabled`) is
+      // deliberate: a null/undefined value (e.g. a user row from before
+      // this column existed) fails open to "send" rather than silently
+      // going quiet for every existing user.
+      if (!resend || !email || email_digest_enabled === false) {
         await supabaseAdmin.from('notification_deliveries').update({ status: 'skipped' }).eq('id', delivery_id);
         return;
       }

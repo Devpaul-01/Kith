@@ -1,10 +1,8 @@
 // src/services/engagement_check.service.js
 //
-// Extracted from workers/background.workers.js#createEngagementCheckWorker
-// as part of the service-layer refactor. Delegates the batched fetch to
-// services/engagement.service.js#fetchEngagementData — the same helper
-// member.service.js#getMemberEngagement uses — instead of maintaining an
-// independent copy of the same batching logic (issue M1).
+// Delegates the batched fetch to services/engagement.service.js#fetchEngagementData
+// — the same helper member.service.js#getMemberEngagement uses — instead
+// of maintaining an independent copy of the same batching logic.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { fetchEngagementData } = require('./engagement.service');

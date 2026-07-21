@@ -1,7 +1,7 @@
 // src/controllers/container.controller.js
 //
-// Service-layer refactor: container CRUD/lifecycle/summary/cycles/public-
-// view logic now lives in services/container.service.js.
+// Container CRUD/lifecycle/summary/cycles/public-view logic lives in
+// services/container.service.js.
 
 const { success, paginate } = require('../utils/response');
 const { createContainerSchema, updateContainerSchema, completeContainerSchema, convertToRecurringSchema } = require('../validators/workspace.validator');

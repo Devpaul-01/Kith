@@ -1,20 +1,46 @@
 // src/services/dashboard.service.js
 //
-// Extracted from dashboard.controller.js as part of the service-layer
-// refactor. All aggregation/shaping logic (previously inline in the
-// route handlers) now lives here; the controller only parses req,
-// calls these functions, and calls success().
+// All aggregation/shaping logic for the workspace dashboard lives here.
+// The controller only parses req, calls these functions, and responds.
+//
+// Caching: the expensive, role-shared portion of getDashboardData() is
+// cached in Redis for TTL.DASHBOARD_CACHE_SECONDS (see
+// services/dashboard-cache.service.js for the full rationale and the
+// invalidation strategy). The per-member unread-notification count is
+// deliberately excluded from the cached blob and fetched fresh on every
+// call — it's a single indexed count query, cheap enough that caching it
+// isn't worth the staleness/per-member cache-key-fanout tradeoff.
 
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 const { describeAuditAction } = require('../constants/audit-actions');
+const {
+  getCachedDashboard, setCachedDashboard,
+  getCachedOverdueSummary, setCachedOverdueSummary,
+} = require('./dashboard-cache.service');
+
+async function getUnreadNotificationCount(memberId) {
+  if (!memberId) return 0;
+  const { count, error } = await supabaseAdmin
+    .from('notifications')
+    .select('*', { count: 'exact', head: true })
+    .eq('recipient_id', memberId)
+    .eq('is_read', false);
+
+  if (error) {
+    logger.warn('Dashboard unread-count query error', { memberId, error: error.message });
+    return 0;
+  }
+  return count || 0;
+}
 
 /**
- * Builds the full workspace dashboard payload: summary counts, active
- * events, recurring pools, upcoming deadlines, pending confirmations
- * (admin only), recent activity, and unread notification count.
+ * Builds the workspace-wide, role-shared portion of the dashboard
+ * payload: summary counts, active events, recurring pools, upcoming
+ * deadlines, pending confirmations (admin only), and recent activity.
+ * Does NOT include per-member fields (unread counts) — see caller.
  */
-async function getDashboardData({ workspaceId, isAdmin, memberId }) {
+async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
   const today14 = new Date();
   today14.setDate(today14.getDate() + 14);
   const todayStr   = new Date().toISOString().split('T')[0];
@@ -36,7 +62,6 @@ async function getDashboardData({ workspaceId, isAdmin, memberId }) {
     { data: pools,         error: poolsError },
     { data: targetsData,   error: targetsError },
     { data: activity,      error: activityError },
-    { count: unreadCount,  error: notifError },
     { data: pending },
   ] = await Promise.all([
     supabaseAdmin
@@ -82,12 +107,6 @@ async function getDashboardData({ workspaceId, isAdmin, memberId }) {
       .order('created_at', { ascending: false })
       .limit(10),
 
-    supabaseAdmin
-      .from('notifications')
-      .select('*', { count: 'exact', head: true })
-      .eq('recipient_id', memberId)
-      .eq('is_read', false),
-
     pendingConfirmationsQuery,
   ]);
 
@@ -127,8 +146,7 @@ async function getDashboardData({ workspaceId, isAdmin, memberId }) {
   if (containersError) logger.warn('Dashboard containers query error', { workspaceId, error: containersError.message });
   if (poolsError)      logger.warn('Dashboard pools query error',      { workspaceId, error: poolsError.message });
   if (targetsError)    logger.warn('Dashboard targets query error',    { workspaceId, error: targetsError.message });
-  if (activityError)   logger.warn('Dashboard activity query error',   { workspaceId, error: activityError.message });
-  if (notifError)      logger.warn('Dashboard notifications error',    { workspaceId, error: notifError.message });
+  if (activityError)   logger.warn('Dashboard activity query error',  { workspaceId, error: activityError.message });
 
   const active = (allMembers || []).filter((m) => m.is_active && !m.deleted_at);
   const summary = {
@@ -196,14 +214,37 @@ async function getDashboardData({ workspaceId, isAdmin, memberId }) {
   }));
 
   return {
-    workspace_summary:         summary,
-    active_events:             activeEvents,
-    recurring_pools:           recurringPools,
-    upcoming_deadlines:        upcomingDeadlines,
-    pending_confirmations:     pendingConfirmations,
-    recent_activity:           enrichedActivity,
-    unread_notification_count: unreadCount || 0,
-    unread_activity_count:     enrichedActivity.length,
+    workspace_summary:     summary,
+    active_events:         activeEvents,
+    recurring_pools:       recurringPools,
+    upcoming_deadlines:    upcomingDeadlines,
+    pending_confirmations: pendingConfirmations,
+    recent_activity:       enrichedActivity,
+  };
+}
+
+/**
+ * Builds the full workspace dashboard payload: summary counts, active
+ * events, recurring pools, upcoming deadlines, pending confirmations
+ * (admin only), recent activity, and unread notification count.
+ */
+async function getDashboardData({ workspaceId, isAdmin, memberId }) {
+  const [cached, unreadCount] = await Promise.all([
+    getCachedDashboard(workspaceId, isAdmin),
+    getUnreadNotificationCount(memberId),
+  ]);
+
+  const shared = cached || await buildSharedDashboardPayload({ workspaceId, isAdmin });
+
+  if (!cached) {
+    // Fire-and-forget — never block the response on the cache write.
+    setCachedDashboard(workspaceId, isAdmin, shared);
+  }
+
+  return {
+    ...shared,
+    unread_notification_count: unreadCount,
+    unread_activity_count:     shared.recent_activity.length,
   };
 }
 
@@ -212,6 +253,9 @@ async function getDashboardData({ workspaceId, isAdmin, memberId }) {
  * money-enabled containers where their current target is past due.
  */
 async function getOverdueSummaryData({ workspaceId }) {
+  const cached = await getCachedOverdueSummary(workspaceId);
+  if (cached) return cached;
+
   const today = new Date().toISOString().split('T')[0];
 
   const { data: participants, error: pErr } = await supabaseAdmin
@@ -276,7 +320,12 @@ async function getOverdueSummaryData({ workspaceId }) {
     display_name: displayNames[entry.member_id] || null,
   }));
 
-  return { overdue_count: overdue.length, overdue };
+  const result = { overdue_count: overdue.length, overdue };
+
+  // Fire-and-forget — never block the response on the cache write.
+  setCachedOverdueSummary(workspaceId, result);
+
+  return result;
 }
 
 module.exports = {

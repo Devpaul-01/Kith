@@ -1,7 +1,6 @@
 // src/controllers/invite.controller.js
 //
-// Service-layer refactor: invite lifecycle logic now lives in
-// services/invite.service.js.
+// Invite lifecycle logic lives in services/invite.service.js.
 
 const { success } = require('../utils/response');
 const audit = require('../services/audit.service');

@@ -1,13 +1,10 @@
 // src/services/auth.service.js
 //
-// Extracted from auth.controller.js as part of the service-layer
-// refactor. This is the largest controller in the app, so this service
-// is organized in the same section order as the original for easy
-// cross-reference. All Supabase Auth calls, DB reads/writes, and error
-// mapping now live here; the controller only parses req/cookies/headers,
-// calls these functions, and shapes the HTTP response (including setting
-// the refresh_token cookie, which stays in the controller since it's an
-// HTTP-transport concern, not a business rule).
+// All Supabase Auth calls, DB reads/writes, and error mapping live here;
+// the controller only parses req/cookies/headers, calls these functions,
+// and shapes the HTTP response (including setting the refresh_token
+// cookie, which stays in the controller since it's an HTTP-transport
+// concern, not a business rule).
 
 const { supabaseAdmin, supabaseAuth } = require('../config/supabase');
 const {
@@ -30,11 +27,11 @@ function getAuthClient() {
   return supabaseAuth;
 }
 
-// Issue L5 fix: prefers the stable `error.code` (and `error.status`)
-// exposed by newer supabase-js/GoTrue versions over message-substring
-// matching, which is brittle against SDK/API wording changes.
-// Message-substring matching is kept as a fallback for older SDK
-// versions / error shapes where `code` isn't populated.
+// Prefers the stable `error.code` (and `error.status`) exposed by newer
+// supabase-js/GoTrue versions over message-substring matching, which is
+// brittle against SDK/API wording changes. Message-substring matching is
+// kept as a fallback for older SDK versions / error shapes where `code`
+// isn't populated.
 function mapSupabaseAuthError(error) {
   const code = error?.code || '';
   const msg  = error?.message || '';
@@ -97,11 +94,10 @@ async function signup(data) {
       );
 
     if (dbError) {
-      // Issue H3 fix: no longer silently returns 201 success when the
-      // profile row fails to write — flags it in the response instead so
-      // the client can prompt an immediate retry of POST /auth/register,
-      // which exists specifically to repair exactly this state. See
-      // original controller history for full rationale.
+      // Does not silently return 201 success when the profile row fails
+      // to write — flags it in the response instead so the client can
+      // prompt an immediate retry of POST /auth/register, which exists
+      // specifically to repair exactly this state.
       logger.error('Failed to create user profile on signup — auth user exists without a profile row', {
         userId: authData.user.id,
         error:  dbError.message,
@@ -142,52 +138,20 @@ async function signup(data) {
 }
 
 // ── Login ─────────────────────────────────────────────────────────
-//
-// The verbose [LOGIN] console.log tracing below is preserved verbatim
-// from the original controller — it's step-by-step diagnostic tracing
-// for this specific flow (a historically flaky one), not general request
-// logging (that's requestLogger.js). requestId/clientIp are computed in
-// the controller (they're HTTP-transport concerns) and passed in.
 
 async function login({ data, requestId, clientIp, userAgent }) {
   const startTime = Date.now();
 
-  console.log(`[LOGIN] ${requestId} ⚡ START`, {
-    ip: clientIp,
-    userAgent,
-    timestamp: new Date().toISOString(),
-  });
-
-  console.log(`[LOGIN] ${requestId} Validating request body...`);
   const client = getAuthClient();
-
-  console.log(`[LOGIN] ${requestId} Validation passed`, {
-    email: data.email?.toLowerCase(),
-    emailLength: data.email?.length,
-    hasPassword: !!data.password,
-  });
-
-  console.log(`[LOGIN] ${requestId} Calling Supabase auth.signInWithPassword...`);
-  const authStart = Date.now();
 
   const { data: authData, error } = await client.auth.signInWithPassword({
     email: data.email,
     password: data.password,
   });
 
-  console.log(`[LOGIN] ${requestId} Supabase auth response:`, {
-    success: !!authData,
-    hasError: !!error,
-    errorMessage: error?.message || null,
-    errorStatus: error?.status || null,
-    userId: authData?.user?.id || null,
-    userEmail: authData?.user?.email || null,
-    hasSession: !!authData?.session,
-    elapsed: `${Date.now() - authStart}ms`,
-  });
-
   if (error) {
-    console.warn(`[LOGIN] ${requestId} ❌ Auth failed:`, {
+    logger.warn('Login failed', {
+      requestId,
       error: error.message,
       status: error.status,
       elapsed: `${Date.now() - startTime}ms`,
@@ -196,10 +160,6 @@ async function login({ data, requestId, clientIp, userAgent }) {
   }
 
   const userId = authData.user.id;
-  console.log(`[LOGIN] ${requestId} Auth successful for userId: ${userId}`);
-
-  console.log(`[LOGIN] ${requestId} Fetching user profile and memberships...`);
-  const dbStart = Date.now();
 
   const [userResult, membershipsResult] = await Promise.all([
     supabaseAdmin
@@ -216,14 +176,6 @@ async function login({ data, requestId, clientIp, userAgent }) {
       .is('deleted_at', null),
   ]);
 
-  console.log(`[LOGIN] ${requestId} DB queries complete:`, {
-    userFound: !!userResult.data,
-    userError: userResult.error?.message || null,
-    membershipsCount: membershipsResult.data?.length || 0,
-    membershipsError: membershipsResult.error?.message || null,
-    elapsed: `${Date.now() - dbStart}ms`,
-  });
-
   const userData = userResult.data;
   const membershipsData = membershipsResult.data || [];
 
@@ -236,15 +188,6 @@ async function login({ data, requestId, clientIp, userAgent }) {
     base_currency: m.workspaces?.base_currency,
   }));
 
-  console.log(`[LOGIN] ${requestId} Shaped memberships:`, {
-    count: shapedMemberships.length,
-    workspaces: shapedMemberships.map(m => ({
-      id: m.workspace_id,
-      name: m.workspace_name,
-      role: m.role,
-    })),
-  });
-
   const responsePayload = {
     access_token: authData.session.access_token,
     expires_in: authData.session.expires_in,
@@ -255,11 +198,9 @@ async function login({ data, requestId, clientIp, userAgent }) {
     refresh_token: authData.session.refresh_token, // controller sets cookie, then strips this
   };
 
-  console.log(`[LOGIN] ${requestId} ✅ SUCCESS`, {
+  logger.info('Login succeeded', {
+    requestId,
     userId,
-    userEmail: authData.user.email,
-    hasProfile: !!userData,
-    profileSetupRequired: !userData,
     membershipsCount: shapedMemberships.length,
     elapsed: `${Date.now() - startTime}ms`,
   });
@@ -312,12 +253,10 @@ async function forgotPassword({ email }) {
 
 // ── Reset password (recovery-link flow only) ────────────────────────
 //
-// Issue H2 fix: this endpoint checks the JWT's `amr` (Authentication
-// Methods Reference) claim for a `recovery` entry, which Supabase
-// includes when a session was established via the password-recovery OTP
-// flow — instead of accepting any currently-valid access token. See
-// original controller history for full rationale and the frontend
-// dependency this depends on.
+// Checks the JWT's `amr` (Authentication Methods Reference) claim for a
+// `recovery` entry, which Supabase includes when a session was
+// established via the password-recovery OTP flow — instead of accepting
+// any currently-valid access token.
 
 function isRecoverySession(authorizationHeader) {
   try {
@@ -348,10 +287,9 @@ async function resetPassword({ authorizationHeader, password, userId }) {
 
 // ── Change password (logged-in user, requires current password) ────
 //
-// Issue H2 fix: verifies current_password by attempting a real sign-in
-// before allowing the change — an attacker holding a stolen access token
-// but not the account password cannot use this to lock the real owner
-// out.
+// Verifies current_password by attempting a real sign-in before allowing
+// the change — an attacker holding a stolen access token but not the
+// account password cannot use this to lock the real owner out.
 
 async function changePassword({ userEmail, userId, current_password, new_password }) {
   const client = getAuthClient();
@@ -368,14 +306,9 @@ async function changePassword({ userEmail, userId, current_password, new_passwor
 
 // ── Google OAuth URL ──────────────────────────────────────────────
 //
-// Issue C2 fix: `redirect_to` is only honored if it starts with our own
-// FRONTEND_URL origin, or matches an explicitly configured mobile
-// deep-link scheme — otherwise it's a textbook OAuth open-redirect. See
-// original controller history for full rationale.
-//
-// Issue L8 (documentation only): this app does not itself set/validate an
-// OAuth `state` parameter — delegated entirely to Supabase GoTrue's
-// /authorize endpoint. See original controller history.
+// `redirect_to` is only honored if it starts with our own FRONTEND_URL
+// origin, or matches an explicitly configured mobile deep-link scheme —
+// otherwise it's a textbook OAuth open-redirect.
 
 function isAllowedGoogleRedirect(url) {
   if (!url) return false;
@@ -422,7 +355,7 @@ async function googleCallback({ code }) {
     }, { onConflict: 'id' });
 
     if (dbError) {
-      // Same orphaned-profile risk as email signup (issue H3).
+      // Same orphaned-profile risk as email signup.
       logger.error('Failed to upsert user profile on Google OAuth callback', { userId: user.id, error: dbError.message });
     }
   }
@@ -621,10 +554,10 @@ async function deleteContact({ userId, contactId }) {
   if (!data) throw new NotFoundError('Contact not found');
 }
 
-// Issue M17 fix: single atomic RPC (replace_user_contacts_atomic) instead
-// of a separate DELETE-by-type followed by a batch UPSERT, closing the
-// window where a failed upsert after a successful delete could lose
-// contact methods with no rollback.
+// Single atomic RPC (replace_user_contacts_atomic) instead of a separate
+// DELETE-by-type followed by a batch UPSERT, closing the window where a
+// failed upsert after a successful delete could lose contact methods
+// with no rollback.
 async function updateContacts({ userId, contacts }) {
   const types = [...new Set(contacts.map((c) => c.type))];
 

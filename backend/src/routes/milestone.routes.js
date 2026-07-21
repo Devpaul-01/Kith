@@ -1,8 +1,8 @@
 // src/routes/milestone.routes.js
 //
 // Timeline + milestones. Mounted at the workspace router's root ('/') —
-// these paths (/timeline, /milestones, /milestones/:milestoneId, ...)
-// don't share a common resource prefix the way /members or /groups do.
+// these paths don't share a common resource prefix the way /members or
+// /groups do.
 const router = require('express').Router({ mergeParams: true });
 const msCtrl = require('../controllers/milestone.controller');
 const { requireAdmin } = require('../middleware/role');

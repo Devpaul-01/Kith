@@ -1,8 +1,4 @@
 // src/services/invite_cleanup.service.js
-//
-// Extracted from workers/background.workers.js#createInviteCleanupWorker
-// as part of the service-layer refactor.
-
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 

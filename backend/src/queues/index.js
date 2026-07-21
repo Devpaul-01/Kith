@@ -3,11 +3,6 @@
 // Central BullMQ queue registry.
 // Queues are created lazily on first access and cached so the same
 // Queue instance is reused across the process lifetime.
-//
-// Issue 21 fix: added 'data-export-queue' to QUEUE_NAMES so the queue exists
-// before auth_controller.requestDataExport tries to enqueue a job into it.
-// Without this addition getQueue('data-export-queue') would throw
-// "Unknown queue" at runtime.
 
 const { Queue } = require('bullmq');
 const { getRedis } = require('../config/redis');
@@ -21,7 +16,7 @@ const QUEUE_NAMES = [
   'invite-cleanup-queue',
   'engagement-check-queue',
   'notification-outbox-queue',
-  'data-export-queue',         // Issue 21: added for GDPR data export jobs
+  'data-export-queue',
 ];
 
 /** @type {Map<string, import('bullmq').Queue>} */

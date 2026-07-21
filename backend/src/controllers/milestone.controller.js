@@ -1,7 +1,6 @@
 // src/controllers/milestone.controller.js
 //
-// Service-layer refactor: timeline/milestone logic now lives in
-// services/milestone.service.js.
+// Timeline/milestone logic lives in services/milestone.service.js.
 
 const { noContent, success } = require('../utils/response');
 const { createMilestoneSchema, updateMilestoneSchema, uploadFileSchema, confirmProofSchema } = require('../validators/ledger.validator');

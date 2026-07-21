@@ -1,16 +1,8 @@
 // src/routes/workspace.routes.js
 //
-// Fixes audit finding 3.5: this file previously registered ~80 routes
-// across 8 unrelated resources directly on one Router instance, with
-// three separate hand-maintained comments warning that static sub-paths
-// had to be declared before dynamic ones to avoid route-shadowing. Split
-// into one small Router per resource (member/invite/group/container/
+// One small Router per resource (member/invite/group/container/
 // participant/ledger/dispute/task/milestone .routes.js), each mounted
-// here at the exact same path prefix it occupied before. This is a pure
-// structural refactor — every route path, method, and middleware chain
-// below is unchanged from the original single-file version; only the
-// file each route lives in has changed. See KITH-Implementation-Summary.md
-// for the full before/after route inventory this was checked against.
+// here at the exact path prefix it occupies.
 const router = require('express').Router({ mergeParams: true });
 
 const wCtrl = require('../controllers/workspace.controller');
@@ -26,9 +18,7 @@ const { uploadLimiter, userGeneralLimiter } = require('../middleware/rateLimiter
 
 // Apply auth + active-membership check to EVERY route in this router.
 // userGeneralLimiter is mounted here (AFTER requireAuth has populated
-// req.user) so it can genuinely key by user id — see rateLimiter.js and
-// audit finding 2.3 for why this couldn't live on the pre-auth global
-// generalLimiter in app.js.
+// req.user) so it can genuinely key by user id.
 router.use(requireAuth, loadDbUser, requireMembership, userGeneralLimiter);
 
 // ── Workspace ──────────────────────────────────────────────────────
@@ -55,8 +45,7 @@ router.get('/overdue-summary', requireAdmin, dashboardCtrl.getOverdueSummary);
 // Workspace avatar upload
 router.post('/avatar-upload-url', requireAdmin, uploadLimiter, wCtrl.getAvatarUploadUrl);
 
-// Workspace-wide ledger export — NOT nested under /containers/:containerId,
-// same as the original single-file router (filterable via ?container_id=).
+// Workspace-wide ledger export — filterable via ?container_id=.
 router.get('/ledger/export', requireAdmin, lCtrl.exportLedger);
 
 // ── Sub-resources ────────────────────────────────────────────────────

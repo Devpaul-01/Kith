@@ -1,11 +1,9 @@
 // src/services/notification_outbox.service.js
 //
-// Extracted from workers/background.workers.js#createNotificationOutboxWorker
-// as part of the service-layer refactor. Safety net for the notification
-// pipeline: scans for delivery records stuck in 'pending' or 'failed'
-// (external channels only) for more than 5 minutes and re-enqueues them,
-// closing the gap where a queue.add failure would otherwise silently
-// drop a notification.
+// Safety net for the notification pipeline: scans for delivery records
+// stuck in 'pending' or 'failed' (external channels only) for more than
+// 5 minutes and re-enqueues them, closing the gap where a queue.add
+// failure would otherwise silently drop a notification.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { getQueue }      = require('../queues');

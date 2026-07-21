@@ -1,9 +1,7 @@
 // src/services/invite.service.js
 //
-// Extracted from invite.controller.js as part of the service-layer
-// refactor. Preserves the atomic-claim pattern for acceptInvite (issue
-// C4) and the uniform-200-response-shape pattern for previewInvite
-// (issue L3) exactly as documented in the original controller.
+// Preserves the atomic-claim pattern for acceptInvite and the
+// uniform-200-response-shape pattern for previewInvite.
 
 const { supabaseAdmin }  = require('../config/supabase');
 const { NotFoundError, ConflictError, BusinessRuleError } = require('../utils/errors');
@@ -29,11 +27,10 @@ async function createInvite({ workspaceId, actorMemberId, actorCtx }) {
   return { token, invite_url: `${process.env.FRONTEND_URL}/invite/${token}`, expires_at: expiresAt };
 }
 
-// Issue L3 fix (documentation only, no behavior change): this
-// intentionally returns { is_valid: false, error } for every failure case
-// (not found / expired / used) rather than distinct 404/410 — deliberate,
-// to avoid invite-token enumeration on this public, unauthenticated
-// endpoint. See original controller history for full rationale.
+// Deliberately returns { is_valid: false, error } for every failure case
+// (not found / expired / used) rather than distinct 404/410 — this
+// avoids invite-token enumeration on this public, unauthenticated
+// endpoint.
 async function previewInvite({ token }) {
   const { data: invite, error } = await supabaseAdmin
     .from('invite_links')
@@ -67,9 +64,9 @@ async function previewInvite({ token }) {
   };
 }
 
-// Issue C4 fix: invite is claimed via a single atomic conditional UPDATE
+// Invite is claimed via a single atomic conditional UPDATE
 // (`WHERE used_at IS NULL`) instead of check-then-act, closing the
-// double-accept race. See original controller history for full rationale.
+// double-accept race.
 async function acceptInvite({ token, userId, actorCtx }) {
   const { data: invite, error: invErr } = await supabaseAdmin
     .from('invite_links')

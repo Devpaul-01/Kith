@@ -1,7 +1,6 @@
 // src/controllers/member.controller.js
 //
-// Service-layer refactor: member CRUD/profile/engagement logic now lives
-// in services/member.service.js.
+// Member CRUD/profile/engagement logic lives in services/member.service.js.
 
 const { success } = require('../utils/response');
 const { createMemberSchema, updateMemberSchema } = require('../validators/workspace.validator');

@@ -1,17 +1,28 @@
 // src/services/workspace.service.js
 //
-// Extracted from workspace.controller.js as part of the service-layer
-// refactor. All DB/RPC calls, field whitelisting, audit logging, and
-// notification orchestration now live here. Behavior is unchanged
-// (including issue M7's explicit allowedFields whitelist on
-// updateWorkspace).
+// All DB/RPC calls, field whitelisting, audit logging, and notification
+// orchestration for workspace-level operations live here. Includes the
+// explicit updateWorkspace() allowedFields whitelist as defense in depth.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const { generateUploadUrl } = require('./storage.service');
-const audit        = require('./audit_log.service');
-const notification = require('./notification.service');
+
+// Bug fix: this previously imported services/audit_log.service.js (the
+// paginated audit-log *read*/CSV-export module, which only exports
+// getAuditLog/exportAuditLogCsv) but called audit.log(...) on it — a
+// method that only exists on services/audit.service.js (the
+// fire-and-forget audit *writer* used by every other service). Every
+// call below would have thrown "audit.log is not a function" at
+// runtime. Corrected to import the writer. This also means workspace
+// mutations now correctly participate in dashboard-cache invalidation,
+// since audit.service.js#log() invalidates the workspace's cached
+// dashboard on every write (see services/dashboard-cache.service.js).
+const audit        = require('./audit.service');
+const notification  = require('./notification.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
+const { invalidateWorkspace } = require('./membership-cache.service');
+const { invalidateDashboard } = require('./dashboard-cache.service');
 
 async function listWorkspacesForUser({ userId }) {
   const { data, error } = await supabaseAdmin
@@ -73,8 +84,7 @@ async function generateWorkspaceAvatarUploadUrl({ workspaceId, filename, content
   });
 }
 
-// Issue M7 fix: explicit field whitelist as defense in depth (see original
-// comment in workspace.controller.js history) — preserved here verbatim.
+// Explicit field whitelist as defense in depth.
 const WORKSPACE_UPDATE_ALLOWED_FIELDS = [
   'name', 'base_currency', 'family_type', 'description', 'avatar_url', 'visibility',
 ];
@@ -103,6 +113,16 @@ async function updateWorkspace({ workspaceId, data, actorCtx }) {
   return workspace;
 }
 
+// Bug fix: deleting a workspace previously only soft-deleted the row and
+// wrote an audit entry — it never invalidated the per-user membership
+// cache (services/membership-cache.service.js#invalidateWorkspace,
+// which already existed and was exported but never actually called from
+// anywhere) or the workspace's cached dashboard. A former member could
+// keep passing requireMembership's cached check, and the dashboard could
+// keep serving a stale payload, for up to TTL.MEMBERSHIP_CACHE_SECONDS /
+// TTL.DASHBOARD_CACHE_SECONDS after deletion. Both are now cleared
+// immediately (still fire-and-forget internally — see those modules —
+// so this can't make workspace deletion slower or less reliable).
 async function deleteWorkspace({ workspaceId, actorCtx }) {
   const now = new Date().toISOString();
 
@@ -111,6 +131,9 @@ async function deleteWorkspace({ workspaceId, actorCtx }) {
 
   if (error) throw new Error(error.message);
   if (!data) throw new NotFoundError('Workspace not found');
+
+  await invalidateWorkspace(workspaceId);
+  await invalidateDashboard(workspaceId);
 
   await audit.log({ ...actorCtx, action: AUDIT_ACTIONS.WORKSPACE_DELETED, targetType: 'workspace', targetId: workspaceId });
 }

@@ -1,9 +1,8 @@
 // src/controllers/notification.controller.js
 //
-// Service-layer refactor: inbox logic now lives in
-// services/notification_inbox.service.js (kept distinct from
-// services/notification.service.js, the central sender used elsewhere in
-// the app — see that file's header comment for why they aren't merged).
+// Inbox logic lives in services/notification_inbox.service.js (kept
+// distinct from services/notification.service.js, the central sender
+// used elsewhere in the app).
 
 const { success, paginate } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');
