@@ -1,10 +1,8 @@
 // src/services/cycle_generation.service.js
 //
-// Extracted from workers/background.workers.js#createCycleGenerationWorker
-// as part of the service-layer refactor. Preserves the batch-fetch
-// optimization (all pool_cycle_overrides + participants fetched once
-// upfront into lookup Maps, eliminating O(participants × cycles) DB
-// round trips inside the loop) exactly as in the original.
+// Preserves the batch-fetch optimization (all pool_cycle_overrides +
+// participants fetched once upfront into lookup Maps, eliminating
+// O(participants × cycles) DB round trips inside the loop).
 
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');

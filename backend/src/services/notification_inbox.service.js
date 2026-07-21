@@ -1,12 +1,10 @@
 // src/services/notification_inbox.service.js
 //
-// Extracted from notification.controller.js as part of the service-layer
-// refactor. Named notification_inbox.service.js (not notification.service.js)
-// because that name is already taken by the central notification *sender*
-// (services/notification.service.js, used by nearly every other
-// controller/worker to dispatch notifications). This module is the
-// distinct concern of a recipient reading/managing their own inbox —
-// list, unread count, mark-as-read, mark-all-as-read.
+// Named notification_inbox.service.js (not notification.service.js)
+// because that name is already taken by the central notification
+// *sender*. This module is the distinct concern of a recipient
+// reading/managing their own inbox — list, unread count, mark-as-read,
+// mark-all-as-read.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { NotFoundError } = require('../utils/errors');

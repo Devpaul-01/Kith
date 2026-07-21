@@ -1,7 +1,7 @@
 // src/controllers/dashboard.controller.js
 //
-// Service-layer refactor: all aggregation/computation now lives in
-// services/dashboard.service.js. This file only parses req and responds.
+// All aggregation/computation lives in services/dashboard.service.js.
+// This file only parses req and responds.
 
 const { success } = require('../utils/response');
 const dashboardService = require('../services/dashboard.service');

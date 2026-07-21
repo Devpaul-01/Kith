@@ -1,10 +1,4 @@
 // src/services/reminder.service.js
-//
-// Extracted from workers/background.workers.js#createReminderWorker as
-// part of the service-layer refactor. All DB reads/writes and
-// notification orchestration for the daily reminder scan now live here;
-// the worker only pulls the job and calls runReminderScan().
-
 const { supabaseAdmin } = require('../config/supabase');
 const notification      = require('./notification.service');
 const logger            = require('../utils/logger');
@@ -82,11 +76,9 @@ async function sendOverdueReminders(scanDate) {
   return overdueTargets || [];
 }
 
-// Notification finding (audit 5.5): 'overdue_summary_admin' was a fully
-// defined template that nothing ever sent. Reuses the overdueTargets
-// already fetched by sendOverdueReminders (no extra query), grouped by
-// container, one summary per container per day to that container's
-// workspace admins.
+// Reuses the overdueTargets already fetched by sendOverdueReminders (no
+// extra query), grouped by container, one summary per container per day
+// to that container's workspace admins.
 async function sendAdminOverdueSummaries(overdueTargets, scanDate) {
   const overdueByContainer = new Map();
   for (const target of overdueTargets) {
@@ -123,10 +115,8 @@ async function sendAdminOverdueSummaries(overdueTargets, scanDate) {
   }
 }
 
-// Notification finding (audit 5.5): 'cycle_closing_soon' was a fully
-// defined template that nothing ever sent. Notifies participants of open
-// recurring-pool cycles ending within the next 3 days who still have an
-// outstanding balance for that cycle.
+// Notifies participants of open recurring-pool cycles ending within the
+// next 3 days who still have an outstanding balance for that cycle.
 async function sendCycleClosingSoonReminders(scanDate, closingSoonStr) {
   const { data: closingSoonCycles } = await supabaseAdmin
     .from('container_cycles')

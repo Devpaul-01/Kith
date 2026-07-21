@@ -1,13 +1,12 @@
 // src/workers/background.workers.js
 //
-// Service-layer refactor: all business logic (DB reads/writes,
-// notification orchestration, cycle math, carry-forward, batching) has
-// moved into per-concern services (services/reminder.service.js,
-// services/cycle_generation.service.js, services/cycle_lifecycle.service.js,
-// services/task_overdue.service.js, services/invite_cleanup.service.js,
-// services/engagement_check.service.js, services/notification_outbox.service.js).
-// This file now only wires each BullMQ Worker to its matching service
-// call — job pulled → service invoked → done. No behavior changed.
+// Business logic (DB reads/writes, notification orchestration, cycle
+// math, carry-forward, batching) lives in per-concern services
+// (services/reminder.service.js, services/cycle_generation.service.js,
+// services/cycle_lifecycle.service.js, services/task_overdue.service.js,
+// services/invite_cleanup.service.js, services/engagement_check.service.js,
+// services/notification_outbox.service.js). This file only wires each
+// BullMQ Worker to its matching service call.
 
 const { Worker }   = require('bullmq');
 const { getRedis } = require('../config/redis');

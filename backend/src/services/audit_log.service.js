@@ -1,17 +1,13 @@
 // src/services/audit_log.service.js
 //
-// Extracted from audit.controller.js as part of the service-layer
-// refactor. Named audit_log.service.js (not audit.service.js) because
+// Named audit_log.service.js (not audit.service.js) because
 // services/audit.service.js already exists — it's the fire-and-forget
 // audit.log()/fromReq() writer used by every other controller. This file
 // is a distinct concern: the paginated audit-log *read* view and its CSV
-// export. Keeping the two separate avoids a naming collision and keeps
-// "write one audit row" and "query/export audit rows" as cohesive,
-// independently-testable modules.
+// export.
 //
-// Behavior is unchanged from the original controller, including the
-// shared applyAuditLogFilters() helper that keeps the paginated view and
-// the CSV export from drifting out of sync (issue M15).
+// The shared applyAuditLogFilters() helper keeps the paginated view and
+// the CSV export from drifting out of sync.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { getPagination } = require('../utils/pagination');

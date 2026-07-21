@@ -1,7 +1,6 @@
 // src/controllers/group.controller.js
 //
-// Service-layer refactor: DB/audit logic now lives in
-// services/group.service.js.
+// DB/audit logic lives in services/group.service.js.
 
 const { noContent, success } = require('../utils/response');
 const { createGroupSchema, updateGroupSchema, addGroupMembersSchema } = require('../validators/workspace.validator');

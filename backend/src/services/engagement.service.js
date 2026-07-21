@@ -1,20 +1,14 @@
 // src/services/engagement.service.js
 //
-// Issue M1 fix: member engagement was computed in two places —
-// background.workers.js's createEngagementCheckWorker (correctly batched:
-// 2 total queries via upfront fetch + in-memory Map lookups) and
-// member.controller.js's getMemberEngagement (O(2N) queries — 2 per member,
-// run in parallel but still N+1 in query count). Same computation, two
-// implementations, only one of them fixed. Extracted here so both call
-// sites share a single, already-optimized implementation.
+// Single, already-optimized implementation shared by both call sites
+// (background.workers.js's engagement-check worker and
+// member.controller.js#getMemberEngagement): batch-fetches ledger
+// entries and completed tasks for a set of workspace_member ids in
+// exactly 2 queries, regardless of member count, and returns lookup Maps
+// keyed by member id.
 
 const { supabaseAdmin } = require('../config/supabase');
 
-/**
- * Batch-fetches ledger entries and completed tasks for a set of
- * workspace_member ids in exactly 2 queries, regardless of member count,
- * and returns lookup Maps keyed by member id.
- */
 async function fetchEngagementData(memberIds) {
   if (!memberIds.length) return { ledgerByMember: new Map(), tasksByMember: new Map() };
 

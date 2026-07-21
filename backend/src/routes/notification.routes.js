@@ -4,7 +4,6 @@ const ctrl   = require('../controllers/notification.controller');
 const { requireAuth, loadDbUser } = require('../middleware/auth');
 const logger = require('../utils/logger');
 
-// Issue 3 fix: moved from inline require inside resolveMember to module-level imports
 const { supabaseAdmin } = require('../config/supabase');
 const { NotFoundError } = require('../utils/errors');
 
@@ -14,10 +13,6 @@ const { NotFoundError } = require('../utils/errors');
  *
  * This middleware resolves the caller's member id from their active memberships.
  * Optionally scoped to a specific workspace via ?workspace_id=<id>.
- *
- * Issue 3 fix: no-membership case now throws NotFoundError instead of silently
- * passing through with { id: null }, which matches requireMembership behaviour
- * and prevents notification controllers from querying with recipient_id = null.
  */
 async function resolveMember(req, res, next) {
   try {
@@ -49,7 +44,6 @@ async function resolveMember(req, res, next) {
 
     const member = data?.[0];
 
-    // Issue 3 fix: throw NotFoundError instead of setting { id: null } and proceeding
     if (!member) {
       return next(new NotFoundError('No active membership found'));
     }
@@ -70,7 +64,6 @@ async function resolveMember(req, res, next) {
 
 // ── Routes ────────────────────────────────────────────────────────
 
-// Lightweight unread count — registered BEFORE /:notificationId/read
 router.get('/count',      requireAuth, loadDbUser, resolveMember, ctrl.getUnreadCount);
 router.get('/',           requireAuth, loadDbUser, resolveMember, ctrl.listNotifications);
 router.patch('/read-all', requireAuth, loadDbUser, resolveMember, ctrl.markAllAsRead);

@@ -1,8 +1,7 @@
 // src/services/group.service.js
 //
-// Extracted from group.controller.js as part of the service-layer
-// refactor. Behavior unchanged, including the batch-validate-then-batch-
-// upsert pattern used for member additions.
+// Behavior unchanged, including the batch-validate-then-batch-upsert
+// pattern used for member additions.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { NotFoundError } = require('../utils/errors');

@@ -1,8 +1,7 @@
 // src/services/dispute.service.js
 //
-// Extracted from dispute.controller.js as part of the service-layer
-// refactor. Preserves the atomic RPC usage for raise/resolve (issue H1-
-// class fixes) and the 404-not-500 fix on the entry lookup (issue L4).
+// Preserves the atomic RPC usage for raise/resolve and the 404-not-500
+// fix on the entry lookup.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
@@ -53,8 +52,8 @@ async function getDispute({ workspaceId, disputeId, isAdmin, callerId }) {
   if (!dispute) throw new NotFoundError('Dispute not found');
   if (!isAdmin && dispute.raised_by !== callerId) throw new ForbiddenError('Access denied');
 
-  // Issue L4 fix: .maybeSingle() + explicit 404 instead of .single(),
-  // which threw a raw Postgrest error on a missing referenced entry.
+  // .maybeSingle() + explicit 404 instead of .single(), which threw a raw
+  // Postgrest error on a missing referenced entry.
   const { data: entry, error: entryErr } = await supabaseAdmin
     .from('ledger_entries')
     .select('*, contributor:workspace_members!contributor_id(display_name)')
@@ -70,8 +69,7 @@ async function getDispute({ workspaceId, disputeId, isAdmin, callerId }) {
 }
 
 // raise_dispute_atomic inserts the dispute row and updates the ledger
-// entry's status inside one Postgres transaction — see the RPC comment
-// in the original controller for the failure mode this prevents.
+// entry's status inside one Postgres transaction.
 async function raiseDispute({ workspaceId, containerId, entryId, reason, callerId, isAdmin, actorDisplayName, actorCtx }) {
   const { data: entry } = await supabaseAdmin
     .from('ledger_entries').select('*').eq('id', entryId).eq('container_id', containerId).maybeSingle();

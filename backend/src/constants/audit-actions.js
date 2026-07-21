@@ -5,18 +5,6 @@
 // AUDIT_ACTIONS instead of typing the string, and the human-readable
 // description map lives right next to it so the two can never drift out
 // of sync.
-//
-// Coverage note (audit finding 5.1): this file previously defined
-// TASK_CREATED / TASK_COMPLETED / TASK_CONFIRMED / CONTAINER_SETTINGS_CHANGED
-// with no call site actually using them, and had no actions at all for
-// groups, container creation, or direct member creation — silent gaps in
-// the activity feed / admin audit log for some of the highest
-// trust-sensitivity actions in the app (who created a savings pool, who
-// added someone to a group, who marked a chore done). Both the missing
-// call sites AND the missing constants (CONTAINER_CREATED, GROUP_*,
-// MEMBER_CREATED) have been added in this change set — see
-// container.controller.js, group.controller.js, member.controller.js,
-// task.controller.js.
 
 const AUDIT_ACTIONS = Object.freeze({
   // Containers

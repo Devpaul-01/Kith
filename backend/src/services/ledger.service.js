@@ -1,10 +1,8 @@
 // src/services/ledger.service.js
 //
-// Extracted from ledger.controller.js as part of the service-layer
-// refactor. Preserves the idempotency-key flow (issue M16), the
-// fail-loud idempotency lookup, the duplicate-detection window, the
-// M5 fix restricting corrections to confirmed entries, and file
-// verification (issue M13) exactly as in the original.
+// Preserves the idempotency-key flow, the fail-loud idempotency lookup,
+// the duplicate-detection window, the correction-restricted-to-confirmed-
+// entries rule, and file verification exactly as designed.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { NotFoundError, BusinessRuleError, ConflictError, ForbiddenError } = require('../utils/errors');
@@ -16,8 +14,8 @@ const logger = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { getSort } = require('../utils/sorting');
 
-// M16 fix: defaults to enabled now that the schema confirms the
-// idempotency_key column + unique constraint already exist in production.
+// Defaults to enabled now that the schema confirms the idempotency_key
+// column + unique constraint already exist in production.
 const IDEMPOTENCY_ENABLED = process.env.IDEMPOTENCY_ENABLED !== 'false';
 if (!IDEMPOTENCY_ENABLED) {
   logger.warn('Ledger idempotency-key checking is explicitly DISABLED via IDEMPOTENCY_ENABLED=false.');
@@ -359,8 +357,8 @@ async function confirmProof({ workspaceId, containerId, entryId, isAdmin, caller
   if (!entry) throw new NotFoundError('Entry not found');
   if (!isAdmin && entry.contributor_id !== callerId) throw new ForbiddenError('Access denied');
 
-  // Issue M13 fix: verify the uploaded file's actual bytes match its
-  // declared content type before trusting it as proof.
+  // Verify the uploaded file's actual bytes match its declared content
+  // type before trusting it as proof.
   await verifyUploadedFile(filePayload.file_path, filePayload.mime_type);
 
   const fileObject    = { url: filePayload.file_path, name: filePayload.name, size: filePayload.size, mime_type: filePayload.mime_type, uploaded_by: callerId, uploaded_at: new Date().toISOString() };
@@ -404,9 +402,9 @@ async function confirmEntry({ workspaceId, containerId, entryId, actorMemberId, 
   return updated;
 }
 
-// Issue M5 fix: corrections may only be attached to confirmed entries —
-// non-confirmed entries can simply be edited (updateEntry) or deleted
-// (deleteEntry) instead.
+// Corrections may only be attached to confirmed entries — non-confirmed
+// entries can simply be edited (updateEntry) or deleted (deleteEntry)
+// instead.
 async function addCorrection({ workspaceId, containerId, entryId, data, actorMemberId, actorCtx }) {
   const { data: source } = await supabaseAdmin.from('ledger_entries').select('*').eq('id', entryId).eq('container_id', containerId).maybeSingle();
   if (!source) throw new NotFoundError('Entry not found');

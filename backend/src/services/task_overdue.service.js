@@ -1,8 +1,4 @@
 // src/services/task_overdue.service.js
-//
-// Extracted from workers/background.workers.js#createTaskOverdueWorker
-// as part of the service-layer refactor.
-
 const { supabaseAdmin } = require('../config/supabase');
 const notification      = require('./notification.service');
 const logger             = require('../utils/logger');

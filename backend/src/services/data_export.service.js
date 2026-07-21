@@ -1,11 +1,9 @@
 // src/services/data_export.service.js
 //
-// Extracted from workers/data_export.worker.js as part of the
-// service-layer refactor. Preserves the Issue C1 fix: workspace_members
-// resolution happens once, up front, and is reused by both the ledger
-// and task queries (ledger_entries.contributor_id and
-// container_tasks.assigned_to both store workspace_members.id, not
-// users.id).
+// Preserves the member resolution fix: workspace_members resolution
+// happens once, up front, and is reused by both the ledger and task
+// queries (ledger_entries.contributor_id and container_tasks.assigned_to
+// both store workspace_members.id, not users.id).
 
 const { supabaseAdmin } = require('../config/supabase');
 const { getResend }     = require('../config/resend');
@@ -15,10 +13,9 @@ function escapeCsv(v) {
   return `"${String(v ?? '').replace(/"/g, '""')}"`;
 }
 
-// Shared with notification_delivery.service.js's escaping approach
-// (Issue M12) — displayName here ultimately comes from the user's own
-// profile, lower risk than container/task names, but escaped for
-// consistency since it's interpolated into an HTML email body.
+// displayName here ultimately comes from the user's own profile — lower
+// risk than container/task names, but escaped for consistency since
+// it's interpolated into an HTML email body.
 function escapeHtml(str) {
   return String(str ?? '')
     .replaceAll('&', '&amp;')
@@ -40,8 +37,8 @@ async function processDataExport({ userId, userEmail, workspaceIds = [] }) {
 
   // ── 2. Resolve this user's workspace_members rows ────────────
   //
-  // Issue C1 fix: resolved once, up front, and reused by both the
-  // ledger-export and task-export queries below.
+  // Resolved once, up front, and reused by both the ledger-export and
+  // task-export queries below.
   const { data: memberRows, error: memberErr } = await supabaseAdmin
     .from('workspace_members')
     .select('id')

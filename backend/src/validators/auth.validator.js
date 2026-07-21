@@ -48,7 +48,7 @@ const resetPasswordSchema = z.object({
     .regex(/[0-9]/, 'Password must contain at least one number'),
 });
 
-// ── Change password (Issue H2 — logged-in user, requires current password) ──
+// ── Change password (logged-in user, requires current password) ──
 const changePasswordSchema = z.object({
   current_password: z.string().min(1, 'Current password is required'),
   new_password: z
@@ -60,7 +60,6 @@ const changePasswordSchema = z.object({
 });
 
 // ── Profile update ────────────────────────────────────────────────
-
 
 const updateProfileSchema = z.object({
   full_name: z.string().min(2).max(100).optional(),

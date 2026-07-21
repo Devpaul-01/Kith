@@ -1,21 +1,18 @@
 // src/services/milestone.service.js
 //
-// Extracted from milestone.controller.js as part of the service-layer
-// refactor. Preserves the per-source-cursor pagination fix (issue M11)
-// exactly as documented in the original controller.
+// Preserves the per-source-cursor pagination fix: a per-source cursor
+// (not one shared `before` cursor) so an uneven split between the two
+// merged sources (completed containers + milestones) can never skip an
+// already-fetched-but-unused item on the next page.
+//
+// Back-compat: a bare `before` still seeds both cursors (correct for the
+// first "load more" call); per-source cursors take precedence once the
+// client has them from a previous response.
 
 const { supabaseAdmin }      = require('../config/supabase');
 const { NotFoundError }      = require('../utils/errors');
 const { generateUploadUrl, verifyUploadedFile } = require('./storage.service');
 
-// Issue M11 fix: per-source cursor instead of one shared `before` cursor,
-// so an uneven split between the two merged sources (completed containers
-// + milestones) can never skip an already-fetched-but-unused item on the
-// next page. See original controller history for full rationale.
-//
-// Back-compat: a bare `before` still seeds both cursors (correct for the
-// first "load more" call); per-source cursors take precedence once the
-// client has them from a previous response.
 async function getTimeline({ workspaceId, limit, before, beforeContainer, beforeMilestone }) {
   const safeLimit = Math.min(100, parseInt(limit) || 50);
 
@@ -125,8 +122,8 @@ async function confirmMilestonePhoto({ workspaceId, milestoneId, filePayload, ac
   const { data: milestone } = await supabaseAdmin.from('milestones').select('*').eq('id', milestoneId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
   if (!milestone) throw new NotFoundError('Milestone not found');
 
-  // Issue M13 fix: verify the uploaded file's actual bytes match its
-  // declared content type before trusting it as a milestone photo.
+  // Verify the uploaded file's actual bytes match its declared content
+  // type before trusting it as a milestone photo.
   await verifyUploadedFile(filePayload.file_path, filePayload.mime_type);
 
   const fileObject    = { url: filePayload.file_path, name: filePayload.name, size: filePayload.size, mime_type: filePayload.mime_type, uploaded_by: actorMemberId, uploaded_at: new Date().toISOString() };

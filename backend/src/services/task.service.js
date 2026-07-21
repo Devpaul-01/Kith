@@ -1,7 +1,6 @@
 // src/services/task.service.js
 //
-// Extracted from task.controller.js as part of the service-layer
-// refactor. fetchTask/shapeTask preserved as internal helpers.
+// fetchTask/shapeTask preserved as internal helpers.
 
 const { supabaseAdmin }      = require('../config/supabase');
 const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
@@ -231,9 +230,9 @@ async function bulkCreateTasks({ workspaceId, containerId, tasks, actorMemberId,
   return { created, failed };
 }
 
-// Issue L6 fix: member-scoped export reuses the same exportTasksCSV
-// builder as the admin path (assignedTo scopes to the caller's own
-// tasks) instead of a separate ad hoc implementation.
+// Member-scoped export reuses the same exportTasksCSV builder as the
+// admin path (assignedTo scopes to the caller's own tasks) instead of a
+// separate ad hoc implementation.
 async function exportTasks({ containerId, isAdmin, callerId }) {
   const csv = await exportTasksCSV({
     containerId,
@@ -257,8 +256,8 @@ async function confirmTaskProof({ containerId, taskId, isAdmin, callerId, filePa
   if (!task) throw new NotFoundError('Task not found');
   if (!isAdmin && task.assigned_to !== callerId) throw new ForbiddenError('Access denied');
 
-  // Issue M13 fix: verify the uploaded file's actual bytes match its
-  // declared content type before trusting it as proof.
+  // Verify the uploaded file's actual bytes match its declared content
+  // type before trusting it as proof.
   await verifyUploadedFile(filePayload.file_path, filePayload.mime_type);
 
   const fileObject    = { url: filePayload.file_path, name: filePayload.name, size: filePayload.size, mime_type: filePayload.mime_type, uploaded_by: callerId, uploaded_at: new Date().toISOString() };

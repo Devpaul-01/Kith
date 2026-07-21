@@ -71,10 +71,9 @@ async function exportTasksCSV({ containerId, assignedTo = null }) {
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: true });
 
-  // Issue L6 fix: previously only the admin path used this shared service
-  // function; the member-scoped path in task.controller.js#exportTasks
-  // reimplemented its own escape()/headers/row-building inline instead of
-  // adding a filter here. Now both paths share one CSV builder.
+  // Shared by both the admin and member-scoped export paths, via the
+  // assignedTo filter, instead of two independently-maintained CSV
+  // builders.
   if (assignedTo) query = query.eq('assigned_to', assignedTo);
 
   const { data, error } = await query;

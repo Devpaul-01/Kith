@@ -1,9 +1,8 @@
 // src/services/container.service.js
 //
-// Extracted from container.controller.js as part of the service-layer
-// refactor. Preserves the fail-closed count-query guards (issue C6), the
-// atomic convert-to-recurring RPC (see original comment), and all
-// notification/audit orchestration exactly as in the original.
+// Container CRUD/lifecycle/summary/cycles/public-view logic. Preserves
+// the fail-closed count-query guards, the atomic convert-to-recurring
+// RPC, and all notification/audit orchestration.
 
 const { supabaseAdmin }      = require('../config/supabase');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
@@ -171,8 +170,8 @@ async function updateContainer({ workspaceId, containerId, data, actorCtx }) {
   if (!current) throw new NotFoundError('Container not found');
 
   if (data.enable_money === false && current.enable_money === true) {
-    // Issue C6 fix: fails loud (500) on a count-query error instead of
-    // silently proceeding to disable money tracking.
+    // Fails loud (500) on a count-query error instead of silently
+    // proceeding to disable money tracking.
     const { count, error: countErr } = await supabaseAdmin
       .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId);
     if (countErr) throw new Error(countErr.message);
@@ -326,8 +325,8 @@ async function generatePublicLink({ workspaceId, containerId }) {
 }
 
 async function deleteContainer({ workspaceId, containerId, actorCtx }) {
-  // Issue C6 fix: `error` checked explicitly on the guard that prevents
-  // deleting a container with confirmed money movements.
+  // `error` checked explicitly on the guard that prevents deleting a
+  // container with confirmed money movements.
   const { count, error: countErr } = await supabaseAdmin
     .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId).eq('status', 'confirmed');
 

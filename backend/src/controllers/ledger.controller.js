@@ -1,9 +1,9 @@
 // src/controllers/ledger.controller.js
 //
-// Service-layer refactor: ledger entry lifecycle, idempotency, proofs,
-// corrections, and export logic now live in services/ledger.service.js.
+// Ledger entry lifecycle, idempotency, proofs, corrections, and export
+// logic live in services/ledger.service.js.
 // Clients should still send X-Idempotency-Key: <uuid-per-submission> on
-// POST /ledger to guarantee exactly-once recording (unchanged contract).
+// POST /ledger to guarantee exactly-once recording.
 
 const { success, paginate } = require('../utils/response');
 const { createLedgerEntrySchema, updateLedgerEntrySchema, uploadFileSchema, confirmProofSchema, addCorrectionSchema } = require('../validators/ledger.validator');

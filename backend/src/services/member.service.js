@@ -1,9 +1,8 @@
 // src/services/member.service.js
 //
-// Extracted from member.controller.js as part of the service-layer
-// refactor. Preserves all fail-closed guards (issue C6-class fixes),
-// the last-admin guard, the auth-relevant-field cache invalidation, and
-// the batched profile-audit insert exactly as in the original.
+// Preserves all fail-closed guards, the last-admin guard, the
+// auth-relevant-field cache invalidation, and the batched profile-audit
+// insert.
 
 const { supabaseAdmin }      = require('../config/supabase');
 const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
@@ -25,8 +24,8 @@ async function listMembers({ workspaceId, isAdmin, search, filterRole, filterPro
 
   if (filterRole  !== undefined) query = query.eq('role', filterRole);
   if (filterProxy !== undefined) query = query.eq('is_proxy', filterProxy === 'true');
-  // Issue L7-class fix: search input escaped before embedding in the
-  // ILIKE pattern (shared with search.service.js via utils/ilike.js).
+  // Search input escaped before embedding in the ILIKE pattern (shared
+  // with search.service.js via utils/ilike.js).
   if (search) query = query.ilike('display_name', containsPattern(search));
 
   const { field: safeSort, ascending } = getSort(sortQuery, { allowed: ['display_name', 'joined_at'], defaultField: 'display_name' });

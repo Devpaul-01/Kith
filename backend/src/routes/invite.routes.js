@@ -4,7 +4,7 @@ const ctrl = require('../controllers/invite.controller');
 const { requireAuth } = require('../middleware/auth');
 const { inviteLimiter, publicLookupLimiter } = require('../middleware/rateLimiter');
 
-// Public — no auth required (audit 8.2: tighter anti-enumeration limiter)
+// Public — no auth required (tighter anti-enumeration limiter)
 router.get('/:token/preview', publicLookupLimiter, ctrl.previewInvite);
 
 // Authenticated

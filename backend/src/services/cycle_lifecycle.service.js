@@ -1,9 +1,7 @@
 // src/services/cycle_lifecycle.service.js
 //
-// Extracted from workers/background.workers.js#createCycleLifecycleWorker
-// as part of the service-layer refactor. Preserves the per-participant
-// target fix (each participant is sent their own cycle_started target
-// amount, not participant #1's) exactly as in the original.
+// Preserves the per-participant target fix (each participant is sent
+// their own cycle_started target amount, not participant #1's).
 
 const { supabaseAdmin } = require('../config/supabase');
 const { getQueue }      = require('../queues');

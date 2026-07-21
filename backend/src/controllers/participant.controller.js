@@ -1,7 +1,7 @@
 // src/controllers/participant.controller.js
 //
-// Service-layer refactor: participant/target/cycle-override logic now
-// lives in services/participant.service.js.
+// Participant/target/cycle-override logic lives in
+// services/participant.service.js.
 
 const { success } = require('../utils/response');
 const { addParticipantsSchema, addParticipantsFromGroupSchema, updateParticipantSchema, setTargetSchema, cycleOverrideSchema } = require('../validators/ledger.validator');

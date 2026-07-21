@@ -15,12 +15,7 @@
 // the only residual staleness window is for state changes made OUTSIDE
 // this application (e.g. a direct DB edit) or any future write path that
 // forgets to call invalidate — bounded to a maximum of
-// TTL.MEMBERSHIP_CACHE_SECONDS (30s) either way. This tradeoff (bounded
-// 30s staleness in exchange for removing 2 DB queries from every
-// workspace-scoped request) was an explicit product decision, not an
-// oversight — if a tighter bound is ever needed, lower
-// TTL.MEMBERSHIP_CACHE_SECONDS in config/redis-keys.js rather than
-// removing the cache.
+// TTL.MEMBERSHIP_CACHE_SECONDS (30s) either way.
 //
 // Fails open on Redis errors: a cache miss/error just means "fetch from
 // Postgres like before," never a wrongly-granted or wrongly-denied

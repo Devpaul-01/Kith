@@ -1,13 +1,8 @@
 // src/controllers/workspace.controller.js
 //
-// Service-layer refactor: CRUD/settings/announce/avatar logic now lives
-// in services/workspace.service.js. This file parses requests, applies
-// validation schemas, calls the service, and shapes responses.
-//
-// (Earlier history: this file was previously split out of a single
-// ~700-line workspace.controller.js per audit finding 3.6 into
-// workspace/dashboard/audit/search controllers — that split is unrelated
-// to and unaffected by this refactor.)
+// CRUD/settings/announce/avatar logic lives in services/workspace.service.js.
+// This file parses requests, applies validation schemas, calls the
+// service, and shapes responses.
 
 const { success } = require('../utils/response');
 const { uploadFileSchema }  = require('../validators/ledger.validator');
@@ -17,7 +12,14 @@ const {
   updateSettingsSchema,
   announceSchema,
 } = require('../validators/workspace.validator');
-const audit = require('../services/audit_log.service');
+// Bug fix: this previously imported services/audit_log.service.js (the
+// paginated audit-log *read*/CSV-export module, which only exports
+// getAuditLog/exportAuditLogCsv) but called audit.fromReq(req) on it —
+// a method that only exists on services/audit.service.js (the
+// fire-and-forget audit *writer* used by every other controller). Every
+// call below would have thrown "audit.fromReq is not a function" at
+// runtime. Corrected to import the writer.
+const audit = require('../services/audit.service');
 const workspaceService = require('../services/workspace.service');
 
 async function listWorkspaces(req, res, next) {

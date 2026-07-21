@@ -1,8 +1,7 @@
 // src/services/search.service.js
 //
-// Extracted from search.controller.js as part of the service-layer
-// refactor. Behavior is unchanged — same queries, same shape, same
-// escaping. The controller is now a thin HTTP adapter around this.
+// Query-building/escaping/shaping logic for cross-entity search. The
+// controller is a thin HTTP adapter around this.
 
 const { supabaseAdmin } = require('../config/supabase');
 const { containsPattern } = require('../utils/ilike');
@@ -12,8 +11,7 @@ const { containsPattern } = require('../utils/ilike');
  * containers (by name) in parallel. Results are typed so the client can
  * render them differently. Scoped to the current workspace.
  *
- * ILIKE wildcard escaping is shared via utils/ilike.js (audit finding
- * 5.3).
+ * ILIKE wildcard escaping is shared via utils/ilike.js.
  *
  * @returns {Promise<{results: Array, query: string}>}
  */

@@ -1,11 +1,10 @@
 // src/controllers/auth.controller.js
 //
-// Service-layer refactor: all Supabase Auth calls, DB reads/writes, and
-// error mapping now live in services/auth.service.js. This file parses
-// requests/cookies/headers, applies validator schemas, calls the
-// service, and shapes HTTP responses — including setting/clearing the
-// refresh_token cookie, which is kept here since cookie transport is an
-// HTTP concern, not a business rule.
+// All Supabase Auth calls, DB reads/writes, and error mapping live in
+// services/auth.service.js. This file parses requests/cookies/headers,
+// applies validator schemas, calls the service, and shapes HTTP responses
+// — including setting/clearing the refresh_token cookie, which is kept
+// here since cookie transport is an HTTP concern, not a business rule.
 
 const { success } = require('../utils/response');
 const {

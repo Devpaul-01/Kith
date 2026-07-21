@@ -1,7 +1,6 @@
 // src/controllers/dispute.controller.js
 //
-// Service-layer refactor: dispute lifecycle logic now lives in
-// services/dispute.service.js.
+// Dispute lifecycle logic lives in services/dispute.service.js.
 
 const { success, paginate } = require('../utils/response');
 const { createDisputeSchema, addDisputeNoteSchema, resolveDisputeSchema } = require('../validators/ledger.validator');
