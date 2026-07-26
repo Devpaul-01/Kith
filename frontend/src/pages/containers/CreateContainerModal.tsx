@@ -21,6 +21,7 @@ const SUPPORTED_CURRENCIES = [
   'JPY', 'AUD', 'CHF', 'CNY', 'MXN', 'BRL', 'SGD', 'AED', 'SAR', 'ZMW',
 ] as const;
 
+
 const schema = z
   .object({
     name: z.string().min(2, 'Name must be at least 2 characters').max(100, 'Name cannot exceed 100 characters'),
@@ -32,6 +33,7 @@ const schema = z
     enable_money: z.boolean().default(false),
     enable_tasks: z.boolean().default(false),
 
+    // ── Event fields ──
     event_date: z.string().date().optional().nullable(),
     event_type: z.string().max(80, 'Event type cannot exceed 80 characters').optional(),
     event_type_category: z
@@ -39,18 +41,19 @@ const schema = z
       .optional()
       .default('other'),
 
-    recurrence_cadence: z
-      .enum(['weekly', 'monthly', 'quarterly', 'yearly', 'custom'])
-      .optional(),
-    recurrence_days: z.coerce.number().int().min(1, 'Recurrence days must be at least 1').optional(),
-    recurrence_start: z.string().date().optional(),
+    // ── Recurring fields (nullable to match backend) ──
+    recurrence_cadence: z.enum(RECURRENCE_CADENCES).optional().nullable(),
+    recurrence_days: z.number().int().min(1, 'Recurrence days must be at least 1').optional().nullable(),
+    recurrence_start: z.string().date().optional().nullable(),
     recurrence_end: z.string().date().optional().nullable(),
     carry_forward_unpaid: z.boolean().optional().default(false),
 
-    budget_target: z.coerce.number().positive('Budget target must be positive').optional().nullable(),
+    // ── Money fields ──
+    budget_target: z.number().positive('Budget target must be positive').optional().nullable(),
     budget_currency: z.enum(SUPPORTED_CURRENCIES).optional().nullable(),
   })
   .superRefine((data, ctx) => {
+    // ── Recurring validation ──
     if (data.container_type === 'recurring') {
       if (!data.recurrence_cadence) {
         ctx.addIssue({
@@ -68,6 +71,7 @@ const schema = z
       }
     }
 
+    // ── Event validation ──
     if (data.container_type === 'event' && !data.event_date) {
       ctx.addIssue({
         path: ['event_date'],
@@ -76,6 +80,7 @@ const schema = z
       });
     }
 
+    // ── Money validation ──
     if (data.enable_money) {
       if (!data.budget_target) {
         ctx.addIssue({
@@ -93,6 +98,7 @@ const schema = z
       }
     }
 
+    // ── Money disabled but budget fields present ──
     if (data.enable_money === false && data.budget_target != null) {
       ctx.addIssue({
         path: ['budget_target'],
@@ -109,6 +115,7 @@ const schema = z
       });
     }
 
+    // ── Recurrence end date validation ──
     if (data.recurrence_start && data.recurrence_end) {
       const start = new Date(data.recurrence_start);
       const end = new Date(data.recurrence_end);

@@ -12,13 +12,6 @@ const {
   updateSettingsSchema,
   announceSchema,
 } = require('../validators/workspace.validator');
-// Bug fix: this previously imported services/audit_log.service.js (the
-// paginated audit-log *read*/CSV-export module, which only exports
-// getAuditLog/exportAuditLogCsv) but called audit.fromReq(req) on it —
-// a method that only exists on services/audit.service.js (the
-// fire-and-forget audit *writer* used by every other controller). Every
-// call below would have thrown "audit.fromReq is not a function" at
-// runtime. Corrected to import the writer.
 const audit = require('../services/audit.service');
 const workspaceService = require('../services/workspace.service');
 
