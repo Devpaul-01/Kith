@@ -1,7 +1,7 @@
 export const CONTAINER_TYPES=['event','recurring'] as const;
 export const CONTAINER_STATUSES=['active','completed','archived'] as const;
 export const EVENT_CATEGORIES=['celebration','memorial','financial','logistical','other'] as const;
-export const RECURRENCE_CADENCES=['monthly','quarterly','yearly','custom'] as const;
+export const RECURRENCE_CADENCES=['monthly','weekly','quarterly','yearly','custom'] as const;
 export const LEDGER_STATUSES=['pending','proof_uploaded','confirmed','disputed','resolved'] as const;
 export const ENTRY_TYPES=['contribution','correction','adjustment'] as const;
 export const TASK_STATUSES=['pending','in_progress','completed','cancelled'] as const;
