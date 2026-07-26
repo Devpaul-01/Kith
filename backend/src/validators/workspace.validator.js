@@ -112,7 +112,7 @@ const createContainerSchema = z
     enable_tasks:        z.boolean().default(false),
     // Event
     event_date:          z.string().date().optional().nullable(),
-    event_type:          z.string().max(80).optional(),
+    event_type: z.string().max(80).optional().nullable(),
     event_type_category: z
       .enum(['celebration', 'memorial', 'financial', 'logistical', 'other'])
       .optional()
