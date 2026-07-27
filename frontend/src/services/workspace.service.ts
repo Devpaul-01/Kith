@@ -70,6 +70,9 @@ export const workspaceService = {
     api.patch(`/v1/workspaces/${id}`, payload).then(r => r.data),
 
   delete: (id: string) => api.delete(`/v1/workspaces/${id}`).then(r => r.data),
+  getOverdueSummary: (workspaceId: string) =>
+  api.get(`/v1/workspaces/${workspaceId}/overdue-summary`).then(r => r.data),
+
 
   getDashboard: (workspaceId: string) =>
     api.get(`/v1/workspaces/${workspaceId}/dashboard`).then(r => r.data),

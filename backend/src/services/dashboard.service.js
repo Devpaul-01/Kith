@@ -14,6 +14,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 const { describeAuditAction } = require('../constants/audit-actions');
+const { computeEngagement } = require('./engagement.service');
 const {
   getCachedDashboard, setCachedDashboard,
   getCachedOverdueSummary, setCachedOverdueSummary,
@@ -56,6 +57,24 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
         .limit(10)
     : Promise.resolve({ data: [] });
 
+  // ── Open disputes count (admin only) ──
+  const openDisputesQuery = isAdmin
+    ? supabaseAdmin
+        .from('disputes')
+        .select('*', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .eq('status', 'open')
+    : Promise.resolve({ count: 0 });
+
+  // ── Recent milestones ──
+  const recentMilestonesQuery = supabaseAdmin
+    .from('milestones')
+    .select('id, title, description, milestone_date, milestone_type, photos')
+    .eq('workspace_id', workspaceId)
+    .is('deleted_at', null)
+    .order('milestone_date', { ascending: false })
+    .limit(3);
+
   const [
     { data: allMembers,    error: membersError },
     { data: rawContainers, error: containersError },
@@ -63,6 +82,8 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
     { data: targetsData,   error: targetsError },
     { data: activity,      error: activityError },
     { data: pending },
+    { count: openDisputesCount },
+    { data: recentMilestones, error: milestonesError },
   ] = await Promise.all([
     supabaseAdmin
       .from('workspace_members')
@@ -108,6 +129,8 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
       .limit(10),
 
     pendingConfirmationsQuery,
+    openDisputesQuery,
+    recentMilestonesQuery,
   ]);
 
   let memberNamesMap = {};
@@ -146,7 +169,8 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
   if (containersError) logger.warn('Dashboard containers query error', { workspaceId, error: containersError.message });
   if (poolsError)      logger.warn('Dashboard pools query error',      { workspaceId, error: poolsError.message });
   if (targetsError)    logger.warn('Dashboard targets query error',    { workspaceId, error: targetsError.message });
-  if (activityError)   logger.warn('Dashboard activity query error',  { workspaceId, error: activityError.message });
+  if (activityError)   logger.warn('Dashboard activity query error',   { workspaceId, error: activityError.message });
+  if (milestonesError) logger.warn('Dashboard milestones query error', { workspaceId, error: milestonesError.message });
 
   const active = (allMembers || []).filter((m) => m.is_active && !m.deleted_at);
   const summary = {
@@ -213,6 +237,16 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
     actor_member: undefined,
   }));
 
+  // ── New: recent milestones, shaped ──
+  const recentMilestonesShaped = (recentMilestones || []).map((m) => ({
+    id: m.id,
+    title: m.title,
+    description: m.description,
+    milestone_date: m.milestone_date,
+    milestone_type: m.milestone_type,
+    cover_photo: Array.isArray(m.photos) && m.photos.length ? m.photos[0] : null,
+  }));
+
   return {
     workspace_summary:     summary,
     active_events:         activeEvents,
@@ -220,13 +254,106 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
     upcoming_deadlines:    upcomingDeadlines,
     pending_confirmations: pendingConfirmations,
     recent_activity:       enrichedActivity,
+    open_disputes_count:   isAdmin ? (openDisputesCount || 0) : null,
+    recent_milestones:     recentMilestonesShaped,
+  };
+}
+
+/**
+ * Pending/in_progress/overdue task counts assigned to the caller, across
+ * this workspace's containers, plus the single nearest-due task for a
+ * "next up" pointer.
+ */
+async function getMyTasksSummary({ workspaceId, memberId }) {
+  const { data: containers, error: cErr } = await supabaseAdmin
+    .from('containers')
+    .select('id, name')
+    .eq('workspace_id', workspaceId)
+    .is('deleted_at', null);
+
+  if (cErr) {
+    logger.warn('Dashboard my-tasks containers query error', { workspaceId, error: cErr.message });
+    return { pending_count: 0, in_progress_count: 0, overdue_count: 0, next_due: null };
+  }
+
+  const containerIds = (containers || []).map((c) => c.id);
+  if (!containerIds.length) {
+    return { pending_count: 0, in_progress_count: 0, overdue_count: 0, next_due: null };
+  }
+
+  const containerNameById = Object.fromEntries((containers || []).map((c) => [c.id, c.name]));
+
+  const { data: tasks, error: tErr } = await supabaseAdmin
+    .from('container_tasks')
+    .select('id, title, status, due_date, container_id')
+    .eq('assigned_to', memberId)
+    .in('container_id', containerIds)
+    .in('status', ['pending', 'in_progress', 'overdue'])
+    .is('deleted_at', null)
+    .order('due_date', { ascending: true, nullsFirst: false });
+
+  if (tErr) {
+    logger.warn('Dashboard my-tasks query error', { workspaceId, memberId, error: tErr.message });
+    return { pending_count: 0, in_progress_count: 0, overdue_count: 0, next_due: null };
+  }
+
+  const rows = tasks || [];
+  const pendingCount    = rows.filter((t) => t.status === 'pending').length;
+  const inProgressCount = rows.filter((t) => t.status === 'in_progress').length;
+  const overdueCount    = rows.filter((t) => t.status === 'overdue').length;
+
+  const nextTask = rows.find((t) => t.due_date) || null;
+
+  return {
+    pending_count:     pendingCount,
+    in_progress_count: inProgressCount,
+    overdue_count:     overdueCount,
+    next_due: nextTask
+      ? {
+          id: nextTask.id,
+          title: nextTask.title,
+          due_date: nextTask.due_date,
+          container_id: nextTask.container_id,
+          container_name: containerNameById[nextTask.container_id] || null,
+        }
+      : null,
+  };
+}
+
+/**
+ * Engagement snapshot for admins: counts of quiet/inactive members,
+ * delegating to computeEngagement().
+ */
+async function getEngagementSummary({ workspaceId }) {
+  const { data: members, error } = await supabaseAdmin
+    .from('workspace_members')
+    .select('id, display_name, last_active_at')
+    .eq('workspace_id', workspaceId)
+    .eq('is_proxy', false)
+    .is('deleted_at', null);
+
+  if (error) {
+    logger.warn('Dashboard engagement query error', { workspaceId, error: error.message });
+    return { quiet_count: 0, inactive_count: 0, inactive_members: [] };
+  }
+
+  const computed = await computeEngagement(members || []);
+
+  const quiet    = computed.filter((m) => m.engagement_level === 'quiet');
+  const inactive = computed.filter((m) => m.engagement_level === 'inactive');
+
+  return {
+    quiet_count:      quiet.length,
+    inactive_count:   inactive.length,
+    inactive_members: inactive.slice(0, 5).map((m) => ({ member_id: m.member_id, display_name: m.display_name })),
   };
 }
 
 /**
  * Builds the full workspace dashboard payload: summary counts, active
  * events, recurring pools, upcoming deadlines, pending confirmations
- * (admin only), recent activity, and unread notification count.
+ * (admin only), recent activity, and unread notification count, plus:
+ * overdue summary, my-tasks summary, open disputes count, engagement summary.
  */
 async function getDashboardData({ workspaceId, isAdmin, memberId }) {
   const [cached, unreadCount] = await Promise.all([
@@ -241,10 +368,20 @@ async function getDashboardData({ workspaceId, isAdmin, memberId }) {
     setCachedDashboard(workspaceId, isAdmin, shared);
   }
 
+  // ── New: my-tasks summary (per-member, not cached) ──
+  const myTasksSummary = await getMyTasksSummary({ workspaceId, memberId });
+
+  // ── New: engagement summary (admin only) ──
+  const engagementSummary = isAdmin
+    ? await getEngagementSummary({ workspaceId })
+    : null;
+
   return {
     ...shared,
     unread_notification_count: unreadCount,
     unread_activity_count:     shared.recent_activity.length,
+    my_tasks_summary:          myTasksSummary,
+    engagement_summary:        engagementSummary,
   };
 }
 
