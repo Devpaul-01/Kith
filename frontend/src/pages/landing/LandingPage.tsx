@@ -4,16 +4,11 @@ import {
   ArrowRight,
   Menu,
   X,
-  ShieldCheck,
-  Users2,
-  Repeat,
-  Gavel,
-  Bell,
-  Link2,
-  FileCheck2,
-  Lock,
   History,
-  ScanLine,
+  Users,
+  ClipboardCheck,
+  Archive,
+  Play,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Reveal } from '@/components/landing/Reveal';
@@ -21,6 +16,13 @@ import { LedgerStrip } from '@/components/landing/LedgerStrip';
 import { NestingDiagram } from '@/components/landing/NestingDiagram';
 import { CurrencyBar } from '@/components/landing/CurrencyBar';
 import { FaqAccordion } from '@/components/landing/FaqAccordion';
+import { SectionEyebrow } from '@/components/landing/SectionEyebrow';
+import { ChatVsKith } from '@/components/landing/ChatVsKith';
+import { DashboardPreview } from '@/components/landing/DashboardPreview';
+import { CycleAnimation } from '@/components/landing/CycleAnimation';
+import { ActivityTimeline } from '@/components/landing/ActivityTimeline';
+import { MemberList } from '@/components/landing/MemberList';
+import { TaskStoryCards } from '@/components/landing/TaskStoryCards';
 
 const NAV_LINKS = [
   { label: 'How it works', href: '#how-it-works' },
@@ -29,82 +31,24 @@ const NAV_LINKS = [
   { label: 'FAQ', href: '#faq' },
 ];
 
-const PROBLEMS = [
-  {
-    quote: '"Did you send that already?"',
-    detail:
-      'Three cousins, one WhatsApp thread, and nobody quite sure who\u2019s paid toward Dad\u2019s care fund this month.',
-  },
-  {
-    quote: '"I thought Uncle Femi was tracking it."',
-    detail:
-      'A spreadsheet somebody made two years ago, shared once, never opened since — nobody\u2019s sure it\u2019s even current.',
-  },
-  {
-    quote: '"That\u2019s not what I agreed to send."',
-    detail:
-      'A real disagreement about money, between people who love each other, with no process to resolve it — just a thread that goes quiet.',
-  },
+const TOOL_COMPARISON = [
+  { title: 'Messaging apps', desc: 'Great for conversations. Not great for tracking commitments over time.' },
+  { title: 'Spreadsheets', desc: 'Great for calculations. Not great for involving an entire family.' },
+  { title: 'Notes', desc: 'Great for personal reminders. Not great for shared coordination.' },
+  { title: 'Kith', desc: 'Designed specifically for families working together, not teams or businesses.', highlight: true },
 ];
 
-const FEATURES = [
-  {
-    icon: Users2,
-    title: 'Proxy members',
-    description:
-      'Grandma will never install an app, and the baby you\u2019re saving for definitely won\u2019t. Add them anyway — an admin records on their behalf, fully audited.',
-  },
-  {
-    icon: Repeat,
-    title: 'Recurring pools that run themselves',
-    description:
-      'A monthly susu or care fund opens its own cycle, reminds late payers, and closes on schedule — automatically, with no one\u2019s memory required.',
-  },
-  {
-    icon: Gavel,
-    title: 'Disputes with an actual process',
-    description:
-      '"I already paid that" becomes a structured, admin-resolved workflow with a permanent record — not a WhatsApp argument that fizzles out unresolved.',
-  },
-  {
-    icon: History,
-    title: 'Nothing confirmed ever quietly changes',
-    description:
-      'Once a contribution is confirmed, it\u2019s history. Fixing a number means posting a correction everyone can see — never a silent edit.',
-  },
-  {
-    icon: Bell,
-    title: 'Reminders that actually reach people',
-    description:
-      'Push, email, and in-app — before something\u2019s due and after it\u2019s overdue — so "outstanding balance" is something you see, not something you chase.',
-  },
-  {
-    icon: Link2,
-    title: 'A public page for the fundraiser',
-    description:
-      'Share one link with extended family who aren\u2019t even in the workspace yet. You choose whether contributor names are shown at all.',
-  },
+const MONEY_CARDS = [
+  { title: 'Shared contribution progress', desc: 'Everyone sees how close the family is to reaching the goal.' },
+  { title: 'Transparent history', desc: "Every contribution becomes part of the family's shared record." },
+  { title: 'Payment confirmation', desc: 'Members submit proof of payment so everyone stays informed.' },
 ];
 
-const SECURITY_POINTS = [
-  {
-    icon: ScanLine,
-    title: 'Proof isn\u2019t just trusted',
-    description:
-      'Every uploaded payment proof is checked byte-for-byte against its real file signature — not just the label a browser happened to send.',
-  },
-  {
-    icon: FileCheck2,
-    title: 'Retries can\u2019t double-charge the record',
-    description:
-      'Every contribution carries a unique key, so a flaky connection and an anxious double-tap can never create two entries for one payment.',
-  },
-  {
-    icon: Lock,
-    title: 'Built to fail safe, not silent',
-    description:
-      'You can\u2019t delete a container or remove a member while real confirmed money is attached to them — by design, not by convention.',
-  },
+const TRUST_POINTS = [
+  { icon: History, title: 'Contribution History', description: "Every contribution becomes part of a running record — who gave, when, and what it was for. Nobody has to ask, and nobody has to remember." },
+  { icon: Users, title: 'Shared Activity', description: "Everyone in the family sees the same updates as they happen, so no one is left wondering what they missed." },
+  { icon: ClipboardCheck, title: 'Clear Responsibilities', description: "Every task has an owner and a status, so it's always obvious what's done and what still needs attention." },
+  { icon: Archive, title: 'Organized Records', description: "Receipts, notes, and updates stay attached to the event they belong to, instead of buried in a chat thread from months ago." },
 ];
 
 function NavBar({ mobileOpen, setMobileOpen }: { mobileOpen: boolean; setMobileOpen: (v: boolean) => void }) {
@@ -117,11 +61,7 @@ function NavBar({ mobileOpen, setMobileOpen }: { mobileOpen: boolean; setMobileO
 
         <nav className="hidden items-center gap-8 md:flex">
           {NAV_LINKS.map((link) => (
-            <a
-              key={link.href}
-              href={link.href}
-              className="text-sm font-medium text-text-secondary transition-colors hover:text-text-primary"
-            >
+            <a key={link.href} href={link.href} className="text-sm font-medium text-text-secondary transition-colors hover:text-text-primary">
               {link.label}
             </a>
           ))}
@@ -132,9 +72,7 @@ function NavBar({ mobileOpen, setMobileOpen }: { mobileOpen: boolean; setMobileO
             Log in
           </Link>
           <Link to="/signup">
-            <Button size="sm">
-              Get started free
-            </Button>
+            <Button size="sm">Get started free</Button>
           </Link>
         </div>
 
@@ -184,14 +122,11 @@ export default function LandingPage() {
     <div className="min-h-screen bg-surface-page">
       <NavBar mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
 
-      {/* ============ HERO ============ */}
+      {/* ============ 1. HERO ============ */}
       <section className="relative overflow-hidden px-4 pt-16 pb-20 sm:px-6 sm:pt-24 sm:pb-28">
         <div
           className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[640px] opacity-60"
-          style={{
-            background:
-              'radial-gradient(60% 50% at 50% 0%, rgba(37,99,235,0.10) 0%, rgba(37,99,235,0) 70%)',
-          }}
+          style={{ background: 'radial-gradient(60% 50% at 50% 0%, rgba(37,99,235,0.10) 0%, rgba(37,99,235,0) 70%)' }}
           aria-hidden
         />
         <div className="mx-auto max-w-3xl text-center">
@@ -202,29 +137,28 @@ export default function LandingPage() {
           </Reveal>
           <Reveal delay={80}>
             <h1 className="mt-6 text-[2.5rem] font-extrabold leading-[1.08] tracking-tight text-text-primary sm:text-6xl sm:leading-[1.05]">
-              Money and responsibility,
+              Everything your family needs
               <br />
-              shared without the group chat.
+              to coordinate life together.
             </h1>
           </Reveal>
           <Reveal delay={160}>
             <p className="mx-auto mt-6 max-w-xl text-lg leading-relaxed text-text-secondary">
-              Kith turns "did you send that already?" into a structured, auditable system —
-              built for the funerals, weddings, and monthly family pools that a spreadsheet
-              and a WhatsApp thread were never quite enough for.
+              Birthdays, healthcare, monthly support, celebrations. Kith brings every responsibility your
+              family shares into one organized home — instead of scattered across group chats, notes, and memory.
             </p>
           </Reveal>
           <Reveal delay={240}>
             <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Link to="/signup" className="w-full sm:w-auto">
                 <Button size="lg" fullWidth className="sm:w-auto group">
-                  Get started free
+                  Explore Kith
                   <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" />
                 </Button>
               </Link>
               <a href="#how-it-works" className="w-full sm:w-auto">
-                <Button variant="secondary" size="lg" fullWidth className="sm:w-auto">
-                  See how it works
+                <Button variant="secondary" size="lg" fullWidth className="sm:w-auto group">
+                  <Play size={14} /> Watch a 90-second walkthrough
                 </Button>
               </a>
             </div>
@@ -234,8 +168,8 @@ export default function LandingPage() {
           </Reveal>
         </div>
 
-        <Reveal delay={360} className="mt-16">
-          <LedgerStrip />
+        <Reveal delay={360} className="mx-auto mt-16 max-w-5xl">
+          <DashboardPreview />
         </Reveal>
       </section>
 
@@ -243,33 +177,63 @@ export default function LandingPage() {
       <section className="border-y border-border bg-white px-4 py-10 sm:px-6">
         <Reveal className="mx-auto max-w-4xl text-center">
           <p className="text-xs font-semibold uppercase tracking-widest text-text-secondary">
-            Built for families spread across more than one country
+            Every family coordinates in the currency that makes sense for them
           </p>
           <div className="mt-5">
             <CurrencyBar />
           </div>
+          <p className="mt-3 text-xs text-text-secondary">
+            A few examples — Kith supports every global currency, so distance never gets in the way of family.
+          </p>
         </Reveal>
       </section>
 
-      {/* ============ PROBLEM ============ */}
+      {/* ============ 2. THE PROBLEM ============ */}
       <section className="px-4 py-20 sm:px-6 sm:py-28">
-        <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-4xl">
           <Reveal className="mx-auto max-w-xl text-center">
-            <h2 className="text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
-              Every extended family runs into this eventually.
+            <SectionEyebrow pillar="neutral">The Problem</SectionEyebrow>
+            <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+              Family coordination shouldn't depend on memory and group chats.
             </h2>
             <p className="mt-4 text-base leading-relaxed text-text-secondary">
-              Not because anyone did anything wrong — because money shared between people
-              who aren\u2019t a company was never given the tools a company gets by default.
+              Someone reminds relatives about contributions. Someone tracks who's paid. Someone answers the
+              same question twice. Not because families don't care — because they were never given the right tools.
             </p>
           </Reveal>
+          <Reveal delay={120} className="mt-14">
+            <ChatVsKith />
+          </Reveal>
+        </div>
+      </section>
 
-          <div className="mt-14 grid gap-5 sm:grid-cols-3">
-            {PROBLEMS.map((problem, i) => (
-              <Reveal key={problem.quote} delay={i * 90}>
-                <div className="h-full rounded-2xl border border-border bg-white p-6 shadow-card">
-                  <p className="text-lg font-bold leading-snug text-text-primary">{problem.quote}</p>
-                  <p className="mt-3 text-sm leading-relaxed text-text-secondary">{problem.detail}</p>
+      {/* ============ 3. WHY EXISTING TOOLS BREAK DOWN ============ */}
+      <section className="bg-white px-4 py-20 sm:px-6 sm:py-28">
+        <div className="mx-auto max-w-5xl">
+          <Reveal className="mx-auto max-w-xl text-center">
+            <SectionEyebrow pillar="neutral">A different kind of tool</SectionEyebrow>
+            <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+              The problem isn't your family. It's the tools.
+            </h2>
+            <p className="mt-4 text-base leading-relaxed text-text-secondary">
+              Messaging apps are great for conversations. Spreadsheets are great for calculations. But families
+              don't just communicate — they coordinate, and that takes structure.
+            </p>
+          </Reveal>
+          <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            {TOOL_COMPARISON.map((c, i) => (
+              <Reveal key={c.title} delay={i * 90}>
+                <div
+                  className={
+                    c.highlight
+                      ? 'h-full rounded-2xl border border-primary/30 bg-primary/[0.04] p-6'
+                      : 'h-full rounded-2xl border border-border bg-white p-6 shadow-card'
+                  }
+                >
+                  <h3 className={c.highlight ? 'text-base font-bold text-primary' : 'text-base font-bold text-text-primary'}>
+                    {c.title}
+                  </h3>
+                  <p className="mt-2 text-sm leading-relaxed text-text-secondary">{c.desc}</p>
                 </div>
               </Reveal>
             ))}
@@ -277,22 +241,20 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ============ HOW IT WORKS (nesting diagram) ============ */}
-      <section id="how-it-works" className="bg-white px-4 py-20 sm:px-6 sm:py-28">
+      {/* ============ 4. HOW KITH WORKS ============ */}
+      <section id="how-it-works" className="px-4 py-20 sm:px-6 sm:py-28">
         <div className="mx-auto max-w-5xl">
           <div className="grid gap-14 lg:grid-cols-2 lg:items-center lg:gap-16">
             <Reveal>
-              <span className="text-xs font-bold uppercase tracking-widest text-primary">How it works</span>
+              <SectionEyebrow pillar="neutral">How it works</SectionEyebrow>
               <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
-                Three ideas, nested inside each other.
+                One shared home for everything your family coordinates.
               </h2>
               <p className="mt-4 text-base leading-relaxed text-text-secondary">
-                A <strong className="text-text-primary">Workspace</strong> is your family. Inside it,
-                a <strong className="text-text-primary">Container</strong> is whatever you\u2019re
-                coordinating — a one-off event or an ongoing pool. Inside that, the{' '}
-                <strong className="text-text-primary">Ledger</strong> is the honest record of every
-                contribution, correction, and dispute. Nothing floats outside this structure, so
-                nothing gets lost in a thread.
+                A <strong className="text-text-primary">Workspace</strong> is your family. Inside it, a{' '}
+                <strong className="text-text-primary">Container</strong> is whatever you're coordinating. Inside
+                that, the <strong className="text-text-primary">Ledger</strong> is the honest record of every
+                contribution. Nothing floats outside this structure.
               </p>
               <Link to="/signup" className="mt-7 inline-flex">
                 <Button className="group">
@@ -308,53 +270,178 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ============ FEATURES ============ */}
-      <section id="features" className="px-4 py-20 sm:px-6 sm:py-28">
-        <div className="mx-auto max-w-6xl">
+      {/* ============ 5. FINANCIAL COORDINATION ============ */}
+      <section id="features" className="bg-white px-4 py-20 sm:px-6 sm:py-28">
+        <div className="mx-auto max-w-5xl">
           <Reveal className="mx-auto max-w-xl text-center">
-            <span className="text-xs font-bold uppercase tracking-widest text-primary">Features</span>
+            <SectionEyebrow pillar="money">Coordinate family money together</SectionEyebrow>
             <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
-              Everything a family actually needs — nothing a business doesn\u2019t.
+              Everyone always knows where things stand.
             </h2>
+            <p className="mt-4 text-base leading-relaxed text-text-secondary">
+              Contribution progress, remaining balance, who's paid, upcoming deadlines — visible to everyone,
+              all the time. No more guessing. No more repeated questions.
+            </p>
           </Reveal>
-
-          <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {FEATURES.map((feature, i) => {
-              const Icon = feature.icon;
-              return (
-                <Reveal key={feature.title} delay={(i % 3) * 90}>
-                  <div className="h-full rounded-2xl border border-border bg-white p-6 shadow-card transition-shadow hover:shadow-card-hover">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                      <Icon size={20} strokeWidth={2.25} />
-                    </div>
-                    <h3 className="mt-4 text-base font-bold text-text-primary">{feature.title}</h3>
-                    <p className="mt-2 text-sm leading-relaxed text-text-secondary">{feature.description}</p>
-                  </div>
-                </Reveal>
-              );
-            })}
+          <Reveal delay={120} className="mt-14">
+            <LedgerStrip />
+          </Reveal>
+          <div className="mt-10 grid gap-5 sm:grid-cols-3">
+            {MONEY_CARDS.map((c, i) => (
+              <Reveal key={c.title} delay={i * 90}>
+                <div className="h-full rounded-2xl border border-border bg-white p-6 shadow-card">
+                  <h3 className="text-base font-bold text-text-primary">{c.title}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-text-secondary">{c.desc}</p>
+                </div>
+              </Reveal>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* ============ SECURITY ============ */}
+      {/* ============ 6. RESPONSIBILITIES BEYOND MONEY ============ */}
+      <section className="px-4 py-20 sm:px-6 sm:py-28">
+        <div className="mx-auto max-w-5xl">
+          <Reveal className="mx-auto max-w-xl text-center">
+            <SectionEyebrow pillar="responsibility">Beyond money</SectionEyebrow>
+            <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+              Keep everyone aligned — even when money isn't involved.
+            </h2>
+            <p className="mt-4 text-base leading-relaxed text-text-secondary">
+              Decorations, venues, phone calls, favors. Kith tracks those commitments alongside everything else
+              so nothing gets forgotten.
+            </p>
+          </Reveal>
+          <Reveal delay={120} className="mt-14">
+            <TaskStoryCards />
+          </Reveal>
+        </div>
+      </section>
+
+      {/* ============ 7. RECURRING FAMILY COMMITMENTS ============ */}
+      <section className="bg-white px-4 py-20 sm:px-6 sm:py-28">
+        <div className="mx-auto max-w-5xl">
+          <div className="grid gap-14 lg:grid-cols-2 lg:items-center lg:gap-16">
+            <Reveal>
+              <SectionEyebrow pillar="money">Some commitments never end</SectionEyebrow>
+              <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+                Some family commitments happen every month. Kith remembers them for you.
+              </h2>
+              <p className="mt-4 text-base leading-relaxed text-text-secondary">
+                Monthly healthcare support. Education funds. Community obligations. Instead of recreating
+                everything from scratch every month, Kith keeps recurring coordination running smoothly so
+                everyone always knows what's next.
+              </p>
+            </Reveal>
+            <Reveal delay={120}>
+              <CycleAnimation />
+            </Reveal>
+          </div>
+        </div>
+      </section>
+
+      {/* ============ 8. INCLUDE EVERY FAMILY MEMBER ============ */}
+      <section className="px-4 py-20 sm:px-6 sm:py-28">
+        <div className="mx-auto max-w-5xl">
+          <div className="grid gap-14 lg:grid-cols-2 lg:items-center lg:gap-16">
+            <Reveal>
+              <SectionEyebrow pillar="responsibility">Inclusion</SectionEyebrow>
+              <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+                Because every family member deserves to be included.
+              </h2>
+              <p className="mt-4 text-base leading-relaxed text-text-secondary">
+                Not everyone in the family wants an account. Grandma Ruth has never opened the app once — but a
+                trusted family member can act on her behalf, fully audited, so she's still part of every
+                celebration and every fund.
+              </p>
+            </Reveal>
+            <Reveal delay={120}>
+              <MemberList />
+            </Reveal>
+          </div>
+        </div>
+      </section>
+
+      {/* ============ 9. SHARED HISTORY ============ */}
+      <section className="bg-white px-4 py-20 sm:px-6 sm:py-28">
+        <div className="mx-auto max-w-5xl">
+          <div className="grid gap-14 lg:grid-cols-2 lg:items-center lg:gap-16">
+            <Reveal delay={120} className="order-2 lg:order-1">
+              <ActivityTimeline />
+            </Reveal>
+            <Reveal className="order-1 lg:order-2">
+              <SectionEyebrow pillar="trust">Shared history</SectionEyebrow>
+              <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+                A shared history your family can always come back to.
+              </h2>
+              <p className="mt-4 text-base leading-relaxed text-text-secondary">
+                Birthdays become anniversaries. Healthcare support continues for years. Kith keeps everything
+                organized so your family always knows what happened, when, and who was involved.
+              </p>
+            </Reveal>
+          </div>
+        </div>
+      </section>
+
+      {/* ============ 10. DASHBOARD ============ */}
+      <section className="px-4 py-20 sm:px-6 sm:py-28">
+        <div className="mx-auto max-w-5xl">
+          <Reveal className="mx-auto max-w-xl text-center">
+            <SectionEyebrow pillar="neutral">The dashboard</SectionEyebrow>
+            <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+              Know what needs your attention the moment you open Kith.
+            </h2>
+            <p className="mt-4 text-base leading-relaxed text-text-secondary">
+              Upcoming events, pending contributions, tasks assigned to you, recent activity — everything
+              important, visible at a glance.
+            </p>
+          </Reveal>
+          <Reveal delay={120} className="mt-14">
+            <DashboardPreview annotated />
+          </Reveal>
+        </div>
+      </section>
+
+      {/* ============ 11. AUTOMATION ============ */}
+      <section className="bg-white px-4 py-20 sm:px-6 sm:py-28">
+        <div className="mx-auto max-w-5xl">
+          <div className="grid gap-14 lg:grid-cols-2 lg:items-center lg:gap-16">
+            <Reveal>
+              <SectionEyebrow pillar="money">Quiet automation</SectionEyebrow>
+              <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+                The little things happen automatically, so your family doesn't have to remember everything.
+              </h2>
+              <p className="mt-4 text-base leading-relaxed text-text-secondary">
+                Imagine your family contributes toward your parents' monthly healthcare. Nobody has to remember
+                to recreate the contribution every month — Kith keeps the process moving, and your family
+                simply continues supporting each other.
+              </p>
+            </Reveal>
+            <Reveal delay={120}>
+              <CycleAnimation />
+            </Reveal>
+          </div>
+        </div>
+      </section>
+
+      {/* ============ 12. TRUST / TRANSPARENCY ============ */}
       <section id="security" className="bg-text-primary px-4 py-20 sm:px-6 sm:py-28">
         <div className="mx-auto max-w-5xl">
           <Reveal className="mx-auto max-w-xl text-center">
             <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-blue-300">
-              <ShieldCheck size={14} /> Security & trust
+              <History size={14} /> Transparency
             </span>
             <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
-              Real money between real relatives deserves real safeguards.
+              Everyone stays informed. Nobody has to guess.
             </h2>
             <p className="mt-4 text-base leading-relaxed text-slate-300">
-              Not marketing language — specific mechanisms, because this is the part of the
-              product that has to be trustworthy.
+              Trust isn't a promise Kith makes — it's what happens naturally when every contribution,
+              task, and update has a clear, visible home.
             </p>
           </Reveal>
 
-          <div className="mt-14 grid gap-5 sm:grid-cols-3">
-            {SECURITY_POINTS.map((point, i) => {
+          <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            {TRUST_POINTS.map((point, i) => {
               const Icon = point.icon;
               return (
                 <Reveal key={point.title} delay={i * 100}>
@@ -372,54 +459,40 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ============ TESTIMONIALS ============ */}
+      {/* ============ 13. SEE KITH IN ACTION ============ */}
       <section className="px-4 py-20 sm:px-6 sm:py-28">
-        <div className="mx-auto max-w-5xl">
-          <Reveal className="mx-auto max-w-xl text-center">
-            <h2 className="text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
-              What this looks like for a family
+        <div className="mx-auto max-w-4xl text-center">
+          <Reveal>
+            <SectionEyebrow pillar="neutral">See Kith in action</SectionEyebrow>
+            <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+              Take a quick tour before you decide.
             </h2>
-            <p className="mt-3 text-sm text-text-secondary">
-              Illustrative examples of how families use Kith — not verified customer quotes.
+            <p className="mx-auto mt-4 max-w-lg text-base leading-relaxed text-text-secondary">
+              A 60-90 second walkthrough of the real product — no voiceover, real interactions, no fake interface.
             </p>
           </Reveal>
-
-          <div className="mt-12 grid gap-5 sm:grid-cols-3">
-            {[
-              {
-                quote:
-                  '"I used to keep our care-fund spreadsheet in my head. Now my brothers can just see it — and nobody has to ask me."',
-                name: 'Illustrative example',
-                role: 'Admin of a family care fund',
-              },
-              {
-                quote:
-                  '"We converted Dad\u2019s funeral fund straight into an ongoing support pool. Nothing about the original history disappeared."',
-                name: 'Illustrative example',
-                role: 'Extended family organizer',
-              },
-              {
-                quote:
-                  '"Grandma has never opened the app once. She\u2019s still fully part of the family pool because someone can act for her."',
-                name: 'Illustrative example',
-                role: 'Proxy manager for a parent',
-              },
-            ].map((t, i) => (
-              <Reveal key={t.name + i} delay={i * 90}>
-                <div className="h-full rounded-2xl border border-border bg-white p-6 shadow-card">
-                  <p className="text-sm leading-relaxed text-text-primary">{t.quote}</p>
-                  <div className="mt-5 border-t border-border pt-4">
-                    <p className="text-sm font-semibold text-text-primary">{t.name}</p>
-                    <p className="text-xs text-text-secondary">{t.role}</p>
-                  </div>
-                </div>
-              </Reveal>
-            ))}
-          </div>
+          <Reveal delay={120} className="mt-10">
+            {/*
+              PLACEHOLDER: replace this button/frame with a real <video> element
+              once the walkthrough is recorded, e.g.:
+              <video controls poster="/assets/walkthrough-poster.jpg" className="w-full rounded-3xl">
+                <source src="/assets/walkthrough.mp4" type="video/mp4" />
+              </video>
+            */}
+            <div className="mx-auto flex aspect-video max-w-2xl items-center justify-center rounded-3xl border border-border bg-white shadow-card-hover">
+              <button
+                className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-white shadow-lg hover:bg-primary-hover transition-colors"
+                aria-label="Play walkthrough video"
+              >
+                <Play size={22} className="ml-1" fill="white" />
+              </button>
+            </div>
+            <p className="mt-3 text-xs text-text-secondary">Walkthrough video placeholder — drop in the recorded MP4 when ready.</p>
+          </Reveal>
         </div>
       </section>
 
-      {/* ============ FAQ ============ */}
+      {/* ============ 14. FAQ ============ */}
       <section id="faq" className="bg-white px-4 py-20 sm:px-6 sm:py-28">
         <div className="mx-auto max-w-3xl">
           <Reveal className="text-center">
@@ -431,27 +504,27 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ============ FINAL CTA ============ */}
+      {/* ============ 15. FINAL CTA ============ */}
       <section className="px-4 py-20 sm:px-6 sm:py-28">
         <Reveal className="mx-auto max-w-4xl overflow-hidden rounded-3xl bg-primary px-6 py-14 text-center shadow-card-hover sm:px-16">
           <h2 className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
-            Your family already coordinates money.
+            Your family already works together.
             <br className="hidden sm:block" />
-            Give it somewhere real to live.
+            Kith simply makes it easier.
           </h2>
           <p className="mx-auto mt-4 max-w-lg text-base leading-relaxed text-blue-100">
-            Free to get started. No card required — just you, your family, and two minutes.
+            Stop relying on scattered messages, forgotten reminders, and outdated spreadsheets. Start organizing with confidence.
           </p>
           <Link to="/signup" className="mt-8 inline-flex">
             <Button size="lg" className="!bg-white !text-primary hover:!bg-blue-50 group">
-              Create your family workspace
+              Create Your Family Workspace
               <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" />
             </Button>
           </Link>
         </Reveal>
       </section>
 
-      {/* ============ FOOTER ============ */}
+      {/* ============ 16. FOOTER ============ */}
       <footer className="border-t border-border bg-white px-4 py-12 sm:px-6">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 sm:flex-row">
           <div className="flex items-center gap-1 text-lg font-extrabold tracking-tight text-text-primary">
@@ -465,8 +538,9 @@ export default function LandingPage() {
             ))}
             <Link to="/login" className="text-sm text-text-secondary hover:text-text-primary">Log in</Link>
           </nav>
-          <p className="text-xs text-text-secondary">© {new Date().getFullYear()} Kith. Built for families.</p>
+          <p className="text-xs text-text-secondary">Questions? kithnoreply@gmail.com</p>
         </div>
+        <p className="mt-6 text-center text-xs text-text-secondary">© {new Date().getFullYear()} Kith. Built for families.</p>
       </footer>
     </div>
   );

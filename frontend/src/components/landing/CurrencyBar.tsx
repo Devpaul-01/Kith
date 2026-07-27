@@ -16,7 +16,7 @@ export function CurrencyBar() {
         </div>
       ))}
       <div className="flex items-center rounded-full border border-dashed border-border px-3.5 py-1.5 text-sm font-medium text-text-secondary">
-        +10 more
+        + every other currency, worldwide
       </div>
     </div>
   );
