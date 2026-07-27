@@ -13,6 +13,7 @@ export const KEYS={
 
   invites:(w:string)=>['workspaces',w,'invites'] as const,
   invitePreview:(t:string)=>['invites','preview',t] as const,
+  overdueSummary:(w:string)=>['workspaces',w,'overdue-summary'] as const,
 
 groups: (w: string) => ['workspaces', w, 'groups'] as const,
 group: (w: string, g: string) => ['workspaces', w, 'groups', g] as const,

@@ -11,85 +11,75 @@ import { Badge } from '@/components/ui/Badge';
 import { CurrencyAmount } from '@/components/ui/CurrencyAmount';
 import { formatDate, timeAgo } from '@/utils/date';
 import { useNavigate } from 'react-router-dom';
-import { Users, AlertTriangle, Calendar } from 'lucide-react';
+import { Users, AlertTriangle, Calendar, RefreshCcw, ListChecks, Scale, UserX, Sparkles } from 'lucide-react';
 import type { DashboardData, LedgerEntry } from '@/types/models';
 import showToast from '@/lib/toast';
 
+// ── Overdue summary types (matches dashboard_service.js#getOverdueSummaryData) ──
+interface OverdueContainerEntry {
+  container_id: string;
+  container_name: string;
+  outstanding: number;
+  currency: string;
+  due_date: string;
+}
+interface OverdueMemberEntry {
+  member_id: string;
+  display_name: string | null;
+  total_outstanding: number;
+  containers: OverdueContainerEntry[];
+}
+interface OverdueSummary {
+  overdue_count: number;
+  overdue: OverdueMemberEntry[];
+}
+
 export default function DashboardPage() {
-  // 🔍 LOG 1: Component mount
-  console.log('🔍 [DashboardPage] Component rendering');
-  
   const { workspaceId, workspace } = useWorkspace();
-  
-  // 🔍 LOG 2: Check what useWorkspace returned
-  console.log('🔍 [DashboardPage] useWorkspace result:', { 
-    workspaceId, 
-    workspaceIdType: typeof workspaceId,
-    workspaceIdValue: workspaceId,
-    workspaceExists: !!workspace,
-    workspaceName: workspace?.name 
-  });
-  
   const isAdmin = useIsAdmin();
   const nav = useNavigate();
   const qc = useQueryClient();
 
-  // 🔍 LOG 3: Before useQuery
-  console.log('🔍 [DashboardPage] About to call useQuery with:', {
-    workspaceId,
-    enabled: !!workspaceId,
-    queryKey: KEYS.dashboard(workspaceId)
-  });
-
   const { data, isLoading, error } = useQuery<DashboardData>({
     queryKey: KEYS.dashboard(workspaceId),
     queryFn: async () => {
-      // 🔍 LOG 4: Inside queryFn - this runs when enabled
-      console.log('🔍 [DashboardPage] queryFn executing with workspaceId:', workspaceId);
-      
       if (!workspaceId) {
-        console.error('🔴 [DashboardPage] workspaceId is undefined in queryFn!');
         throw new Error('Workspace ID is required');
       }
-      
-      console.log('🔍 [DashboardPage] Calling workspaceService.getDashboard with:', workspaceId);
-      const result = await workspaceService.getDashboard(workspaceId);
-      console.log('🔍 [DashboardPage] workspaceService.getDashboard result:', result);
-      return result;
+      return workspaceService.getDashboard(workspaceId);
     },
     staleTime: 60_000,
     refetchOnWindowFocus: true,
-    enabled: !!workspaceId, // Don't run if no workspaceId
+    enabled: !!workspaceId,
     retry: 1,
   });
+
+  // Admin-only: overdue contributions across the workspace. Kept as a
+  // separate query (rather than folded into the main dashboard payload)
+  // since it's already its own endpoint and non-admins never need it.
+  const { data: overdueData } = useQuery<{ data: OverdueSummary }>({
+    queryKey: KEYS.overdueSummary(workspaceId),
+    queryFn: () => workspaceService.getOverdueSummary(workspaceId),
+    staleTime: 60_000,
+    enabled: !!workspaceId && isAdmin,
+    retry: 1,
+  });
+  const overdue = overdueData?.data;
+
   const confirmMutation = useMutation({
     mutationFn: ({ cId, eId }: { cId: string; eId: string }) => {
-      console.log('🔍 [DashboardPage] Confirming contribution:', { cId, eId, workspaceId });
       return ledgerService.confirm(workspaceId, cId, eId);
     },
-    onSuccess: () => { 
-      console.log('✅ [DashboardPage] Confirmation successful, invalidating dashboard');
-      qc.invalidateQueries({ queryKey: KEYS.dashboard(workspaceId) }); 
-      showToast.success('Contribution confirmed'); 
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: KEYS.dashboard(workspaceId) });
+      showToast.success('Contribution confirmed');
     },
-    onError: (err) => {
-      console.error('🔴 [DashboardPage] Confirmation failed:', err);
+    onError: () => {
       showToast.error('Failed to confirm');
     },
   });
 
-
-  // 🔍 LOG 5: After useQuery
-  console.log('🔍 [DashboardPage] useQuery state:', { 
-    workspaceId,
-    isLoading, 
-    hasData: !!data, 
-    error: error?.message,
-    errorDetails: error
-  });
-
   if (isLoading) {
-    console.log('🔍 [DashboardPage] Showing loading skeleton');
     return (
       <div className="p-4 sm:p-6 space-y-6">
         <div className="grid grid-cols-3 gap-4">
@@ -101,9 +91,8 @@ export default function DashboardPage() {
       </div>
     );
   }
-  
+
   if (error) {
-    console.error('🔴 [DashboardPage] Error state:', error);
     return (
       <div className="p-4 text-center">
         <div className="bg-danger/10 rounded-lg p-6 max-w-md mx-auto">
@@ -112,8 +101,8 @@ export default function DashboardPage() {
           <p className="text-sm text-text-secondary mb-4">
             {error.message || "Please try again later"}
           </p>
-          <button 
-            onClick={() => window.location.reload()} 
+          <button
+            onClick={() => window.location.reload()}
             className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90"
           >
             Retry
@@ -122,9 +111,8 @@ export default function DashboardPage() {
       </div>
     );
   }
-  
+
   if (!data) {
-    console.warn('⚠️ [DashboardPage] No dashboard data received');
     return (
       <div className="p-4 text-center">
         <p className="text-text-secondary">No dashboard data available</p>
@@ -132,12 +120,9 @@ export default function DashboardPage() {
     );
   }
 
-  // Now safe to access data
   const d = data;
 
-  // Check if workspace_summary exists
   if (!d.workspace_summary) {
-    console.error("🔴 [DashboardPage] Missing workspace_summary in dashboard data", d);
     return (
       <div className="p-4 text-center">
         <p className="text-danger">Invalid dashboard data structure</p>
@@ -145,13 +130,10 @@ export default function DashboardPage() {
     );
   }
 
-  console.log('✅ [DashboardPage] Successfully rendering dashboard with data:', {
-    memberCount: d.workspace_summary.member_count,
-    activeEvents: d.active_events?.length,
-    deadlines: d.upcoming_deadlines?.length
-  });
+  const myTasks = d.my_tasks_summary;
+  const engagement = d.engagement_summary;
+  const recentMilestones = d.recent_milestones || [];
 
-  
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
       <div>
@@ -173,6 +155,68 @@ export default function DashboardPage() {
         ))}
       </div>
 
+      {/* ── Admin attention row: overdue + disputes + engagement ── */}
+      {isAdmin && (
+        <div className="grid sm:grid-cols-3 gap-4">
+          {overdue && overdue.overdue_count > 0 && (
+            <Card
+              className="cursor-pointer hover:border-danger/40"
+              onClick={() => nav('/app/members/engagement')}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <AlertTriangle className="text-danger" size={18} />
+                <h2 className="font-semibold text-text-primary text-sm">Overdue Contributions</h2>
+              </div>
+              <p className="text-2xl font-bold text-danger">{overdue.overdue_count}</p>
+              <p className="text-xs text-text-secondary mb-2">member{overdue.overdue_count === 1 ? '' : 's'} behind</p>
+              <div className="space-y-1">
+                {overdue.overdue.slice(0, 3).map((m) => (
+                  <div key={m.member_id} className="flex justify-between text-xs">
+                    <span className="text-text-primary truncate">{m.display_name}</span>
+                    <span className="text-danger font-medium">
+                      <CurrencyAmount amount={m.total_outstanding} currency={m.containers[0]?.currency || ''} />
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {d.open_disputes_count !== null && d.open_disputes_count !== undefined && d.open_disputes_count > 0 && (
+            <Card
+              className="cursor-pointer hover:border-warning/40"
+              onClick={() => nav('/app/disputes')}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <Scale className="text-warning" size={18} />
+                <h2 className="font-semibold text-text-primary text-sm">Open Disputes</h2>
+              </div>
+              <p className="text-2xl font-bold text-warning">{d.open_disputes_count}</p>
+              <p className="text-xs text-text-secondary">awaiting resolution</p>
+            </Card>
+          )}
+
+          {engagement && (engagement.quiet_count > 0 || engagement.inactive_count > 0) && (
+            <Card
+              className="cursor-pointer hover:border-orange-400/40"
+              onClick={() => nav('/app/members/engagement')}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <UserX className="text-orange-500" size={18} />
+                <h2 className="font-semibold text-text-primary text-sm">Member Engagement</h2>
+              </div>
+              <p className="text-2xl font-bold text-orange-500">{engagement.inactive_count}</p>
+              <p className="text-xs text-text-secondary mb-2">inactive · {engagement.quiet_count} quiet</p>
+              {engagement.inactive_members.length > 0 && (
+                <p className="text-xs text-text-secondary truncate">
+                  {engagement.inactive_members.map((m) => m.display_name).join(', ')}
+                </p>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+
       {isAdmin && d.pending_confirmations?.length > 0 && (
         <Card>
           <div className="flex items-center gap-2 mb-4">
@@ -188,9 +232,9 @@ export default function DashboardPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge status={e.status} />
-                  <button 
-                    onClick={() => confirmMutation.mutate({ cId: e.container_id, eId: e.id })} 
-                    disabled={confirmMutation.isPending} 
+                  <button
+                    onClick={() => confirmMutation.mutate({ cId: e.container_id, eId: e.id })}
+                    disabled={confirmMutation.isPending}
                     className="text-xs text-primary font-semibold hover:underline disabled:opacity-50"
                   >
                     Confirm
@@ -248,6 +292,108 @@ export default function DashboardPage() {
           </Card>
         )}
       </div>
+
+      {/* ── Recurring pools ── */}
+      {d.recurring_pools?.length > 0 && (
+        <Card>
+          <div className="flex items-center gap-2 mb-4">
+            <RefreshCcw className="text-primary" size={18} />
+            <h2 className="font-semibold text-text-primary">Recurring Pools</h2>
+          </div>
+          <div className="space-y-3">
+            {d.recurring_pools.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center justify-between py-2 border-b border-border last:border-0 cursor-pointer"
+                onClick={() => nav(`/app/containers/${p.id}`)}
+              >
+                <div>
+                  <p className="text-sm font-medium text-text-primary">{p.name}</p>
+                  {p.current_cycle ? (
+                    <p className="text-xs text-text-secondary">
+                      Cycle {formatDate(p.current_cycle.cycle_start, 'MMM d')} – {formatDate(p.current_cycle.cycle_end, 'MMM d')}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-text-secondary">No active cycle</p>
+                  )}
+                </div>
+                {p.current_cycle && (
+                  <Badge status={p.current_cycle.status} />
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* ── My tasks ── */}
+      {myTasks && (myTasks.pending_count > 0 || myTasks.in_progress_count > 0 || myTasks.overdue_count > 0) && (
+        <Card>
+          <div className="flex items-center gap-2 mb-4">
+            <ListChecks className="text-primary" size={18} />
+            <h2 className="font-semibold text-text-primary">My Tasks</h2>
+          </div>
+          <div className="grid grid-cols-3 gap-3 mb-3">
+            <div className="text-center">
+              <p className="text-xl font-bold text-text-primary">{myTasks.pending_count}</p>
+              <p className="text-xs text-text-secondary">Pending</p>
+            </div>
+            <div className="text-center">
+              <p className="text-xl font-bold text-text-primary">{myTasks.in_progress_count}</p>
+              <p className="text-xs text-text-secondary">In progress</p>
+            </div>
+            <div className="text-center">
+              <p className="text-xl font-bold text-danger">{myTasks.overdue_count}</p>
+              <p className="text-xs text-text-secondary">Overdue</p>
+            </div>
+          </div>
+          {myTasks.next_due && (
+            <div
+              className="flex justify-between items-center pt-2 border-t border-border cursor-pointer"
+              onClick={() => nav(`/app/containers/${myTasks.next_due!.container_id}/tasks`)}
+            >
+              <div>
+                <p className="text-sm font-medium text-text-primary">{myTasks.next_due.title}</p>
+                <p className="text-xs text-text-secondary">{myTasks.next_due.container_name}</p>
+              </div>
+              <p className="text-xs text-text-secondary">{formatDate(myTasks.next_due.due_date, 'MMM d')}</p>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* ── Recent milestones ── */}
+      {recentMilestones.length > 0 && (
+        <Card>
+          <div className="flex items-center gap-2 mb-4">
+            <Sparkles className="text-primary" size={18} />
+            <h2 className="font-semibold text-text-primary">Recent Milestones</h2>
+          </div>
+          <div className="flex gap-3 overflow-x-auto pb-1">
+            {recentMilestones.map((m) => (
+              <div
+                key={m.id}
+                className="flex-shrink-0 w-40 cursor-pointer"
+                onClick={() => nav('/app/timeline')}
+              >
+                {m.cover_photo ? (
+                  <img
+                    src={m.cover_photo.url}
+                    alt={m.title}
+                    className="w-40 h-28 object-cover rounded-lg mb-1.5"
+                  />
+                ) : (
+                  <div className="w-40 h-28 rounded-lg bg-slate-100 flex items-center justify-center mb-1.5">
+                    <Sparkles className="text-text-secondary" size={20} />
+                  </div>
+                )}
+                <p className="text-sm font-medium text-text-primary line-clamp-1">{m.title}</p>
+                <p className="text-xs text-text-secondary">{formatDate(m.milestone_date, 'MMM d, yyyy')}</p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {d.recent_activity?.length > 0 && (
         <Card>

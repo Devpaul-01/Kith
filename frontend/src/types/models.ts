@@ -272,14 +272,46 @@ export interface AuditEntry {
   metadata?: Record<string, unknown>;
 }
 
+export interface RecurringPool{
+  id:string;
+  name:string;
+  current_cycle: { id: string; cycle_start: string; cycle_end: string; status: string; total_expected: number | null; total_collected: number } | null;
+}
 
 export interface FileInfo{filename:string;content_type:string;file_size:number;}
 export interface ActiveEvent{id:string;name:string;event_date?:string;status:ContainerStatus;progress_pct:number;days_until?:number;total_confirmed?:number;budget_target?:number;}
-export interface RecurringPool{id:string;name:string;current_cycle_status?:string;total_expected:number;total_collected:number;}
 export interface Deadline{contributor_name:string;container_name:string;container_id:string;due_date:string;days_remaining:number;amount?:number;}
-export interface DashboardData{workspace_summary:{member_count:number;admin_count:number;proxy_count:number};active_events:ActiveEvent[];recurring_pools:RecurringPool[];upcoming_deadlines:Deadline[];pending_confirmations:LedgerEntry[];recent_activity:AuditEntry[];unread_notification_count:number;unread_activity_count:number;}
 export interface ContainerSummary{container:Container;total_confirmed:number;total_expected:number;total_pending:number;progress_pct:number;participant_count:number;confirmed_count:number;pending_count:number;currency:string;}
-
+export interface DashboardData{
+  workspace_summary:{member_count:number;admin_count:number;proxy_count:number};
+  active_events:ActiveEvent[];
+  recurring_pools:RecurringPool[];
+  upcoming_deadlines:Deadline[];
+  pending_confirmations:LedgerEntry[];
+  recent_activity:AuditEntry[];
+  unread_notification_count:number;
+  unread_activity_count:number;
+  open_disputes_count?: number | null;
+  my_tasks_summary?: {
+    pending_count: number;
+    in_progress_count: number;
+    overdue_count: number;
+    next_due: { id: string; title: string; due_date: string; container_id: string; container_name: string | null } | null;
+  };
+  engagement_summary?: {
+    quiet_count: number;
+    inactive_count: number;
+    inactive_members: { member_id: string; display_name: string }[];
+  } | null;
+  recent_milestones?: {
+    id: string;
+    title: string;
+    description?: string;
+    milestone_date: string;
+    milestone_type?: string;
+    cover_photo: { url: string; name: string } | null;
+  }[];
+}
 export interface TaskProofFile {
   url:         string;
   name:        string;
