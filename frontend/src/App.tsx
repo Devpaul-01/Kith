@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { RouterProvider } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { router } from '@/router';
 import { queryClient } from '@/lib/queryClient';
 import { useAuthStore } from '@/store/authStore';
@@ -76,7 +75,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AppBootstrap />
-      <ReactQueryDevtools initialIsOpen={false} />
+      
     </QueryClientProvider>
   );
 }
