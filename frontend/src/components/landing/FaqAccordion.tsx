@@ -11,27 +11,27 @@ const FAQS: FaqItem[] = [
   {
     question: 'Is Kith a bank, or does it move money itself?',
     answer:
-      'No. Kith never touches or moves money — it\u2019s a system of record. Family members still pay each other however they already do (bank transfer, mobile money, cash), and record it in Kith with proof of payment so everyone can see it was done.',
+      'No. Kith never touches or moves money — it’s a system of record. Family members still pay each other however they already do (bank transfer, mobile money, cash), and record it in Kith with proof of payment so everyone can see it was done.',
   },
   {
-    question: 'What happens to someone who won\u2019t use an app — a grandparent, or a baby being saved for?',
+    question: 'What happens to someone who won’t use an app — a grandparent, or a baby being saved for?',
     answer:
-      'You add them as a proxy member. They can have targets, appear in the ledger, and be included in every pool — but only an admin records on their behalf, and every one of those actions is separately logged so it\u2019s always clear who acted for whom.',
+      'You add them as a proxy member. They can have targets, appear in the ledger, and be included in every pool — but only an admin records on their behalf, and every one of those actions is separately logged so it’s always clear who acted for whom.',
   },
   {
     question: 'What if someone disagrees a payment happened, or the amount is wrong?',
     answer:
-      'They raise a dispute directly on the entry. It\u2019s flagged for every admin immediately, notes get added as the conversation develops, and an admin resolves it with a required explanation. Nothing is deleted — if a number needs to change, it\u2019s posted as a correction, so the full history stays visible.',
+      'They raise a dispute directly on the entry. It’s flagged for every admin immediately, notes get added as the conversation develops, and an admin resolves it with a required explanation. Nothing is deleted — if a number needs to change, it’s posted as a correction, so the full history stays visible.',
   },
   {
     question: 'Can our extended family see our finances, or is this public?',
     answer:
-      'Private by default. Money details are only visible to members you\u2019ve added to your workspace, and even then, contributors mostly see their own standing — not everyone else\u2019s. If you want to share a public fundraiser page, you can generate one for a specific event, and choose whether contributor names show at all.',
+      'Private by default. Money details are only visible to members you’ve added to your workspace, and even then, contributors mostly see their own standing — not everyone else’s. If you want to share a public fundraiser page, you can generate one for a specific event, and choose whether contributor names show at all.',
   },
   {
     question: 'What currencies does Kith support?',
     answer:
-      'Twenty and counting, including USD, GBP, EUR, NGN, GHS, KES, ZAR, INR, and CAD — built for families spread across more than one country, contributing in more than one currency.',
+      "All of them. USD, GBP, EUR, NGN, GHS, KES, ZAR, INR, and CAD are just a few examples — every family workspace can coordinate using whichever currency makes sense for them, so distance and different currencies never get in the way.",
   },
   {
     question: 'What happens if nobody opens the app for a month?',
