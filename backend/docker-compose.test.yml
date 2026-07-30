@@ -1,0 +1,63 @@
+# docker-compose.test.yml
+#
+# Brings up an isolated Postgres + PostgREST + Redis for integration
+# tests. Ports are deliberately non-default (54322 / 3001 / 63790) so
+# this can run alongside a developer's normal local Postgres/Redis
+# without colliding.
+#
+# IMPORTANT — why PostgREST is here: the app talks to Postgres through
+# @supabase/supabase-js, which is a REST client — it calls an HTTP API
+# (PostgREST), not the Postgres wire protocol directly. A bare Postgres
+# container alone (the original docker-compose.test.yml as drafted) has
+# no REST endpoint for supabase-js to hit, so SUPABASE_URL must point at
+# PostgREST (port 3001 below), not at Postgres's own port (54322).
+# postgres-test remains useful for direct psql access (e.g. applying
+# migrations, ad hoc debugging).
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d
+#   # then apply migrations/001_schema.sql to postgres-test (see README.md)
+#   npm run test:integration
+#   docker compose -f docker-compose.test.yml down -v
+
+services:
+  postgres-test:
+    image: supabase/postgres:15.1.0.117
+    environment:
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: kith_test
+    ports:
+      - "54322:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgrest-test:
+    image: postgrest/postgrest:v12.0.2
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://postgres:test@postgres-test:5432/kith_test
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: postgres
+      # Test-only: using the postgres superuser as the anon/service role
+      # is NOT safe for production, but is the simplest way to get
+      # supabase-js's admin client working against a disposable local
+      # test database without also standing up GoTrue.
+      PGRST_JWT_SECRET: test-jwt-secret-at-least-32-characters-long
+    ports:
+      - "3001:3000"
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "63790:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
