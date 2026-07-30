@@ -472,22 +472,14 @@ export default function LandingPage() {
             </p>
           </Reveal>
           <Reveal delay={120} className="mt-10">
-            {/*
-              PLACEHOLDER: replace this button/frame with a real <video> element
-              once the walkthrough is recorded, e.g.:
-              <video controls poster="/assets/walkthrough-poster.jpg" className="w-full rounded-3xl">
-                <source src="/assets/walkthrough.mp4" type="video/mp4" />
-              </video>
-            */}
-            <div className="mx-auto flex aspect-video max-w-2xl items-center justify-center rounded-3xl border border-border bg-white shadow-card-hover">
-              <button
-                className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-white shadow-lg hover:bg-primary-hover transition-colors"
-                aria-label="Play walkthrough video"
-              >
-                <Play size={22} className="ml-1" fill="white" />
-              </button>
-            </div>
-            <p className="mt-3 text-xs text-text-secondary">Walkthrough video placeholder — drop in the recorded MP4 when ready.</p>
+            <video
+              controls
+              poster="/assets/walkthrough-poster.png"
+              className="mx-auto w-full max-w-2xl rounded-3xl border border-border shadow-card-hover"
+            >
+              <source src="/assets/walkthrough.mp4" type="video/mp4" />
+              Your browser does not support the video tag.
+            </video>
           </Reveal>
         </div>
       </section>
