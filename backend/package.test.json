@@ -1,0 +1,54 @@
+{
+  "_comment": "Merge these fields into your existing backend package.json (NOT the frontend one in the project root — this targets the Express/Kith API). Add the devDependencies and scripts blocks below; add/replace the 'jest' block as-is.",
+  "scripts": {
+    "test": "jest",
+    "test:unit": "jest --selectProjects unit",
+    "test:integration": "jest --selectProjects integration",
+    "test:ratelimit": "jest --selectProjects rate-limit",
+    "test:watch": "jest --selectProjects unit --watch",
+    "test:coverage": "jest --selectProjects unit --coverage",
+    "test:docker:up": "docker compose -f docker-compose.test.yml up -d",
+    "test:docker:down": "docker compose -f docker-compose.test.yml down -v"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.4",
+    "ioredis-mock": "^8.9.0"
+  },
+  "jest": {
+    "projects": [
+      {
+        "displayName": "unit",
+        "testEnvironment": "node",
+        "setupFilesAfterEnv": ["<rootDir>/tests/setup.unit.js"],
+        "testMatch": ["<rootDir>/tests/unit/**/*.test.js"],
+        "collectCoverageFrom": [
+          "src/**/*.js",
+          "!src/workers/index.js",
+          "!src/server.js",
+          "!src/start-all.js"
+        ],
+        "coverageThreshold": {
+          "./src/utils/": { "branches": 100, "functions": 100, "lines": 100, "statements": 100 },
+          "./src/validators/": { "branches": 100, "functions": 100, "lines": 100, "statements": 100 },
+          "./src/middleware/": { "branches": 85, "functions": 90, "lines": 90, "statements": 90 },
+          "./src/services/": { "branches": 80, "functions": 90, "lines": 90, "statements": 90 }
+        }
+      },
+      {
+        "displayName": "integration",
+        "testEnvironment": "node",
+        "setupFilesAfterEnv": ["<rootDir>/tests/setup.integration.js"],
+        "testMatch": ["<rootDir>/tests/integration/**/*.test.js"],
+        "testTimeout": 30000
+      },
+      {
+        "displayName": "rate-limit",
+        "testEnvironment": "node",
+        "setupFilesAfterEnv": ["<rootDir>/tests/setup.ratelimit.js"],
+        "testMatch": ["<rootDir>/tests/integration/redis/rate-limiting.test.js"],
+        "testTimeout": 30000
+      }
+    ]
+  }
+}
