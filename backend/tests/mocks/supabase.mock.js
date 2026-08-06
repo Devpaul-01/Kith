@@ -90,11 +90,7 @@ function createChainableBuilder(state) {
   // exactly like a real supabase-js PostgrestFilterBuilder, which is a
   // thenable.
   builder.then = (resolve, reject) => {
-    try {
-      resolve(nextResponse());
-    } catch (err) {
-      reject(err);
-    }
+    return Promise.resolve(nextResponse()).then(resolve, reject);
   };
   builder.catch = (reject) => builder.then(undefined, reject);
 
