@@ -1,3 +1,0 @@
-This folder is reserved for the unit test suite (written separately).
-Placing this file here so the folder exists in git before those tests
-are added — safe to delete once real test files are present.
