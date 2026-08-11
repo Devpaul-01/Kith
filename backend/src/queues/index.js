@@ -41,11 +41,10 @@ function getQueue(name) {
 
   return queues.get(name);
 }
-
+// queues/index.js
 function getAllQueues() {
-  // Ensure all queues are initialised
   QUEUE_NAMES.forEach(getQueue);
-  return Object.values(queues);
+  return [...queues.values()]; // ✅ Returns all queue instances
 }
 /**
  * Gracefully closes all open queue connections.
