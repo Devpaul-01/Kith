@@ -50,26 +50,35 @@ function queueDashboardResponses({
   targets = { data: [], error: null },
   activity = { data: [], error: null },
   pending = { data: [], error: null },
+  disputes = { count: 0, error: null },
+  milestones = { data: [], error: null },
   participants = null,
   containerNames = null,
 } = {}) {
-  // ── First 8 queries ──
-  mockSupabaseInstance.mockNextResponse(unreadCount);
-  mockSupabaseInstance.mockNextResponse(members);
-  mockSupabaseInstance.mockNextResponse(events);
-  mockSupabaseInstance.mockNextResponse(pools);
-  mockSupabaseInstance.mockNextResponse(targets);
-  mockSupabaseInstance.mockNextResponse(activity);
-  mockSupabaseInstance.mockNextResponse(pending);
-  
-  // ── The order matters! These are the extra queries ──
-  // Query 9: container_participants (for member names)
-  if (participants) mockSupabaseInstance.mockNextResponse(participants);
-  else mockSupabaseInstance.mockNextResponse({ data: [], error: null });
-  
-  // Query 10: containers (for container names)
-  if (containerNames) mockSupabaseInstance.mockNextResponse(containerNames);
-  else mockSupabaseInstance.mockNextResponse({ data: [], error: null });
+  // ── Query 1-8: Promise.all ──
+  mockSupabaseInstance.mockNextResponse(unreadCount);   // 1: notifications
+  mockSupabaseInstance.mockNextResponse(members);       // 2: workspace_members
+  mockSupabaseInstance.mockNextResponse(events);        // 3: containers (events)
+  mockSupabaseInstance.mockNextResponse(pools);         // 4: containers (recurring)
+  mockSupabaseInstance.mockNextResponse(targets);       // 5: contributor_targets
+  mockSupabaseInstance.mockNextResponse(activity);      // 6: audit_log
+  mockSupabaseInstance.mockNextResponse(pending);       // 7: ledger_entries
+  mockSupabaseInstance.mockNextResponse(disputes);      // 8: disputes
+  mockSupabaseInstance.mockNextResponse(milestones);    // 9: milestones (in Promise.all, but I missed this!)
+
+  // ── Query 10: container_participants ──
+  if (participants) {
+    mockSupabaseInstance.mockNextResponse(participants);
+  } else {
+    mockSupabaseInstance.mockNextResponse({ data: [], error: null });
+  }
+
+  // ── Query 11: containers ──
+  if (containerNames) {
+    mockSupabaseInstance.mockNextResponse(containerNames);
+  } else {
+    mockSupabaseInstance.mockNextResponse({ data: [], error: null });
+  }
 }
 
 describe('services/dashboard.service', () => {
@@ -128,18 +137,47 @@ describe('services/dashboard.service', () => {
     });
 
     it('upcoming_deadlines resolves member and container names from the follow-up queries', async () => {
-      queueDashboardResponses({
-        targets: { data: [{ target_amount: 50, target_currency: 'USD', due_date: '2026-08-12', container_participant_id: 'p1', container_id: 'c1' }], error: null },
-        participants: { data: [{ id: 'p1', workspace_member_id: 'm1', workspace_members: { display_name: 'Bob' } }], error: null },
-        containerNames: { data: [{ id: 'c1', name: 'Rent' }], error: null },
-      });
+  // ── Mock ALL 11 queries ──
+  queueDashboardResponses({
+    // Query 5: contributor_targets
+    targets: { 
+      data: [{ 
+        target_amount: 50, 
+        target_currency: 'USD', 
+        due_date: '2026-08-12', 
+        container_participant_id: 'p1', 
+        container_id: 'c1' 
+      }], 
+      error: null 
+    },
+    // Query 10: container_participants
+    participants: { 
+      data: [{ 
+        id: 'p1', 
+        workspace_member_id: 'm1', 
+        workspace_members: { display_name: 'Bob' } 
+      }], 
+      error: null 
+    },
+    // Query 11: containers
+    containerNames: { 
+      data: [{ id: 'c1', name: 'Rent' }], 
+      error: null 
+    },
+  });
 
-      const result = await dashboardService.getDashboardData({ workspaceId: WORKSPACE_ID, isAdmin: true, memberId: 'm1' });
+  const result = await dashboardService.getDashboardData({ 
+    workspaceId: WORKSPACE_ID, 
+    isAdmin: true, 
+    memberId: 'm1' 
+  });
 
-      expect(result.upcoming_deadlines[0]).toEqual(expect.objectContaining({
-        member_name: 'Bob', container_name: 'Rent', title: '50 USD',
-      }));
-    });
+  expect(result.upcoming_deadlines[0]).toEqual(expect.objectContaining({
+    member_name: 'Bob', 
+    container_name: 'Rent', 
+    title: '50 USD',
+  }));
+});
 
     it('unread_activity_count equals recent_activity.length (documented as-is, not the true unread count)', async () => {
       queueDashboardResponses({
