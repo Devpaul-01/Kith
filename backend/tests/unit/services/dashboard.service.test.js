@@ -53,6 +53,7 @@ function queueDashboardResponses({
   participants = null,
   containerNames = null,
 } = {}) {
+  // ── First 8 queries ──
   mockSupabaseInstance.mockNextResponse(unreadCount);
   mockSupabaseInstance.mockNextResponse(members);
   mockSupabaseInstance.mockNextResponse(events);
@@ -60,8 +61,15 @@ function queueDashboardResponses({
   mockSupabaseInstance.mockNextResponse(targets);
   mockSupabaseInstance.mockNextResponse(activity);
   mockSupabaseInstance.mockNextResponse(pending);
+  
+  // ── The order matters! These are the extra queries ──
+  // Query 9: container_participants (for member names)
   if (participants) mockSupabaseInstance.mockNextResponse(participants);
+  else mockSupabaseInstance.mockNextResponse({ data: [], error: null });
+  
+  // Query 10: containers (for container names)
   if (containerNames) mockSupabaseInstance.mockNextResponse(containerNames);
+  else mockSupabaseInstance.mockNextResponse({ data: [], error: null });
 }
 
 describe('services/dashboard.service', () => {
