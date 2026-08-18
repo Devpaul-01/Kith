@@ -38,3 +38,6 @@ coverage/
 *.temp
 .cache/
 *.env
+.env.backup
+backend/.env.save.1
+backend/.env.save.2
