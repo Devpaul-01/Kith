@@ -8,36 +8,32 @@ on:
 
 jobs:
   unit-tests:
-  name: Unit Tests
-  runs-on: ubuntu-latest
-  defaults:
-    run:
-      working-directory: backend  # ← Set working directory for all steps
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
 
-  steps:
-    - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: 'backend/package-lock.json'  # ← Specify lock file path
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'backend/package-lock.json'
 
-    - name: Install dependencies
-      run: npm ci
+      - name: Install dependencies
+        run: npm ci
 
-    # Unit tests are maintained separately and may not exist yet in
-    # every branch. This step does not fail the build if tests/unit/
-    # is empty or absent — it only runs the unit project when there's
-    # something to run.
-    - name: Run unit tests (if present)
-      run: |
-        if [ -d "tests/unit" ] && [ -n "$(find tests/unit -name '*.test.js' 2>/dev/null)" ]; then
-          npm run test:unit
-        else
-          echo "No unit tests found yet — skipping."
-        fi
+      - name: Run unit tests (if present)
+        run: |
+          if [ -d "tests/unit" ] && [ -n "$(find tests/unit -name '*.test.js' 2>/dev/null)" ]; then
+            npm run test:unit
+          else
+            echo "No unit tests found yet — skipping."
+          fi
 
   integration-tests:
     name: Integration Tests
@@ -75,9 +71,11 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: 'backend/package-lock.json'
 
       - name: Install dependencies
         run: npm ci
+        working-directory: backend
 
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
@@ -94,13 +92,6 @@ jobs:
           PGPASSWORD: test
         run: psql -h localhost -p 54322 -U postgres -d kith_test -f migrations/001_schema.sql
 
-      # PostgREST is what @supabase/supabase-js actually talks to (a REST
-      # API in front of Postgres, not the Postgres wire protocol itself —
-      # see docker-compose.test.yml's header comment for the full
-      # explanation). GitHub Actions' `services:` block only supports
-      # images with fixed startup commands, so PostgREST is started here
-      # as a plain background container on the job's own network
-      # namespace instead, where it can reach Postgres via localhost.
       - name: Start PostgREST
         run: |
           docker run -d --name postgrest-test \
@@ -124,12 +115,14 @@ jobs:
 
       - name: Run integration tests
         run: npm run test:integration
+        working-directory: backend
         env:
           TEST_SUPABASE_URL: http://localhost:3001
           TEST_REDIS_URL: redis://localhost:63790/1
 
       - name: Run rate-limit tests
         run: npm run test:ratelimit
+        working-directory: backend
         env:
           TEST_SUPABASE_URL: http://localhost:3001
           TEST_REDIS_URL: redis://localhost:63790/2
