@@ -37,6 +37,7 @@ process.env.ALLOWED_DEEPLINK_SCHEMES = 'kithapp://';
 process.env.IDEMPOTENCY_ENABLED = 'true';
 process.env.FILE_VERIFICATION_ENABLED = 'false'; // integration tests don't upload real bytes to real storage by default
 process.env.LOG_LEVEL = 'silent';
+process.env.JWT_SECRET = 'test-secret';
 
 // External SaaS mocks — ALWAYS mocked, even in integration tests, per
 // Doc 3 Section 1. Real Postgres/Redis, fake Firebase/Resend.
