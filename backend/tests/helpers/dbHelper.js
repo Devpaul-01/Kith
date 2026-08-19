@@ -37,7 +37,11 @@ async function seedWorkspaceWithAdmin(supabaseAdmin, overrides = {}) {
     .insert(buildWorkspace(overrides.workspace))
     .select()
     .single();
-  if (wErr) throw new Error(`seedWorkspaceWithAdmin: workspace insert failed: ${wErr.message}`);
+  if (wErr){
+    // temporarily in dbHelper.js, right before the throw on line 40
+    console.log('DEBUG wErr:', JSON.stringify(wErr, null, 2));
+    throw new Error(`seedWorkspaceWithAdmin: workspace insert failed: ${wErr.message}`);
+  };
 
   const { data: user, error: uErr } = await supabaseAdmin
     .from('users')
