@@ -15,6 +15,8 @@
 // Jest project (setup.ratelimit.js) specifically to get a different
 // NODE_ENV before its own app.js import happens.
 
+const jwt = require('jsonwebtoken');
+
 process.env.NODE_ENV = 'test';
 
 // FIX (see docker-compose.test.yml's header comment): SUPABASE_URL must
@@ -22,8 +24,19 @@ process.env.NODE_ENV = 'test';
 // not at Postgres's own wire-protocol port. Overridable via
 // TEST_SUPABASE_URL for CI or alternate local setups.
 process.env.SUPABASE_URL = process.env.TEST_SUPABASE_URL || 'http://localhost:3001';
-process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
-process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY || 'test-anon-key';
+
+// FIX: SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY must be real signed
+// JWTs, not plain placeholder strings — PostgREST decodes the bearer
+// token as a JWT (header.payload.signature) to determine which Postgres
+// role to SET ROLE as via the `role` claim. A non-JWT string fails with
+// JWSError (CompactDecodeError: Expected 3 parts; got 1) on every query.
+// Signed with the same secret docker-compose.test.yml's PGRST_JWT_SECRET
+// uses (both read from TEST_JWT_SECRET so they can't drift apart).
+// role: 'postgres' matches PGRST_DB_ANON_ROLE in docker-compose.test.yml;
+// role: 'anon' is the conventional PostgREST anon-client role.
+const JWT_SECRET = process.env.TEST_JWT_SECRET || 'test-jwt-secret-at-least-32-characters-long';
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY || jwt.sign({ role: 'postgres' }, JWT_SECRET);
+process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY || jwt.sign({ role: 'anon' }, JWT_SECRET);
 
 // Dedicated Redis DB index (1) so this never collides with a developer's
 // local dev-server Redis (DB 0) if both happen to be running against the
