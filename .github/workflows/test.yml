@@ -106,6 +106,29 @@ jobs:
         env:
           PGPASSWORD: test
 
+      - name: Diagnose PostgREST schema visibility
+        run: |
+          echo "--- Does psql see the table? ---"
+          psql -h localhost -p 54322 -U postgres -d kith_test -c "\dt public.workspaces"
+
+          echo "--- What role is postgrest using? ---"
+          echo $PGRST_DB_URI
+
+          echo "--- Can that role see the table directly? ---"
+          psql -h localhost -p 54322 -U postgres -d kith_test -c "
+            SELECT grantee, privilege_type
+            FROM information_schema.role_table_grants
+            WHERE table_name = 'workspaces';
+          "
+
+          echo "--- Raw PostgREST error body ---"
+          curl -s http://localhost:3001/workspaces?limit=1
+
+          echo "--- PostgREST logs ---"
+          docker logs postgrest-test --tail 50
+        env:
+          PGPASSWORD: test
+
       - name: Start PostgREST
         run: |
           docker run -d --name postgrest-test \
