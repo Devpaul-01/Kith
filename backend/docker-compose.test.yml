@@ -47,7 +47,7 @@ services:
       # is NOT safe for production, but is the simplest way to get
       # supabase-js's admin client working against a disposable local
       # test database without also standing up GoTrue.
-      PGRST_JWT_SECRET: test-jwt-secret-at-least-32-characters-long
+      PGRST_JWT_SECRET: ${TEST_JWT_SECRET:-test-jwt-secret-at-least-32-characters-long}
     ports:
       - "3001:3000"
 

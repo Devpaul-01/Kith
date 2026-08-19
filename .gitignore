@@ -6,6 +6,9 @@ node_modules/
 .env.local
 .env.save
 .env.production
+.env.backup
+.backend/.env.save.1
+.backend/.env.save.2
 
 # Build outputs
 dist/
@@ -38,6 +41,3 @@ coverage/
 *.temp
 .cache/
 *.env
-.env.backup
-backend/.env.save.1
-backend/.env.save.2
