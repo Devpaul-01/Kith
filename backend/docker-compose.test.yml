@@ -22,7 +22,7 @@
 
 services:
   postgres-test:
-    image: supabase/postgres:15.1.0.117
+    image: postgres:16-alpine
     environment:
       POSTGRES_PASSWORD: test
       POSTGRES_DB: kith_test
