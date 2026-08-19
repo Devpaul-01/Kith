@@ -90,7 +90,8 @@ jobs:
       - name: Apply schema
         env:
           PGPASSWORD: test
-        run: psql -h localhost -p 54322 -U postgres -d kith_test -f migrations/001_schema.sql
+           run: psql -h localhost -p 54322 -U postgres -d kith_test -v ON_ERROR_STOP=1 -f migrations/001_schema.sql
+        
 
       - name: Start PostgREST
         run: |
