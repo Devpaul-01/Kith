@@ -194,12 +194,23 @@ async function seedInviteLink(supabaseAdmin, overrides = {}) {
  * first to avoid FK violations on the workspace delete.
  */
 async function cleanupWorkspace(supabaseAdmin, workspaceId) {
-  await supabaseAdmin.from('ledger_entries').delete().eq('workspace_id', workspaceId);
-  await supabaseAdmin.from('disputes').delete().eq('workspace_id', workspaceId);
-  await supabaseAdmin.from('notifications').delete().eq('workspace_id', workspaceId);
-  await supabaseAdmin.from('audit_log').delete().eq('workspace_id', workspaceId);
-  await supabaseAdmin.from('workspace_settings').delete().eq('workspace_id', workspaceId);
-  await supabaseAdmin.from('workspaces').delete().eq('id', workspaceId);
+  const { error: e1 } = await supabaseAdmin.from('ledger_entries').delete().eq('workspace_id', workspaceId);
+  if (e1) console.error('cleanupWorkspace: ledger_entries error:', e1);
+  
+  const { error: e2 } = await supabaseAdmin.from('disputes').delete().eq('workspace_id', workspaceId);
+  if (e2) console.error('cleanupWorkspace: disputes error:', e2);
+  
+  const { error: e3 } = await supabaseAdmin.from('notifications').delete().eq('workspace_id', workspaceId);
+  if (e3) console.error('cleanupWorkspace: notifications error:', e3);
+  
+  const { error: e4 } = await supabaseAdmin.from('audit_log').delete().eq('workspace_id', workspaceId);
+  if (e4) console.error('cleanupWorkspace: audit_log error:', e4);
+  
+  const { error: e5 } = await supabaseAdmin.from('workspace_settings').delete().eq('workspace_id', workspaceId);
+  if (e5) console.error('cleanupWorkspace: workspace_settings error:', e5);
+  
+  const { error: e6 } = await supabaseAdmin.from('workspaces').delete().eq('id', workspaceId);
+  if (e6) console.error('cleanupWorkspace: workspaces error:', e6);
 }
 
 module.exports = {
