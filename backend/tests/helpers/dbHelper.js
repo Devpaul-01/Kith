@@ -42,7 +42,7 @@ async function seedWorkspaceWithAdmin(supabaseAdmin, overrides = {}) {
     console.log('DEBUG wErr keys:', Object.getOwnPropertyNames(wErr));
     console.log('DEBUG wErr message:', wErr.message);
     console.log('DEBUG wErr code:', wErr.code);
-    throw new Error(`seedWorkspaceWithAdmin: workspace insert failed: ${wErr.message}`);
+    throw new Error(`seedWorkspaceWithAdmin: workspace insert failed: ${wErr.message || JSON.stringify(wErr)}`);
   }
 
   const { data: user, error: uErr } = await supabaseAdmin
