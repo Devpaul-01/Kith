@@ -38,18 +38,27 @@ async function seedWorkspaceWithAdmin(supabaseAdmin, overrides = {}) {
     .select()
     .single();
   if (wErr) {
-  console.log('DEBUG wErr:', wErr);
-  console.log('DEBUG wErr keys:', Object.getOwnPropertyNames(wErr));
-  console.log('DEBUG wErr message:', wErr.message);
-  console.log('DEBUG wErr code:', wErr.code);
-}
+    console.log('DEBUG wErr:', wErr);
+    console.log('DEBUG wErr keys:', Object.getOwnPropertyNames(wErr));
+    console.log('DEBUG wErr message:', wErr.message);
+    console.log('DEBUG wErr code:', wErr.code);
+    throw new Error(`seedWorkspaceWithAdmin: workspace insert failed: ${wErr.message}`);
+  }
 
   const { data: user, error: uErr } = await supabaseAdmin
     .from('users')
     .insert(buildUser(overrides.user))
     .select()
     .single();
-  if (uErr) throw new Error(`seedWorkspaceWithAdmin: user insert failed: ${uErr.message}`);
+  if (uErr) {
+    console.log('DEBUG uErr:', uErr);
+    console.log('DEBUG uErr keys:', Object.getOwnPropertyNames(uErr));
+    console.log('DEBUG uErr message:', uErr.message);
+    console.log('DEBUG uErr code:', uErr.code);
+    console.log('DEBUG uErr details:', uErr.details);
+    console.log('DEBUG uErr hint:', uErr.hint);
+    throw new Error(`seedWorkspaceWithAdmin: user insert failed: ${uErr.message}`);
+  }
 
   const { data: member, error: mErr } = await supabaseAdmin
     .from('workspace_members')
