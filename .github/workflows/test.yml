@@ -121,6 +121,7 @@ jobs:
 
           echo "Waiting for workspaces table to be visible via PostgREST..."
           for i in $(seq 1 30); do
+            # Check if workspaces table is accessible
             if curl -sf http://localhost:3001/workspaces?limit=1 > /dev/null 2>&1; then
               echo "✅ workspaces table is accessible"
               break
@@ -129,7 +130,15 @@ jobs:
             sleep 2
           done
 
-          # Final verification
+          # Also check users table if it exists
+          echo "Checking users table accessibility..."
+          if curl -sf http://localhost:3001/users?limit=1 > /dev/null 2>&1; then
+            echo "✅ users table is accessible"
+          else
+            echo "⚠️ users table not visible (this may be expected if it doesn't exist yet)"
+          fi
+
+          # Final verification for workspaces
           if curl -sf http://localhost:3001/workspaces?limit=1 > /dev/null 2>&1; then
             echo "✅ PostgREST schema cache successfully loaded 'workspaces' table"
           else
