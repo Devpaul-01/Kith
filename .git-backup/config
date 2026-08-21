@@ -1,0 +1,28 @@
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+	symlinks = false
+	ignorecase = true
+[remote "origin"]
+	url = https://github.com/Devpaul-01/Kith
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "BugFix"]
+	remote = origin
+	merge = refs/heads/BugFix
+[branch "batch/auth-audit-fixes"]
+	remote = origin
+	merge = refs/heads/batch/auth-audit-fixes
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+[branch "test/integration-suite-doc3"]
+	remote = origin
+	merge = refs/heads/test/integration-suite-doc3
+[branch "test/unit-test-suite"]
+	remote = origin
+	merge = refs/heads/test/unit-test-suite
+[branch "develop"]
+	remote = origin
+	merge = refs/heads/develop

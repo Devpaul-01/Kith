@@ -23,7 +23,7 @@ process.env.NODE_ENV = 'test';
 // point at PostgREST (the REST API layer supabase-js actually talks to),
 // not at Postgres's own wire-protocol port. Overridable via
 // TEST_SUPABASE_URL for CI or alternate local setups.
-process.env.SUPABASE_URL = process.env.TEST_SUPABASE_URL || 'http://localhost:3001';
+process.env.SUPABASE_URL ='http://localhost:3001';
 
 // FIX: SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY must be real signed
 // JWTs, not plain placeholder strings — PostgREST decodes the bearer
@@ -41,7 +41,7 @@ process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY || jwt.sign({
 // Dedicated Redis DB index (1) so this never collides with a developer's
 // local dev-server Redis (DB 0) if both happen to be running against the
 // same Redis host/port during local test runs.
-process.env.REDIS_URL = process.env.TEST_REDIS_URL || 'redis://localhost:63790/1';
+process.env.REDIS_URL = 'redis://localhost:63790/1';
 
 process.env.FRONTEND_URL = 'https://app.test.local';
 process.env.API_BASE_URL = 'http://localhost:3000';
