@@ -32,41 +32,61 @@ const { buildWorkspace, buildUser, buildMember, buildContainer, buildParticipant
  * @returns {Promise<{workspace, user, member}>}
  */
 async function seedWorkspaceWithAdmin(supabaseAdmin, overrides = {}) {
-  // ✅ FIX: Create the user FIRST because the workspace's created_by
-  // foreign key must reference an existing user.
   const { data: user, error: uErr } = await supabaseAdmin
     .from('users')
     .insert(buildUser(overrides.user))
     .select()
     .single();
   if (uErr) {
-  console.error('DEBUG uErr:', uErr);
-  console.error('DEBUG uErr keys:', Object.getOwnPropertyNames(uErr));
-  console.error('DEBUG uErr message:', uErr.message);
-  console.error('DEBUG uErr code:', uErr.code);
-  console.error('DEBUG uErr details:', uErr.details);
-  console.error('DEBUG uErr hint:', uErr.hint);
-  console.error('DEBUG uErr stringified:', JSON.stringify(uErr));
-  console.error('DEBUG uErr constructor name:', uErr?.constructor?.name);
+    console.error('DEBUG uErr:', uErr);
+    console.error('DEBUG uErr keys:', Object.getOwnPropertyNames(uErr));
+    console.error('DEBUG uErr message:', uErr.message);
+    console.error('DEBUG uErr code:', uErr.code);
+    console.error('DEBUG uErr details:', uErr.details);
+    console.error('DEBUG uErr hint:', uErr.hint);
+    console.error('DEBUG uErr stringified:', JSON.stringify(uErr));
+    console.error('DEBUG uErr constructor name:', uErr?.constructor?.name);
 
-  // Bypass supabase-js entirely — hit PostgREST raw so we see the real HTTP status/body
-  try {
-    const rawUrl = `${process.env.SUPABASE_URL}/users?select=id&limit=1`;
-    const rawRes = await fetch(rawUrl, {
-      headers: {
-        apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
-      },
-    });
-    const rawText = await rawRes.text();
-    console.error('DEBUG raw PostgREST /users status:', rawRes.status);
-    console.error('DEBUG raw PostgREST /users body:', rawText.slice(0, 500));
-  } catch (fetchErr) {
-    console.error('DEBUG raw fetch to PostgREST FAILED (network-level):', fetchErr.message, fetchErr.cause);
+    // raw GET (already added)
+    try {
+      const rawUrl = `${process.env.SUPABASE_URL}/users?select=id&limit=1`;
+      const rawRes = await fetch(rawUrl, {
+        headers: {
+          apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      });
+      const rawText = await rawRes.text();
+      console.error('DEBUG raw PostgREST /users status:', rawRes.status);
+      console.error('DEBUG raw PostgREST /users body:', rawText.slice(0, 500));
+    } catch (fetchErr) {
+      console.error('DEBUG raw fetch to PostgREST FAILED (network-level):', fetchErr.message, fetchErr.cause);
+    }
+
+    // NEW — raw POST, paste here
+    try {
+      const payload = buildUser(overrides.user);
+      console.error('DEBUG payload sent to insert:', JSON.stringify(payload));
+      const rawPostRes = await fetch(`${process.env.SUPABASE_URL}/users`, {
+        method: 'POST',
+        headers: {
+          apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify(payload),
+      });
+      const rawPostText = await rawPostRes.text();
+      console.error('DEBUG raw POST /users status:', rawPostRes.status);
+      console.error('DEBUG raw POST /users headers:', JSON.stringify([...rawPostRes.headers.entries()]));
+      console.error('DEBUG raw POST /users body:', rawPostText.slice(0, 1000));
+    } catch (postErr) {
+      console.error('DEBUG raw POST to PostgREST FAILED:', postErr.message, postErr.cause);
+    }
+
+    throw new Error(`seedWorkspaceWithAdmin: user insert failed: ${uErr.message}`);
   }
-
-  throw new Error(`seedWorkspaceWithAdmin: user insert failed: ${uErr.message}`);
-}
 
   // ✅ FIX: Now create the workspace with the existing user's ID as created_by
   const workspaceOverrides = {
