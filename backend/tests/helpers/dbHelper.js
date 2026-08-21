@@ -40,14 +40,33 @@ async function seedWorkspaceWithAdmin(supabaseAdmin, overrides = {}) {
     .select()
     .single();
   if (uErr) {
-    console.error('DEBUG uErr:', uErr);
-    console.error('DEBUG uErr keys:', Object.getOwnPropertyNames(uErr));
-    console.error('DEBUG uErr message:', uErr.message);
-    console.error('DEBUG uErr code:', uErr.code);
-    console.error('DEBUG uErr details:', uErr.details);
-    console.error('DEBUG uErr hint:', uErr.hint);
-    throw new Error(`seedWorkspaceWithAdmin: user insert failed: ${uErr.message}`);
+  console.error('DEBUG uErr:', uErr);
+  console.error('DEBUG uErr keys:', Object.getOwnPropertyNames(uErr));
+  console.error('DEBUG uErr message:', uErr.message);
+  console.error('DEBUG uErr code:', uErr.code);
+  console.error('DEBUG uErr details:', uErr.details);
+  console.error('DEBUG uErr hint:', uErr.hint);
+  console.error('DEBUG uErr stringified:', JSON.stringify(uErr));
+  console.error('DEBUG uErr constructor name:', uErr?.constructor?.name);
+
+  // Bypass supabase-js entirely — hit PostgREST raw so we see the real HTTP status/body
+  try {
+    const rawUrl = `${process.env.SUPABASE_URL}/users?select=id&limit=1`;
+    const rawRes = await fetch(rawUrl, {
+      headers: {
+        apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+    });
+    const rawText = await rawRes.text();
+    console.error('DEBUG raw PostgREST /users status:', rawRes.status);
+    console.error('DEBUG raw PostgREST /users body:', rawText.slice(0, 500));
+  } catch (fetchErr) {
+    console.error('DEBUG raw fetch to PostgREST FAILED (network-level):', fetchErr.message, fetchErr.cause);
   }
+
+  throw new Error(`seedWorkspaceWithAdmin: user insert failed: ${uErr.message}`);
+}
 
   // ✅ FIX: Now create the workspace with the existing user's ID as created_by
   const workspaceOverrides = {
