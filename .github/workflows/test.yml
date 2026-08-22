@@ -92,29 +92,73 @@ jobs:
         env:
           PGPASSWORD: test
 
-      - name: Reload PostgREST schema cache after migration
+      - name: Start PostgREST
         run: |
-          # Force schema cache reload via NOTIFY
-          psql -h localhost -p 54322 -U postgres -d kith_test -c "NOTIFY pgrst, 'reload schema';"
-          sleep 1
+          docker run -d --name postgrest-test \
+            --network host \
+            -e PGRST_DB_URI="postgres://postgres:test@localhost:54322/kith_test" \
+            -e PGRST_DB_SCHEMAS="public" \
+            -e PGRST_DB_ANON_ROLE="postgres" \
+            -e PGRST_SERVER_PORT="3001" \
+            -e PGRST_JWT_SECRET="test-jwt-secret-at-least-32-characters-long" \
+            postgrest/postgrest:v12.0.2
 
-          # Verify the migrated table is visible
-          if ! curl -sf http://localhost:3001/workspaces?limit=1 > /dev/null 2>&1; then
-            echo "PostgREST schema cache does not see 'workspaces' after reload:"
+          echo "Waiting for PostgREST to start..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3001/ > /dev/null 2>&1; then
+              echo "PostgREST is up."
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:3001/ || (echo "PostgREST failed to start:" && docker logs postgrest-test && exit 1)
+
+      - name: Reload PostgREST schema cache
+        run: |
+          # Now PostgREST is running, reload the schema cache
+          psql -h localhost -p 54322 -U postgres -d kith_test -c "NOTIFY pgrst, 'reload schema';"
+          sleep 2
+
+          echo "Waiting for workspaces table to be visible via PostgREST..."
+          for i in $(seq 1 30); do
+            # Check if workspaces table is accessible
+            if curl -sf http://localhost:3001/workspaces?limit=1 > /dev/null 2>&1; then
+              echo "✅ workspaces table is accessible"
+              break
+            fi
+            echo "Attempt $i: workspaces not yet available, waiting..."
+            sleep 2
+          done
+
+          # Also check users table if it exists
+          echo "Checking users table accessibility..."
+          if curl -sf http://localhost:3001/users?limit=1 > /dev/null 2>&1; then
+            echo "✅ users table is accessible"
+          else
+            echo "⚠️ users table not visible (this may be expected if it doesn't exist yet)"
+          fi
+
+          # Final verification for workspaces
+          if curl -sf http://localhost:3001/workspaces?limit=1 > /dev/null 2>&1; then
+            echo "✅ PostgREST schema cache successfully loaded 'workspaces' table"
+          else
+            echo "❌ PostgREST schema cache does not see 'workspaces' after reload"
+            echo "Response: $(curl -s http://localhost:3001/workspaces?limit=1)"
+            echo ""
+            echo "PostgREST logs:"
+            docker logs postgrest-test --tail 50
             exit 1
           fi
         env:
           PGPASSWORD: test
 
-      - name: Diagnose PostgREST schema visibility
+      - name: Diagnose PostgREST schema visibility (if previous step fails)
+        if: failure()
         run: |
           echo "--- Does psql see the table? ---"
           psql -h localhost -p 54322 -U postgres -d kith_test -c "\dt public.workspaces"
 
-          echo "--- What role is postgrest using? ---"
-          echo $PGRST_DB_URI
-
-          echo "--- Can that role see the table directly? ---"
+          echo "--- What grants exist for workspaces? ---"
           psql -h localhost -p 54322 -U postgres -d kith_test -c "
             SELECT grantee, privilege_type
             FROM information_schema.role_table_grants
@@ -128,27 +172,6 @@ jobs:
           docker logs postgrest-test --tail 50
         env:
           PGPASSWORD: test
-
-      - name: Start PostgREST
-        run: |
-          docker run -d --name postgrest-test \
-            --network host \
-            -e PGRST_DB_URI="postgres://postgres:test@localhost:54322/kith_test" \
-            -e PGRST_DB_SCHEMAS="public" \
-            -e PGRST_DB_ANON_ROLE="postgres" \
-            -e PGRST_SERVER_PORT="3001" \
-            -e PGRST_JWT_SECRET="test-jwt-secret-at-least-32-characters-long" \
-            postgrest/postgrest:v12.0.2
-
-          echo "Waiting for PostgREST..."
-          for i in $(seq 1 15); do
-            if curl -sf http://localhost:3001/ > /dev/null 2>&1; then
-              echo "PostgREST is up."
-              break
-            fi
-            sleep 2
-          done
-          curl -sf http://localhost:3001/ || (echo "PostgREST failed to start:" && docker logs postgrest-test && exit 1)
 
       - name: Run integration tests
         run: npm run test:integration
