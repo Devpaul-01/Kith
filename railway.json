@@ -1,7 +1,0 @@
-{
-  "name": "monorepo",
-  "scripts": {
-    "build": "cd backend && npm install",
-    "start": "cd backend && npm run start"
-  }
-}
