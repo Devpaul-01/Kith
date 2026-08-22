@@ -32,40 +32,91 @@ const { buildWorkspace, buildUser, buildMember, buildContainer, buildParticipant
  * @returns {Promise<{workspace, user, member}>}
  */
 async function seedWorkspaceWithAdmin(supabaseAdmin, overrides = {}) {
-  const { data: workspace, error: wErr } = await supabaseAdmin
-    .from('workspaces')
-    .insert(buildWorkspace(overrides.workspace))
-    .select()
-    .single();
-  if (wErr) {
-    console.log('DEBUG wErr:', wErr);
-    console.log('DEBUG wErr keys:', Object.getOwnPropertyNames(wErr));
-    console.log('DEBUG wErr message:', wErr.message);
-    console.log('DEBUG wErr code:', wErr.code);
-    throw new Error(`seedWorkspaceWithAdmin: workspace insert failed: ${wErr.message || JSON.stringify(wErr)}`);
-  }
-
   const { data: user, error: uErr } = await supabaseAdmin
     .from('users')
     .insert(buildUser(overrides.user))
     .select()
     .single();
   if (uErr) {
-    console.log('DEBUG uErr:', uErr);
-    console.log('DEBUG uErr keys:', Object.getOwnPropertyNames(uErr));
-    console.log('DEBUG uErr message:', uErr.message);
-    console.log('DEBUG uErr code:', uErr.code);
-    console.log('DEBUG uErr details:', uErr.details);
-    console.log('DEBUG uErr hint:', uErr.hint);
+    console.error('DEBUG uErr:', uErr);
+    console.error('DEBUG uErr keys:', Object.getOwnPropertyNames(uErr));
+    console.error('DEBUG uErr message:', uErr.message);
+    console.error('DEBUG uErr code:', uErr.code);
+    console.error('DEBUG uErr details:', uErr.details);
+    console.error('DEBUG uErr hint:', uErr.hint);
+    console.error('DEBUG uErr stringified:', JSON.stringify(uErr));
+    console.error('DEBUG uErr constructor name:', uErr?.constructor?.name);
+
+    // raw GET (already added)
+    try {
+      const rawUrl = `${process.env.SUPABASE_URL}/users?select=id&limit=1`;
+      const rawRes = await fetch(rawUrl, {
+        headers: {
+          apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      });
+      const rawText = await rawRes.text();
+      console.error('DEBUG raw PostgREST /users status:', rawRes.status);
+      console.error('DEBUG raw PostgREST /users body:', rawText.slice(0, 500));
+    } catch (fetchErr) {
+      console.error('DEBUG raw fetch to PostgREST FAILED (network-level):', fetchErr.message, fetchErr.cause);
+    }
+
+    // NEW — raw POST, paste here
+    try {
+      const payload = buildUser(overrides.user);
+      console.error('DEBUG payload sent to insert:', JSON.stringify(payload));
+      const rawPostRes = await fetch(`${process.env.SUPABASE_URL}/users`, {
+        method: 'POST',
+        headers: {
+          apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify(payload),
+      });
+      const rawPostText = await rawPostRes.text();
+      console.error('DEBUG raw POST /users status:', rawPostRes.status);
+      console.error('DEBUG raw POST /users headers:', JSON.stringify([...rawPostRes.headers.entries()]));
+      console.error('DEBUG raw POST /users body:', rawPostText.slice(0, 1000));
+    } catch (postErr) {
+      console.error('DEBUG raw POST to PostgREST FAILED:', postErr.message, postErr.cause);
+    }
+
     throw new Error(`seedWorkspaceWithAdmin: user insert failed: ${uErr.message}`);
   }
 
+  // ✅ FIX: Now create the workspace with the existing user's ID as created_by
+  const workspaceOverrides = {
+    created_by: user.id,
+    ...overrides.workspace
+  };
+  const { data: workspace, error: wErr } = await supabaseAdmin
+    .from('workspaces')
+    .insert(buildWorkspace(workspaceOverrides))
+    .select()
+    .single();
+  if (wErr) {
+    console.error('DEBUG wErr:', wErr);
+    console.error('DEBUG wErr keys:', Object.getOwnPropertyNames(wErr));
+    console.error('DEBUG wErr message:', wErr.message);
+    console.error('DEBUG wErr code:', wErr.code);
+    throw new Error(`seedWorkspaceWithAdmin: workspace insert failed: ${wErr.message || JSON.stringify(wErr)}`);
+  }
+
+  // ✅ FIX: Now create the member (unchanged, but now workspace.id and user.id exist)
   const { data: member, error: mErr } = await supabaseAdmin
     .from('workspace_members')
     .insert(buildMember({ workspace_id: workspace.id, user_id: user.id, role: 'admin', ...overrides.member }))
     .select()
     .single();
-  if (mErr) throw new Error(`seedWorkspaceWithAdmin: member insert failed: ${mErr.message}`);
+  if (mErr) {
+    console.error('DEBUG mErr:', mErr);
+    console.error('DEBUG mErr message:', mErr.message);
+    throw new Error(`seedWorkspaceWithAdmin: member insert failed: ${mErr.message}`);
+  }
 
   return { workspace, user, member };
 }
@@ -194,6 +245,7 @@ async function seedInviteLink(supabaseAdmin, overrides = {}) {
  * first to avoid FK violations on the workspace delete.
  */
 async function cleanupWorkspace(supabaseAdmin, workspaceId) {
+  // Delete in FK-safe order: child tables first, then parent
   const { error: e1 } = await supabaseAdmin.from('ledger_entries').delete().eq('workspace_id', workspaceId);
   if (e1) console.error('cleanupWorkspace: ledger_entries error:', e1);
   
