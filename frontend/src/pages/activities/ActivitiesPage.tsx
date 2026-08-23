@@ -1,7 +1,5 @@
 // pages/activities/ActivitiesPage.tsx
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/axios';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { useIsAdmin } from '@/hooks/useIsAdmin';
 import { Card } from '@/components/ui/Card';
@@ -90,6 +88,154 @@ function getActionDisplay(action: string): string {
   return found ? found.label : action.replace(/\./g, ' ');
 }
 
+// ── Mock data: Adeyemi Family workspace ──────────────────────────────────────
+
+const MOCK_MEMBERS = [
+  { id: 'mem_folake', display_name: 'Folake Adeyemi' },
+  { id: 'mem_tunde', display_name: 'Tunde Adeyemi' },
+  { id: 'mem_bisi', display_name: 'Bisi Adeyemi' },
+  { id: 'mem_kunle', display_name: 'Kunle Adeyemi' },
+  { id: 'mem_ngozi', display_name: 'Ngozi Adeyemi' },
+];
+
+const MOCK_ENTRIES: AuditEntry[] = [
+  {
+    id: 'evt_001',
+    action: 'ledger.confirmed',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'ledger_entry',
+    target_id: 'ldg_2201',
+    metadata: { amount: 25000, currency: 'NGN', container: 'August Rent Pool' },
+    created_at: '2026-08-22T09:14:00Z',
+  },
+  {
+    id: 'evt_002',
+    action: 'task.completed',
+    actor_name: 'Kunle Adeyemi',
+    target_type: 'task',
+    target_id: 'tsk_1187',
+    metadata: { title: 'Pick up grandma\'s medication' },
+    created_at: '2026-08-21T18:42:00Z',
+  },
+  {
+    id: 'evt_003',
+    action: 'ledger.submitted',
+    actor_name: 'Tunde Adeyemi',
+    target_type: 'ledger_entry',
+    target_id: 'ldg_2198',
+    metadata: { amount: 15000, currency: 'NGN', method: 'bank_transfer' },
+    created_at: '2026-08-21T11:05:00Z',
+  },
+  {
+    id: 'evt_004',
+    action: 'container.participants_added',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'container',
+    target_id: 'cnt_0044',
+    metadata: { added: ['Ngozi Adeyemi'], container: 'Christmas Trip Fund' },
+    created_at: '2026-08-20T16:30:00Z',
+  },
+  {
+    id: 'evt_005',
+    action: 'dispute.raised',
+    actor_name: 'Bisi Adeyemi',
+    target_type: 'ledger_entry',
+    target_id: 'ldg_2180',
+    metadata: { reason: 'Amount recorded does not match receipt' },
+    created_at: '2026-08-19T20:10:00Z',
+  },
+  {
+    id: 'evt_006',
+    action: 'dispute.resolved',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'ledger_entry',
+    target_id: 'ldg_2180',
+    metadata: { resolution: 'Corrected amount to ₦18,500 after receipt review' },
+    created_at: '2026-08-20T08:00:00Z',
+  },
+  {
+    id: 'evt_007',
+    action: 'task.created',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'task',
+    target_id: 'tsk_1190',
+    metadata: { title: 'Book caterer for Segun\'s birthday', assigned_to: 'Bisi Adeyemi' },
+    created_at: '2026-08-18T14:22:00Z',
+  },
+  {
+    id: 'evt_008',
+    action: 'container.converted_to_recurring',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'container',
+    target_id: 'cnt_0039',
+    metadata: { container: 'Monthly Rent Pool', cadence: 'monthly' },
+    created_at: '2026-08-17T09:00:00Z',
+  },
+  {
+    id: 'evt_009',
+    action: 'task.confirmed',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'task',
+    target_id: 'tsk_1175',
+    metadata: { title: 'Renew family WAEC prep subscription' },
+    created_at: '2026-08-16T13:47:00Z',
+  },
+  {
+    id: 'evt_010',
+    action: 'cycle.override_applied',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'cycle',
+    target_id: 'cyc_0512',
+    metadata: { member: 'Kunle Adeyemi', reason: 'Waived due to travel', amount_waived: 15000 },
+    created_at: '2026-08-15T10:12:00Z',
+  },
+  {
+    id: 'evt_011',
+    action: 'ledger.corrected',
+    actor_name: 'Tunde Adeyemi',
+    target_type: 'ledger_entry',
+    target_id: 'ldg_2140',
+    metadata: { old_amount: 10000, new_amount: 12000 },
+    created_at: '2026-08-14T19:03:00Z',
+  },
+  {
+    id: 'evt_012',
+    action: 'member.removed',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'member',
+    target_id: 'mem_yemi',
+    metadata: { removed_member: 'Yemi Adeyemi', reason: 'Left household' },
+    created_at: '2026-08-10T07:55:00Z',
+  },
+  {
+    id: 'evt_013',
+    action: 'container.completed',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'container',
+    target_id: 'cnt_0031',
+    metadata: { container: 'July Rent Pool', total_collected: 90000 },
+    created_at: '2026-08-01T09:00:00Z',
+  },
+  {
+    id: 'evt_014',
+    action: 'workspace.settings_changed',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'workspace',
+    target_id: 'ws_adeyemi',
+    metadata: { field: 'default_currency', old_value: 'USD', new_value: 'NGN' },
+    created_at: '2026-07-28T12:15:00Z',
+  },
+  {
+    id: 'evt_015',
+    action: 'container.archived',
+    actor_name: 'Folake Adeyemi',
+    target_type: 'container',
+    target_id: 'cnt_0022',
+    metadata: { container: 'June School Supplies' },
+    created_at: '2026-07-15T08:30:00Z',
+  },
+];
+
 export default function ActivitiesPage() {
   const { workspaceId } = useWorkspace();
   const isAdmin = useIsAdmin();
@@ -101,58 +247,28 @@ export default function ActivitiesPage() {
   const [showFilters, setShowFilters] = useState(false);
   const perPage = 20;
 
-  const { data, isLoading, refetch } = useQuery<AuditLogResponse>({
-    queryKey: ['audit-log', workspaceId, page, filterAction, filterActor, filterFromDate, filterToDate],
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      params.set('page', page.toString());
-      params.set('per_page', perPage.toString());
-      if (filterAction) params.set('action', filterAction);
-      if (filterActor) params.set('actor_member_id', filterActor);
-      if (filterFromDate) params.set('from', filterFromDate);
-      if (filterToDate) params.set('to', filterToDate);
-      
-      const response = await api.get(`/v1/workspaces/${workspaceId}/audit-log?${params.toString()}`);
-      return response.data;
-    },
-    enabled: isAdmin && !!workspaceId,
+  // MOCK: static audit log data for the Adeyemi Family workspace
+  const isLoading = false;
+  const members = MOCK_MEMBERS;
+
+  const filteredEntries = MOCK_ENTRIES.filter((entry) => {
+    if (filterAction && entry.action !== filterAction) return false;
+    if (filterActor) {
+      const actorMember = members.find(m => m.display_name === entry.actor_name);
+      if (!actorMember || actorMember.id !== filterActor) return false;
+    }
+    if (filterFromDate && entry.created_at < filterFromDate) return false;
+    if (filterToDate && entry.created_at > `${filterToDate}T23:59:59Z`) return false;
+    return true;
   });
 
-  // Fetch members for actor filter dropdown
-  const { data: membersData } = useQuery({
-    queryKey: ['members', workspaceId],
-    queryFn: () => api.get(`/v1/workspaces/${workspaceId}/members`).then(r => r.data),
-    enabled: isAdmin,
-  });
-
-  const members = membersData?.members || [];
-  const entries = data?.entries || [];
-  const total = data?.meta?.pagination?.total || 0;
-  const totalPages = Math.ceil(total / perPage);
+  const entries = filteredEntries;
+  const total = filteredEntries.length;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
 
   const handleExport = async () => {
-    try {
-      const params = new URLSearchParams();
-      if (filterAction) params.set('action', filterAction);
-      if (filterActor) params.set('actor_member_id', filterActor);
-      if (filterFromDate) params.set('from', filterFromDate);
-      if (filterToDate) params.set('to', filterToDate);
-      params.set('limit', '1000');
-      
-      const response = await api.get(`/v1/workspaces/${workspaceId}/audit-log/export?${params.toString()}`, {
-        responseType: 'blob',
-      });
-      
-      const url = URL.createObjectURL(response.data);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `audit-log-${formatDate(new Date().toISOString())}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast.success('Export started');
-    } catch {
-      showToast.error('Failed to export');
-    }
+    // MOCK: export disabled in static demo mode
+    showToast.success('Export started');
   };
 
   const handleResetFilters = () => {

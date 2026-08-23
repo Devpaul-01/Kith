@@ -1,9 +1,5 @@
 import { useState, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '@/lib/axios';
-import { taskService } from '@/services/task.service';
-import { KEYS } from '@/constants/queryKeys';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { useIsAdmin } from '@/hooks/useIsAdmin';
 import { Badge } from '@/components/ui/Badge';
@@ -51,6 +47,112 @@ function triggerCSVDownload(blob: Blob, filename: string) {
 }
 
 function isImageMime(mime: string) { return mime.startsWith('image/'); }
+
+// ── Mock data: Adeyemi Family — August Rent Pool ─────────────────────────────
+
+const MOCK_PARTICIPANTS: Array<{ workspace_member_id: string; display_name: string }> = [
+  { workspace_member_id: 'mem_folake', display_name: 'Folake Adeyemi' },
+  { workspace_member_id: 'mem_tunde', display_name: 'Tunde Adeyemi' },
+  { workspace_member_id: 'mem_bisi', display_name: 'Bisi Adeyemi' },
+  { workspace_member_id: 'mem_kunle', display_name: 'Kunle Adeyemi' },
+];
+
+const MOCK_TASKS: Task[] = [
+  {
+    id: 'tsk_1187',
+    title: "Pick up grandma's medication",
+    description: 'From Medplus on Bodija road, before the pharmacy closes at 8pm.',
+    status: 'completed',
+    due_date: '2026-08-21',
+    assigned_to: 'mem_kunle',
+    assigned_to_name: 'Kunle Adeyemi',
+    completed_at: '2026-08-21T18:42:00Z',
+    completion_note: 'Picked up, receipt attached',
+    admin_confirmed_at: '2026-08-22T07:00:00Z',
+    admin_note: 'Thanks, well done',
+    proofs: [
+      {
+        url: 'https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600',
+        name: 'receipt.jpg',
+        mime_type: 'image/jpeg',
+        uploaded_at: '2026-08-21T18:40:00Z',
+      },
+    ],
+  } as Task,
+  {
+    id: 'tsk_1190',
+    title: "Book caterer for Segun's birthday",
+    description: 'Get quotes from at least two caterers and confirm by end of week.',
+    status: 'completed',
+    due_date: '2026-08-25',
+    assigned_to: 'mem_bisi',
+    assigned_to_name: 'Bisi Adeyemi',
+    completed_at: '2026-08-22T10:15:00Z',
+    completion_note: 'Booked Mama Ronke Catering, deposit paid',
+    admin_confirmed_at: null,
+    proofs: [
+      {
+        url: 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=600',
+        name: 'invoice.pdf',
+        mime_type: 'application/pdf',
+        uploaded_at: '2026-08-22T10:10:00Z',
+      },
+    ],
+  } as Task,
+  {
+    id: 'tsk_1191',
+    title: 'Collect rent receipts from landlord',
+    description: null,
+    status: 'in_progress',
+    due_date: '2026-08-24',
+    assigned_to: 'mem_tunde',
+    assigned_to_name: 'Tunde Adeyemi',
+    completed_at: null,
+    completion_note: null,
+    admin_confirmed_at: null,
+    proofs: [],
+  } as Task,
+  {
+    id: 'tsk_1175',
+    title: 'Renew family WAEC prep subscription',
+    description: 'Annual renewal for the online prep classes.',
+    status: 'completed',
+    due_date: '2026-08-15',
+    assigned_to: 'mem_folake',
+    assigned_to_name: 'Folake Adeyemi',
+    completed_at: '2026-08-16T13:47:00Z',
+    completion_note: 'Renewed for another year',
+    admin_confirmed_at: '2026-08-16T14:00:00Z',
+    admin_note: 'Confirmed',
+    proofs: [],
+  } as Task,
+  {
+    id: 'tsk_1195',
+    title: 'Set up new fridge in the boys quarters',
+    description: 'Delivery is scheduled for Saturday morning.',
+    status: 'pending',
+    due_date: '2026-08-30',
+    assigned_to: 'mem_kunle',
+    assigned_to_name: 'Kunle Adeyemi',
+    completed_at: null,
+    completion_note: null,
+    admin_confirmed_at: null,
+    proofs: [],
+  } as Task,
+  {
+    id: 'tsk_1196',
+    title: 'Draft agenda for family meeting',
+    description: null,
+    status: 'pending',
+    due_date: null,
+    assigned_to: null,
+    assigned_to_name: null,
+    completed_at: null,
+    completion_note: null,
+    admin_confirmed_at: null,
+    proofs: [],
+  } as Task,
+];
 
 // ── TaskStatusChip ────────────────────────────────────────────────────────────
 
@@ -163,9 +265,9 @@ function TaskCard({
 export default function ContainerTasksPage() {
   const { id: containerId } = useParams<{ id: string }>();
   const { workspaceId, member } = useWorkspace();
-  const currentMemberId = member?.id ?? '';
+  // MOCK: default to Kunle Adeyemi as the current member when viewing as non-admin
+  const currentMemberId = member?.id || 'mem_kunle';
   const isAdmin         = useIsAdmin();
-  const qc              = useQueryClient();
 
   const [showAdd,        setShowAdd]        = useState(false);
   const [detailTask,     setDetailTask]     = useState<Task | null>(null);
@@ -183,72 +285,26 @@ export default function ContainerTasksPage() {
   const createForm  = useForm<CreateForm>({ resolver: zodResolver(createSchema) });
   const confirmForm = useForm<ConfirmForm>({ resolver: zodResolver(confirmSchema) });
 
-  // ── Queries ──────────────────────────────────────────────────────────────
+  // ── Mock local state (replaces queries) ─────────────────────────────────
 
-  const { data: tasksData, isLoading } = useQuery({
-    queryKey: KEYS.tasks(workspaceId, containerId!),
-    queryFn:  () => taskService.list(workspaceId, containerId!),
-  });
-  const tasks: Task[] = (tasksData as { tasks?: Task[] })?.tasks ?? [];
+  const [tasks, setTasks] = useState<Task[]>(MOCK_TASKS);
+  const isLoading = false;
+  const participantsLoading = false;
+  const participants = MOCK_PARTICIPANTS;
 
-  const { data: participantsData, isLoading: participantsLoading } = useQuery({
-    queryKey: ['participants', workspaceId, containerId],
-    queryFn:  () =>
-      api
-        .get(`/v1/workspaces/${workspaceId}/containers/${containerId}/participants`)
-        .then(r => r.data?.participants ?? []),
-    enabled: isAdmin && (showAdd || !!reassignTask),
-  });
-  const participants: Array<{ workspace_member_id: string; display_name: string }> =
-    participantsData ?? [];
+  const [createPending, setCreatePending] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
+  const [reassignPending, setReassignPending] = useState(false);
+  const [confirmPending, setConfirmPending] = useState(false);
 
-  // ── Mutations ────────────────────────────────────────────────────────────
-
-  const invalidateTasks = () =>
-    qc.invalidateQueries({ queryKey: KEYS.tasks(workspaceId, containerId!) });
-
-  const createMutation = useMutation({
-    mutationFn: (d: CreateForm) =>
-      taskService.create(workspaceId, containerId!, { ...d, assigned_to: d.assigned_to || undefined }),
-    onSuccess: () => { invalidateTasks(); showToast.success('Task created'); setShowAdd(false); createForm.reset(); },
-    onError:   () => showToast.error('Failed to create task'),
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (taskId: string) => taskService.delete(workspaceId, containerId!, taskId),
-    onSuccess:  () => { invalidateTasks(); showToast.success('Task deleted'); },
-    onError:    () => showToast.error('Failed to delete task'),
-  });
-
-  const reassignMutation = useMutation({
-    mutationFn: ({ taskId, memberId }: { taskId: string; memberId: string }) =>
-      taskService.reassign(workspaceId, containerId!, taskId, { assigned_to: memberId }),
-    onSuccess: () => {
-      invalidateTasks();
-      showToast.success('Task reassigned');
-      setReassignTask(null);
-      setReassignMemberId('');
-    },
-    onError: () => showToast.error('Failed to reassign task'),
-  });
-
-  const confirmMutation = useMutation({
-    mutationFn: ({ taskId, note }: { taskId: string; note?: string }) =>
-      taskService.confirmTask(workspaceId, containerId!, taskId, { note }),
-    onSuccess: () => {
-      invalidateTasks();
-      showToast.success('Task confirmed');
-      setConfirmTask(null);
-      confirmForm.reset();
-    },
-    onError: () => showToast.error('Failed to confirm task'),
-  });
-
-  // ── Handlers ─────────────────────────────────────────────────────────────
+  // ── Handlers (operate on local mock state) ──────────────────────────────
 
   function handleDelete(task: Task) {
     if (!window.confirm(`Delete task "${task.title}"? This cannot be undone.`)) return;
-    deleteMutation.mutate(task.id);
+    setDeletePending(true);
+    setTasks(prev => prev.filter(t => t.id !== task.id));
+    showToast.success('Task deleted');
+    setDeletePending(false);
   }
 
   function handleOpenComplete(task: Task) {
@@ -261,42 +317,26 @@ export default function ContainerTasksPage() {
     setProofUploading(true);
 
     try {
-      // Determine the next status first so we can use it for logic below
       const nextStatus = completeTask.status === 'pending' ? 'in_progress' : 'completed';
 
-      // Upload proof only when the task is being marked complete (not when starting)
-      if (proofFile && nextStatus === 'completed') {
-        // Step 1: Get pre-signed upload URL
-        const { upload_url, file_path } = await taskService.getProofUploadUrl(
-          workspaceId, containerId!, completeTask.id,
-          { filename: proofFile.name, content_type: proofFile.type, file_size: proofFile.size },
-        );
+      // MOCK: skip real upload; just note the file was attached
+      setTasks(prev => prev.map(t => t.id === completeTask.id
+        ? {
+            ...t,
+            status: nextStatus,
+            completed_at: nextStatus === 'completed' ? new Date().toISOString() : t.completed_at,
+            proofs: proofFile && nextStatus === 'completed'
+              ? [...(t.proofs ?? []), {
+                  url: URL.createObjectURL(proofFile),
+                  name: proofFile.name,
+                  mime_type: proofFile.type,
+                  uploaded_at: new Date().toISOString(),
+                }]
+              : t.proofs,
+          }
+        : t
+      ));
 
-        // Step 2: Upload to pre-signed URL
-        const uploadResponse = await fetch(upload_url, {
-          method:  'PUT',
-          body:    proofFile,
-          headers: { 'Content-Type': proofFile.type },
-        });
-        if (!uploadResponse.ok) throw new Error(`Upload failed: ${uploadResponse.status}`);
-
-        // Step 3: Register the uploaded file against the task
-        await taskService.confirmProof(workspaceId, containerId!, completeTask.id, {
-          file_path,
-          name:      proofFile.name,
-          size:      proofFile.size,
-          mime_type: proofFile.type,
-        });
-      }
-
-      // FIX: advance task status. Only include completion_note when actually completing.
-      const updatePayload: Record<string, unknown> = { status: nextStatus };
-      // Do NOT add a hardcoded completion_note for every status transition.
-      // A real note would come from a UI field (future enhancement).
-
-      await taskService.update(workspaceId, containerId!, completeTask.id, updatePayload);
-
-      invalidateTasks();
       showToast.success(nextStatus === 'completed' ? 'Task marked complete' : 'Task started');
       setCompleteTask(null);
       setProofFile(null);
@@ -308,15 +348,57 @@ export default function ContainerTasksPage() {
   }
 
   async function handleExport() {
-    try {
-      const blob     = await taskService.exportTasks(workspaceId, containerId!);
-      const filename = isAdmin
-        ? `tasks-${containerId}-${Date.now()}.csv`
-        : `my-tasks-${Date.now()}.csv`;
-      triggerCSVDownload(blob, filename);
-    } catch {
-      showToast.error('Export failed');
-    }
+    // MOCK: export disabled in static demo mode
+    showToast.success('Export started');
+  }
+
+  function handleCreateTask(d: CreateForm) {
+    setCreatePending(true);
+    const newTask: Task = {
+      id: `tsk_${Math.floor(Math.random() * 10000)}`,
+      title: d.title,
+      description: d.description || null,
+      status: 'pending',
+      due_date: d.due_date || null,
+      assigned_to: d.assigned_to || null,
+      assigned_to_name: participants.find(p => p.workspace_member_id === d.assigned_to)?.display_name ?? null,
+      completed_at: null,
+      completion_note: null,
+      admin_confirmed_at: null,
+      proofs: [],
+    } as Task;
+    setTasks(prev => [newTask, ...prev]);
+    showToast.success('Task created');
+    setShowAdd(false);
+    createForm.reset();
+    setCreatePending(false);
+  }
+
+  function handleReassign() {
+    if (!reassignTask) return;
+    setReassignPending(true);
+    const newName = participants.find(p => p.workspace_member_id === reassignMemberId)?.display_name ?? null;
+    setTasks(prev => prev.map(t => t.id === reassignTask.id
+      ? { ...t, assigned_to: reassignMemberId || null, assigned_to_name: newName }
+      : t
+    ));
+    showToast.success('Task reassigned');
+    setReassignTask(null);
+    setReassignMemberId('');
+    setReassignPending(false);
+  }
+
+  function handleConfirmTask(d: ConfirmForm) {
+    if (!confirmTask) return;
+    setConfirmPending(true);
+    setTasks(prev => prev.map(t => t.id === confirmTask.id
+      ? { ...t, admin_confirmed_at: new Date().toISOString(), admin_note: d.note || t.admin_note }
+      : t
+    ));
+    showToast.success('Task confirmed');
+    setConfirmTask(null);
+    confirmForm.reset();
+    setConfirmPending(false);
   }
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -393,7 +475,7 @@ export default function ContainerTasksPage() {
 
       {/* ════════ ADMIN — Add Task Modal ════════════════════════════════════ */}
       <Modal open={showAdd} onClose={() => { setShowAdd(false); createForm.reset(); }} title="New Task">
-        <form onSubmit={createForm.handleSubmit(d => createMutation.mutate(d))} className="space-y-4">
+        <form onSubmit={createForm.handleSubmit(handleCreateTask)} className="space-y-4">
           <Input
             label="Title"
             placeholder="What needs to be done?"
@@ -423,7 +505,7 @@ export default function ContainerTasksPage() {
             <Button variant="secondary" fullWidth type="button" onClick={() => { setShowAdd(false); createForm.reset(); }}>
               Cancel
             </Button>
-            <Button fullWidth type="submit" loading={createMutation.isPending}>Create Task</Button>
+            <Button fullWidth type="submit" loading={createPending}>Create Task</Button>
           </div>
         </form>
       </Modal>
@@ -529,9 +611,7 @@ export default function ContainerTasksPage() {
       >
         {confirmTask && (
           <form
-            onSubmit={confirmForm.handleSubmit(d =>
-              confirmMutation.mutate({ taskId: confirmTask.id, note: d.note })
-            )}
+            onSubmit={confirmForm.handleSubmit(handleConfirmTask)}
             className="space-y-4"
           >
             <div className="rounded-lg bg-surface-alt px-4 py-3 text-sm">
@@ -570,7 +650,7 @@ export default function ContainerTasksPage() {
               <Button variant="secondary" fullWidth type="button" onClick={() => { setConfirmTask(null); confirmForm.reset(); }}>
                 Cancel
               </Button>
-              <Button fullWidth type="submit" loading={confirmMutation.isPending}>
+              <Button fullWidth type="submit" loading={confirmPending}>
                 <CheckCircle size={14} /> Confirm Task
               </Button>
             </div>
@@ -612,10 +692,8 @@ export default function ContainerTasksPage() {
               </Button>
               <Button
                 fullWidth
-                loading={reassignMutation.isPending}
-                onClick={() =>
-                  reassignMutation.mutate({ taskId: reassignTask.id, memberId: reassignMemberId })
-                }
+                loading={reassignPending}
+                onClick={handleReassign}
               >
                 Reassign
               </Button>

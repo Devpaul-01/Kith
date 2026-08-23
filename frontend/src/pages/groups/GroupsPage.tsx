@@ -1,7 +1,5 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { groupService, type Group } from '@/services/group.service';
-import { KEYS } from '@/constants/queryKeys';
+import { type Group } from '@/services/group.service';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { useIsAdmin } from '@/hooks/useIsAdmin';
 import { Card } from '@/components/ui/Card';
@@ -14,32 +12,75 @@ import { CreateGroupModal } from '@/components/groups/CreateGroupModal';
 import { Plus, Users2, Trash2, Edit } from 'lucide-react';
 import showToast from '@/lib/toast';
 
+// ── Mock data: Adeyemi Family workspace ──────────────────────────────────────
+
+const MOCK_GROUPS: Group[] = [
+  {
+    id: 'grp_immediate',
+    name: 'Immediate Household',
+    description: 'Folake, Tunde, Bisi, and Kunle — the core contributors',
+    member_count: 4,
+    members: [
+      { id: 'mem_folake', display_name: 'Folake Adeyemi' },
+      { id: 'mem_tunde', display_name: 'Tunde Adeyemi' },
+      { id: 'mem_bisi', display_name: 'Bisi Adeyemi' },
+      { id: 'mem_kunle', display_name: 'Kunle Adeyemi' },
+    ],
+  } as Group,
+  {
+    id: 'grp_extended',
+    name: 'Extended Family',
+    description: 'Aunties, uncles, and cousins who join seasonal pools',
+    member_count: 6,
+    members: [
+      { id: 'mem_ngozi', display_name: 'Ngozi Adeyemi' },
+      { id: 'mem_chidi', display_name: 'Chidi Adeyemi' },
+      { id: 'mem_amaka', display_name: 'Amaka Adeyemi' },
+      { id: 'mem_seun', display_name: 'Seun Adeyemi' },
+      { id: 'mem_tola', display_name: 'Tola Adeyemi' },
+      { id: 'mem_dapo', display_name: 'Dapo Adeyemi' },
+    ],
+  } as Group,
+  {
+    id: 'grp_rent',
+    name: 'Rent Pool Contributors',
+    description: 'Members who split the monthly rent',
+    member_count: 3,
+    members: [
+      { id: 'mem_folake', display_name: 'Folake Adeyemi' },
+      { id: 'mem_tunde', display_name: 'Tunde Adeyemi' },
+      { id: 'mem_bisi', display_name: 'Bisi Adeyemi' },
+    ],
+  } as Group,
+  {
+    id: 'grp_events',
+    name: 'Event Planning Crew',
+    description: 'Handles birthdays, weddings, and celebrations',
+    member_count: 5,
+    members: [
+      { id: 'mem_bisi', display_name: 'Bisi Adeyemi' },
+      { id: 'mem_ngozi', display_name: 'Ngozi Adeyemi' },
+      { id: 'mem_amaka', display_name: 'Amaka Adeyemi' },
+      { id: 'mem_tola', display_name: 'Tola Adeyemi' },
+      { id: 'mem_seun', display_name: 'Seun Adeyemi' },
+    ],
+  } as Group,
+];
+
 export default function GroupsPage() {
   const { workspaceId } = useWorkspace();
   const isAdmin = useIsAdmin();
-  const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
-  const { data, isLoading } = useQuery({
-    queryKey: KEYS.groups(workspaceId),
-    queryFn: () => groupService.list(workspaceId),
-  });
-
-  const groups: Group[] = (data as { groups?: Group[] })?.groups ?? [];
-
-  const deleteMutation = useMutation({
-    mutationFn: (groupId: string) => groupService.delete(workspaceId, groupId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: KEYS.groups(workspaceId) });
-      showToast.success('Group deleted');
-    },
-    onError: () => showToast.error('Failed to delete group'),
-  });
+  // MOCK: static groups data for the Adeyemi Family workspace
+  const isLoading = false;
+  const [groups, setGroups] = useState<Group[]>(MOCK_GROUPS);
 
   const handleDelete = (groupId: string, groupName: string) => {
     if (confirm(`Delete group "${groupName}"? This action cannot be undone.`)) {
-      deleteMutation.mutate(groupId);
+      setGroups((prev) => prev.filter((g) => g.id !== groupId));
+      showToast.success('Group deleted');
     }
   };
 
@@ -113,7 +154,6 @@ export default function GroupsPage() {
                       e.stopPropagation();
                       handleDelete(group.id, group.name);
                     }}
-                    disabled={deleteMutation.isPending}
                     className="p-1.5 rounded-lg text-text-secondary hover:text-danger hover:bg-red-50 transition-colors"
                   >
                     <Trash2 size={14} />
