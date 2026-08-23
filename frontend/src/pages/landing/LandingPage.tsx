@@ -8,7 +8,7 @@ import {
   Users,
   ClipboardCheck,
   Archive,
-  Play,
+  ShieldCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Reveal } from '@/components/landing/Reveal';
@@ -18,11 +18,17 @@ import { CurrencyBar } from '@/components/landing/CurrencyBar';
 import { FaqAccordion } from '@/components/landing/FaqAccordion';
 import { SectionEyebrow } from '@/components/landing/SectionEyebrow';
 import { ChatVsKith } from '@/components/landing/ChatVsKith';
-import { DashboardPreview } from '@/components/landing/DashboardPreview';
 import { CycleAnimation } from '@/components/landing/CycleAnimation';
 import { ActivityTimeline } from '@/components/landing/ActivityTimeline';
-import { MemberList } from '@/components/landing/MemberList';
 import { TaskStoryCards } from '@/components/landing/TaskStoryCards';
+import { ScreenshotFrame } from '@/components/landing/ScreenshotFrame';
+
+const SCREENSHOTS = {
+  dashboard: '/assets/landing/kith-dashboard-overview.png',
+  cycles: '/assets/landing/kith-recurring-pool-cycles.png',
+  members: '/assets/landing/kith-members-proxy.png',
+  dispute: '/assets/landing/kith-dispute-resolution.png',
+} as const;
 
 const NAV_LINKS = [
   { label: 'How it works', href: '#how-it-works' },
@@ -156,9 +162,9 @@ export default function LandingPage() {
                   <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" />
                 </Button>
               </Link>
-              <a href="#how-it-works" className="w-full sm:w-auto">
+              <a href="#dashboard" className="w-full sm:w-auto">
                 <Button variant="secondary" size="lg" fullWidth className="sm:w-auto group">
-                  <Play size={14} /> Watch a 90-second walkthrough
+                  See the dashboard
                 </Button>
               </a>
             </div>
@@ -167,10 +173,6 @@ export default function LandingPage() {
             <p className="mt-4 text-xs text-text-secondary">No card required. Set up your family in under two minutes.</p>
           </Reveal>
         </div>
-
-        <Reveal delay={360} className="mx-auto mt-16 max-w-5xl">
-          <DashboardPreview />
-        </Reveal>
       </section>
 
       {/* ============ CURRENCY TRUST BAR ============ */}
@@ -334,7 +336,10 @@ export default function LandingPage() {
               </p>
             </Reveal>
             <Reveal delay={120}>
-              <CycleAnimation />
+              <ScreenshotFrame
+                src={SCREENSHOTS.cycles}
+                alt="A Kith recurring pool showing the current and past monthly cycles, with a per-participant breakdown of paid, pending, and overdue contributions, including an automatic carry-forward from the previous cycle"
+              />
             </Reveal>
           </div>
         </div>
@@ -356,7 +361,10 @@ export default function LandingPage() {
               </p>
             </Reveal>
             <Reveal delay={120}>
-              <MemberList />
+              <ScreenshotFrame
+                src={SCREENSHOTS.members}
+                alt="The Kith members list for a family workspace, showing nine members including two admins and two proxy members — Baby Kayode managed by Mom, and Grandma Adaeze managed by Dad"
+              />
             </Reveal>
           </div>
         </div>
@@ -384,7 +392,7 @@ export default function LandingPage() {
       </section>
 
       {/* ============ 10. DASHBOARD ============ */}
-      <section className="px-4 py-20 sm:px-6 sm:py-28">
+      <section id="dashboard" className="px-4 py-20 sm:px-6 sm:py-28">
         <div className="mx-auto max-w-5xl">
           <Reveal className="mx-auto max-w-xl text-center">
             <SectionEyebrow pillar="neutral">The dashboard</SectionEyebrow>
@@ -392,12 +400,15 @@ export default function LandingPage() {
               Know what needs your attention the moment you open Kith.
             </h2>
             <p className="mt-4 text-base leading-relaxed text-text-secondary">
-              Upcoming events, pending contributions, tasks assigned to you, recent activity — everything
-              important, visible at a glance.
+              Overdue contributions, open disputes, pending confirmations, active events, upcoming deadlines —
+              everything important, visible at a glance.
             </p>
           </Reveal>
           <Reveal delay={120} className="mt-14">
-            <DashboardPreview annotated />
+            <ScreenshotFrame
+              src={SCREENSHOTS.dashboard}
+              alt="The Kith dashboard showing member counts, overdue contributions, open disputes, pending confirmations, active events with funding progress, and upcoming deadlines for a family workspace"
+            />
           </Reveal>
         </div>
       </section>
@@ -456,35 +467,32 @@ export default function LandingPage() {
               );
             })}
           </div>
+
+          <div className="mt-14 grid gap-10 lg:grid-cols-2 lg:items-center lg:gap-14">
+            <Reveal>
+              <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-blue-300">
+                <ShieldCheck size={14} /> Disagreements, handled properly
+              </span>
+              <h3 className="mt-3 text-2xl font-extrabold tracking-tight text-white sm:text-3xl">
+                When someone questions a contribution, it becomes a resolved record — not a WhatsApp argument.
+              </h3>
+              <p className="mt-4 text-base leading-relaxed text-slate-300">
+                Anyone can raise a dispute directly against a ledger entry. Every admin is notified immediately,
+                notes get added as the conversation develops, and a resolution — with a reason attached —
+                becomes part of the family's permanent record. Nothing is quietly deleted or edited away.
+              </p>
+            </Reveal>
+            <Reveal delay={120}>
+              <ScreenshotFrame
+                src={SCREENSHOTS.dispute}
+                alt="A resolved Kith dispute: Uncle Bayo questioned a ₦10,000 carry-forward balance, Mom asked for clarification, and Uncle Bayo confirmed the amount was correct after checking his bank app"
+              />
+            </Reveal>
+          </div>
         </div>
       </section>
 
-      {/* ============ 13. SEE KITH IN ACTION ============ */}
-      <section className="px-4 py-20 sm:px-6 sm:py-28">
-        <div className="mx-auto max-w-4xl text-center">
-          <Reveal>
-            <SectionEyebrow pillar="neutral">See Kith in action</SectionEyebrow>
-            <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
-              Take a quick tour before you decide.
-            </h2>
-            <p className="mx-auto mt-4 max-w-lg text-base leading-relaxed text-text-secondary">
-              A 60-90 second walkthrough of the real product — no voiceover, real interactions, no fake interface.
-            </p>
-          </Reveal>
-          <Reveal delay={120} className="mt-10">
-            <video
-              controls
-              poster="/assets/walkthrough-poster.png"
-              className="mx-auto w-full max-w-2xl rounded-3xl border border-border shadow-card-hover"
-            >
-              <source src="/assets/walkthrough.mp4" type="video/mp4" />
-              Your browser does not support the video tag.
-            </video>
-          </Reveal>
-        </div>
-      </section>
-
-      {/* ============ 14. FAQ ============ */}
+      {/* ============ 13. FAQ ============ */}
       <section id="faq" className="bg-white px-4 py-20 sm:px-6 sm:py-28">
         <div className="mx-auto max-w-3xl">
           <Reveal className="text-center">
@@ -496,7 +504,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ============ 15. FINAL CTA ============ */}
+      {/* ============ 14. FINAL CTA ============ */}
       <section className="px-4 py-20 sm:px-6 sm:py-28">
         <Reveal className="mx-auto max-w-4xl overflow-hidden rounded-3xl bg-primary px-6 py-14 text-center shadow-card-hover sm:px-16">
           <h2 className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
@@ -516,7 +524,7 @@ export default function LandingPage() {
         </Reveal>
       </section>
 
-      {/* ============ 16. FOOTER ============ */}
+      {/* ============ 15. FOOTER ============ */}
       <footer className="border-t border-border bg-white px-4 py-12 sm:px-6">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 sm:flex-row">
           <div className="flex items-center gap-1 text-lg font-extrabold tracking-tight text-text-primary">
