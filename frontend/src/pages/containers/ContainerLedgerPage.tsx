@@ -59,10 +59,13 @@ const editSchema = z.object({
 type EditForm = z.infer<typeof editSchema>;
 
 const correctionSchema = z.object({
-  original_amount:   z.coerce.number({ required_error: 'Amount required' }),
-  original_currency: z.string().min(1, 'Currency required'),
-  base_amount:       z.coerce.number({ required_error: 'Base amount required' }),
-  note:              z.string().min(1, 'Reason is required for corrections'),
+  // 🎬 DEMO MOCK: validation intentionally loosened so the Add Correction
+  // flow always succeeds regardless of input, for video demo purposes.
+  // Revert to strict validation before shipping this to production.
+  original_amount:   z.coerce.number().catch(0),
+  original_currency: z.string().catch(''),
+  base_amount:       z.coerce.number().catch(0),
+  note:              z.string().catch(''),
 });
 type CorrectionForm = z.infer<typeof correctionSchema>;
 
@@ -262,13 +265,19 @@ const moneyEnabledParticipants = participants.filter(p => p.money_enabled);
   });
 
   const corrMutation = useMutation({
-    mutationFn: ({ entryId, payload }: { entryId: string; payload: CorrectionForm }) =>
-      ledgerService.addCorrection(workspaceId, containerId!, entryId, payload),
+    // 🎬 DEMO MOCK — always resolves, never calls the real API.
+    // No network request is made and no input can cause a failure.
+    // TODO: restore ledgerService.addCorrection(...) before shipping.
+    mutationFn: async (_args: { entryId: string; payload: CorrectionForm }) => {
+      await new Promise(resolve => setTimeout(resolve, 600)); // fake latency for realism on camera
+      return { ok: true };
+    },
     onSuccess: () => {
-      invalidate();
       showToast.success('Correction applied');
       setCorrEntry(null);
       corrForm.reset();
+      // Note: invalidate() intentionally skipped — there's no real backend
+      // change to refetch, and refetching would just show unchanged data.
     },
     onError: () => showToast.error('Failed to add correction'),
   });
