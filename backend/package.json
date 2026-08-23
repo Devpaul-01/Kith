@@ -6,7 +6,7 @@
   "scripts": {
     "test": "jest",
     "test:unit": "jest --selectProjects unit",
-    "test:integration": "jest --selectProjects integration",
+    "test:integration": "jest --selectProjects integration --runInBand",
     "test:ratelimit": "jest --selectProjects rate-limit",
     "test:docker:up": "docker compose -f docker-compose.test.yml up -d",
     "test:docker:down": "docker compose -f docker-compose.test.yml down -v",
