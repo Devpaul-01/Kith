@@ -1,0 +1,4423 @@
+openapi: 3.1.0
+info:
+  title: Kith API
+  description: |
+    Kith is a family coordination platform for shared events, recurring
+    money pools, tasks, milestones, and communication across a household
+    or extended family ("workspace").
+
+    ## Conventions
+
+    - All request/response bodies are JSON unless otherwise noted (CSV
+      exports return `text/csv`).
+    - All list endpoints return a top-level `{ "data": ... }` envelope.
+      Paginated list endpoints additionally return
+      `{ "data": ..., "meta": { "pagination": { ... } } }`.
+    - All monetary amounts are decimal numbers. Each container/workspace
+      has a `base_currency`; ledger entries store both the
+      `original_amount`/`original_currency` the contributor actually
+      paid and a `base_amount` converted into the workspace's base
+      currency.
+    - Timestamps are ISO 8601 (`YYYY-MM-DDTHH:mm:ss.sssZ`). Dates
+      (no time component) are `YYYY-MM-DD`.
+    - Most resources are soft-deleted (`deleted_at` timestamp) rather
+      than physically removed; soft-deleted rows are excluded from
+      normal reads.
+    - **Authorization pattern**: almost every workspace-scoped route
+      requires the caller to be an *active* member of that workspace.
+      A caller who is not a member receives `404 Not Found` (not
+      `403 Forbidden`) to avoid leaking workspace existence via status
+      code (workspace-enumeration protection). Within a workspace, many
+      actions are further restricted to members with `role: admin`,
+      documented per-endpoint.
+
+    ## Errors
+
+    All error responses share the shape documented in the `Error`
+    schema: `{ "error": { "code": "...", "message": "...", ... } }`.
+    See the **Errors** section below for the full catalog.
+  version: "1.0.0"
+  contact:
+    name: Kith Engineering
+  license:
+    name: Proprietary
+servers:
+  - url: "{apiBaseUrl}/v1"
+    description: Configurable API base URL (see API_BASE_URL env var)
+    variables:
+      apiBaseUrl:
+        default: http://localhost:3000
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+    description: >-
+      Signup, login, session/token management, password management, Google
+      OAuth, profile, contacts, push tokens, and GDPR data export.
+  - name: Workspaces
+    description: Top-level workspace (household) CRUD, settings, and search.
+  - name: Members
+    description: Workspace member management, profile history, engagement, and contribution summaries.
+  - name: Invites
+    description: Workspace invite link creation, preview, and acceptance (current and legacy paths).
+  - name: Groups
+    description: Named subsets of members used to bulk-add participants to containers.
+  - name: Containers
+    description: >-
+      "Containers" are the core unit of coordination — either a one-off
+      **event** (e.g. a wedding) or a **recurring** money pool (e.g.
+      monthly rent). Container lifecycle, cycles, and public sharing.
+  - name: Participants
+    description: Per-container participation (who's contributing money/tasks) and contribution targets.
+  - name: Ledger
+    description: Money movement within a container — contributions, expenses, corrections, proofs, disputes.
+  - name: Disputes
+    description: Workspace-level dispute lifecycle for contested ledger entries.
+  - name: Tasks
+    description: Chore/task tracking within a container.
+  - name: Milestones
+    description: Workspace timeline of life events and completed containers.
+  - name: Notifications
+    description: User-scoped notification inbox (not workspace-scoped).
+  - name: Dashboard
+    description: Aggregated workspace dashboard and overdue-contribution summaries.
+  - name: Audit Log
+    description: Paginated, filterable admin audit trail.
+  - name: Public
+    description: Unauthenticated, publicly-accessible endpoints (invite previews, shared container pages).
+paths:
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: Sign up with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignupRequest' }
+      responses:
+        '201':
+          description: >-
+            Account created. Returns a session immediately if Supabase
+            email confirmation is disabled; otherwise a pending-verification
+            message. If the profile row failed to write, `profile_setup_required: true`
+            is set — call POST /auth/register to repair.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/AuthSessionResponse' } }
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/SignupPendingResponse' } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: An account with this email already exists.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "5 requests / minute / IP"
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: >-
+            access_token is returned in the body. refresh_token is set as
+            an httpOnly, secure, sameSite=strict cookie scoped to
+            /v1/auth/refresh (not present in the JSON body).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/AuthSessionResponse' } }
+          headers:
+            Set-Cookie:
+              schema: { type: string, example: "refresh_token=...; HttpOnly; Secure; SameSite=Strict; Path=/v1/auth/refresh" }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Invalid email or password.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+        '422':
+          description: Email not confirmed yet.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "5 requests / minute / IP"
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange the refresh_token cookie for a new access token
+      security: []
+      description: Reads `refresh_token` from the httpOnly cookie set by /auth/login — no request body needed.
+      responses:
+        '200':
+          description: New access_token; refresh_token cookie is rotated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      access_token: { type: string }
+                      expires_in: { type: integer }
+                      token_type: { type: string }
+        '401':
+          description: Missing, invalid, or expired refresh token.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "5 requests / minute / IP"
+
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request a password-reset email
+      security: []
+      description: Always returns 200 with the same message, whether or not the email exists (prevents account enumeration).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForgotPasswordRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "5 requests / minute / IP"
+
+  /auth/google/url:
+    get:
+      tags: [Auth]
+      summary: Get the Google OAuth redirect URL
+      security: []
+      parameters:
+        - name: redirect_to
+          in: query
+          required: false
+          schema: { type: string }
+          description: >-
+            Post-auth redirect target. Only honored if it starts with
+            FRONTEND_URL or an allowlisted mobile deep-link scheme;
+            otherwise silently replaced with the default redirect
+            (open-redirect protection).
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/GoogleAuthUrlResponse' } } }
+
+  /auth/google/callback:
+    post:
+      tags: [Auth]
+      summary: Exchange a Google OAuth code for a session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GoogleCallbackRequest' }
+      responses:
+        '200':
+          description: refresh_token is set as an httpOnly cookie (see POST /auth/login).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      access_token: { type: string }
+                      expires_in: { type: integer }
+                      token_type: { type: string }
+                      user:
+                        type: object
+                        properties:
+                          id: { type: string, format: uuid }
+                          email: { type: string, format: email }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "5 requests / minute / IP"
+
+  /auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Verify an email via the Supabase OTP token from the verification link
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyEmailRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message: { type: string }
+                      access_token: { type: string }
+                      refresh_token: { type: string }
+                      expires_in: { type: integer }
+                      token_type: { type: string }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "5 requests / minute / IP"
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out the current session
+      description: Clears the refresh_token cookie and revokes the current session server-side.
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout-all-devices:
+    post:
+      tags: [Auth]
+      summary: Log out from all devices
+      description: Revokes every session for the user (Supabase 'global' scope), not just the current one.
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Reset password via a password-recovery link
+      description: >-
+        ONLY valid for a session established through the Supabase
+        password-recovery email link (the JWT's `amr` claim must contain
+        `recovery`). For a logged-in user changing their password
+        normally, use POST /auth/change-password instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResetPasswordRequest' }
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The current session was not established via the password-recovery link flow.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change password for a logged-in user
+      description: Verifies current_password by attempting a real sign-in before allowing the change.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordRequest' }
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Current password is incorrect, or not logged in.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Complete or upsert the user profile
+      description: Idempotent — safe to call multiple times. Call after signup or after a Google OAuth callback.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { user: { $ref: '#/components/schemas/User' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current user and their workspace memberships
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/MeResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/profile:
+    patch:
+      tags: [Auth]
+      summary: Update profile fields
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateProfileRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { user: { $ref: '#/components/schemas/User' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/avatar/upload-url:
+    post:
+      tags: [Auth]
+      summary: Get a signed upload URL for the profile avatar
+      description: >-
+        After PUTting the file to upload_url, call PATCH /auth/profile
+        with avatar_url set to the resulting public path.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadUrlRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/UploadUrlResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "20 requests / hour / user"
+
+  /auth/contacts:
+    get:
+      tags: [Auth]
+      summary: List the user's contact methods
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      contacts: { type: array, items: { $ref: '#/components/schemas/UserContact' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Auth]
+      summary: Add a single contact method
+      description: Uses an atomic upsert; if is_primary=true, demotes any other contact of the same type.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpsertContactRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { contact: { $ref: '#/components/schemas/UserContact' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [Auth]
+      summary: Replace contact methods (bulk)
+      description: Full, atomic replacement scoped to the contact types present in the request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateContactsRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      contacts: { type: array, items: { $ref: '#/components/schemas/UserContact' } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/contacts/{contactId}:
+    delete:
+      tags: [Auth]
+      summary: Delete a contact method
+      parameters:
+        - $ref: '#/components/parameters/contactId'
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /auth/push-token:
+    post:
+      tags: [Auth]
+      summary: Register or update the FCM push notification token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterPushTokenRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      push_enabled: { type: boolean }
+                      platform: { type: string }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/notification-preferences:
+    patch:
+      tags: [Auth]
+      summary: Toggle push notifications and email digest
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationPrefsRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      preferences:
+                        type: object
+                        properties:
+                          push_enabled: { type: boolean }
+                          email_digest_enabled: { type: boolean }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/data-export:
+    post:
+      tags: [Auth]
+      summary: Request a GDPR data export
+      description: >-
+        Queues an async job covering all workspaces the user is an active
+        member of. The export (ledger contributions + task assignments as
+        CSV attachments) is emailed to the user, typically within 24
+        hours.
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /workspaces:
+    get:
+      tags: [Workspaces]
+      summary: List the caller's workspace memberships
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      memberships: { type: array, items: { $ref: '#/components/schemas/WorkspaceMembership' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Workspaces]
+      summary: Create a new workspace
+      description: Creates the workspace and adds the caller as its first admin member, atomically (via RPC).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWorkspaceRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, description: "Result of create_workspace_with_admin RPC — workspace + admin member." } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /workspaces/{workspaceId}:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+    get:
+      tags: [Workspaces]
+      summary: Get workspace details
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      workspace: { $ref: '#/components/schemas/Workspace' }
+                      current_member: { $ref: '#/components/schemas/CurrentMember' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Workspaces]
+      summary: Update workspace details
+      description: "Requires role=admin."
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateWorkspaceRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { workspace: { $ref: '#/components/schemas/Workspace' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Workspaces]
+      summary: Soft-delete a workspace
+      description: "Requires role=admin."
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/dashboard:
+    get:
+      tags: [Dashboard]
+      summary: Get the aggregated workspace dashboard
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/DashboardResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/overdue-summary:
+    get:
+      tags: [Dashboard]
+      summary: Get per-member overdue contribution totals
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/OverdueSummaryResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/settings:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+    get:
+      tags: [Workspaces]
+      summary: Get workspace settings
+      description: "Requires role=admin."
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { settings: { type: object, additionalProperties: true } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Workspaces]
+      summary: Update workspace settings
+      description: "Requires role=admin. Settings are stored as arbitrary key/value pairs (upsert semantics)."
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateSettingsRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { settings: { type: object, additionalProperties: true } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/search:
+    get:
+      tags: [Workspaces]
+      summary: Cross-entity search (members + containers)
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 2 }
+          description: "Minimum 2 characters; shorter queries return an empty result set."
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, maximum: 20 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      results: { type: array, items: { $ref: '#/components/schemas/SearchResult' } }
+                      query: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/announce:
+    post:
+      tags: [Workspaces]
+      summary: Send an admin announcement to all (or role-filtered) members
+      description: "Requires role=admin. Delivered via the admin_announcement notification template (in_app + push + email)."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnnounceRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { sent_count: { type: integer } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/avatar-upload-url:
+    post:
+      tags: [Workspaces]
+      summary: Get a signed upload URL for the workspace avatar
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadUrlRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/UploadUrlResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "20 requests / hour / user"
+
+  /workspaces/{workspaceId}/ledger/export:
+    get:
+      tags: [Ledger]
+      summary: Export the full workspace ledger as CSV
+      description: "Requires role=admin. Not nested under a container — spans all containers, filterable via container_id."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - name: container_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: CSV file download.
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/audit-log:
+    get:
+      tags: [Audit Log]
+      summary: Paginated, filterable audit log
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - name: action
+          in: query
+          schema: { type: string }
+          description: "Exact match against action strings, e.g. container.created — see audit-actions.js for the full catalog."
+        - name: actor_member_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          entries: { type: array, items: { $ref: '#/components/schemas/AuditLogEntry' } }
+                      meta: { $ref: '#/components/schemas/PaginatedMetaEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/audit-log/export:
+    get:
+      tags: [Audit Log]
+      summary: Export the audit log as CSV
+      description: "Requires role=admin. Same filters as GET /audit-log, up to a hard cap of 10,000 rows."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: actor_member_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 1000, maximum: 10000 }
+      responses:
+        '200':
+          description: CSV file download.
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/timeline:
+    get:
+      tags: [Milestones]
+      summary: Get the workspace timeline (completed containers + milestones, merged and date-sorted)
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 100 }
+        - name: before
+          in: query
+          schema: { type: string }
+          description: "Back-compat cursor; seeds both before_container and before_milestone on the first page-2 call."
+        - name: before_container
+          in: query
+          schema: { type: string, format: date-time }
+          description: "Per-source cursor from a previous response's next_cursor.before_container."
+        - name: before_milestone
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/TimelineResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /public/invites/{token}:
+    get:
+      tags: [Public]
+      summary: Preview an invite link (no auth)
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/token'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/InvitePreviewResponse' } } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "30 requests / minute / IP"
+
+  /public/invites/{token}/accept:
+    post:
+      tags: [Public]
+      summary: Accept an invite (current path)
+      description: "Requires auth. Claims the invite atomically — a double-submit only ever succeeds once."
+      parameters:
+        - $ref: '#/components/parameters/token'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/AcceptInviteResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: "Already a member of this workspace, or the invite was already used."
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "10 requests / hour / user"
+
+  /public/containers/{publicToken}:
+    get:
+      tags: [Public]
+      summary: View a shared, read-only container summary (no auth)
+      security: []
+      description: "Privacy controlled by the container's public_show_names flag — contributor names/statuses are only included if true."
+      parameters:
+        - $ref: '#/components/parameters/publicToken'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/PublicContainerResponse' } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "30 requests / minute / IP"
+
+  /invites/{token}/preview:
+    get:
+      tags: [Invites]
+      summary: "[Legacy] Preview an invite link"
+      security: []
+      description: "Legacy path, functionally identical to GET /public/invites/{token}. Prefer the /public path for new integrations."
+      parameters:
+        - $ref: '#/components/parameters/token'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/InvitePreviewResponse' } } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "30 requests / minute / IP"
+
+  /invites/{token}/accept:
+    post:
+      tags: [Invites]
+      summary: "[Legacy] Accept an invite"
+      description: "Legacy path, functionally identical to POST /public/invites/{token}/accept. Prefer the /public path for new integrations."
+      parameters:
+        - $ref: '#/components/parameters/token'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/AcceptInviteResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: "Already a member of this workspace, or the invite was already used."
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "10 requests / hour / user"
+  /workspaces/{workspaceId}/members:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+    get:
+      tags: [Members]
+      summary: List workspace members
+      description: "Non-admin callers do not see admin_notes, last_active_at, or contribution_streak_months on any member row."
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+          description: "Substring match against display_name (ILIKE, wildcard-escaped)."
+        - name: filter[role]
+          in: query
+          schema: { $ref: '#/components/schemas/MemberRole' }
+        - name: filter[is_proxy]
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      members: { type: array, items: { $ref: '#/components/schemas/WorkspaceMember' } }
+                      meta: { $ref: '#/components/schemas/ListMembersMeta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Members]
+      summary: Create a member directly
+      description: "Requires role=admin. For adding a real user via invite link instead, see the Invites endpoints."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateMemberRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { member: { $ref: '#/components/schemas/WorkspaceMember' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/members/engagement:
+    get:
+      tags: [Members]
+      summary: Get engagement stats for all non-proxy members
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      members: { type: array, items: { $ref: '#/components/schemas/MemberEngagementItem' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/members/{memberId}:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/memberId'
+    get:
+      tags: [Members]
+      summary: Get a single member
+      description: "Non-admin callers do not see admin_notes on the response."
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { member: { $ref: '#/components/schemas/WorkspaceMember' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Members]
+      summary: Update a member
+      description: >-
+        Allowed for the member themself OR an admin
+        (requireSelfOrAdmin at the route level). Field-level: several
+        fields (role, is_proxy, proxy_managed_by, is_active, admin_notes,
+        relationship_category) are admin-only regardless of who's calling
+        — see UpdateMemberRequest.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateMemberRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { member: { $ref: '#/components/schemas/WorkspaceMember' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: "Not self or admin, or attempted to set an admin-only field as a non-admin, or attempted to demote the last remaining admin."
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+    delete:
+      tags: [Members]
+      summary: Remove a member
+      description: >-
+        Requires role=admin. Soft-deletes by default. A member with
+        confirmed ledger entries cannot be hard-deleted. An admin cannot
+        remove themself if they are the last remaining admin.
+      parameters:
+        - name: force
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+          description: "'true' hard-deletes the row instead of soft-deleting, if there are no confirmed ledger entries for this member."
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/members/{memberId}/profile-history:
+    get:
+      tags: [Members]
+      summary: Get the field-level change history for a member's profile
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/memberId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      history: { type: array, items: { $ref: '#/components/schemas/ProfileHistoryEntry' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/members/{memberId}/contribution-summary:
+    get:
+      tags: [Members]
+      summary: Get a member's contribution summary across the workspace
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/memberId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/ContributionSummaryResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/invites:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+    post:
+      tags: [Invites]
+      summary: Create a new invite link
+      description: "Requires role=admin. Link expires after 7 days."
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/CreateInviteResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [Invites]
+      summary: List invite links for a workspace
+      description: "Requires role=admin."
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      invites: { type: array, items: { $ref: '#/components/schemas/Invite' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/invites/{inviteId}:
+    delete:
+      tags: [Invites]
+      summary: Revoke an invite link
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/inviteId'
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/groups:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+    get:
+      tags: [Groups]
+      summary: List groups
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      groups: { type: array, items: { $ref: '#/components/schemas/Group' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Groups]
+      summary: Create a group
+      description: "Requires role=admin. Invalid member_ids are silently skipped."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateGroupRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { group: { $ref: '#/components/schemas/Group' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/groups/{groupId}:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/groupId'
+    get:
+      tags: [Groups]
+      summary: Get a group with its full member list
+      description: "Requires role=admin."
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      group: { $ref: '#/components/schemas/Group' }
+                      members: { type: array, items: { $ref: '#/components/schemas/WorkspaceMember' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Groups]
+      summary: Update a group's name/description
+      description: "Requires role=admin."
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateGroupRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { group: { $ref: '#/components/schemas/Group' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Groups]
+      summary: Delete a group
+      description: "Requires role=admin."
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/groups/{groupId}/members:
+    post:
+      tags: [Groups]
+      summary: Add members to a group
+      description: "Requires role=admin. Invalid/already-present member_ids are reported, not errored."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/groupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddGroupMembersRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/AddGroupMembersResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/groups/{groupId}/members/{memberId}:
+    delete:
+      tags: [Groups]
+      summary: Remove a member from a group
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/groupId'
+        - $ref: '#/components/parameters/memberId'
+      responses:
+        '204':
+          description: Removed (or was not in the group — idempotent, no error either way).
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /workspaces/{workspaceId}/containers:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+    get:
+      tags: [Containers]
+      summary: List containers in a workspace
+      parameters:
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/ContainerType' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ContainerStatus' }
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      containers: { type: array, items: { $ref: '#/components/schemas/ContainerListItem' } }
+                      meta: { $ref: '#/components/schemas/ListContainersMeta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Containers]
+      summary: Create a container (event or recurring pool)
+      description: >-
+        Requires role=admin. **Note:** unlike every other endpoint in
+        this API, validation failures here return a bespoke
+        `{ error: { message, issues: [...] } }` shape (via Zod
+        safeParse) instead of the standard VALIDATION_FAILED envelope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateContainerRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { container: { $ref: '#/components/schemas/Container' } } } } }
+        '400':
+          description: Validation failed (non-standard error shape — see summary).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      message: { type: string }
+                      issues:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path: { type: string }
+                            message: { type: string }
+                            code: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/containerId'
+    get:
+      tags: [Containers]
+      summary: Get a container's details
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      container: { $ref: '#/components/schemas/Container' }
+                      current_cycle:
+                        $ref: '#/components/schemas/ContainerCycle'
+                        nullable: true
+                        description: "Only populated for recurring containers."
+                      tasks_enabled: { type: boolean }
+                      money_enabled: { type: boolean }
+                      participant_count: { type: integer }
+                      current_user_participation:
+                        $ref: '#/components/schemas/ContainerParticipant'
+                        nullable: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Containers]
+      summary: Update container details
+      description: "Requires role=admin. enable_money cannot be set to false if the container has ledger entries."
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateContainerRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { container: { $ref: '#/components/schemas/Container' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+    delete:
+      tags: [Containers]
+      summary: Soft-delete a container
+      description: "Requires role=admin. Fails if the container has any confirmed ledger entries."
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/restore:
+    post:
+      tags: [Containers]
+      summary: Restore a soft-deleted container
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { container: { $ref: '#/components/schemas/Container' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No soft-deleted container found with this ID.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /workspaces/{workspaceId}/containers/{containerId}/complete:
+    post:
+      tags: [Containers]
+      summary: Mark a container as completed
+      description: "Requires role=admin. Container must currently be status=active. Auto-creates a corresponding milestone."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompleteContainerRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { container: { $ref: '#/components/schemas/Container' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/convert-to-recurring:
+    post:
+      tags: [Containers]
+      summary: Convert a one-off event container into a recurring pool
+      description: >-
+        Requires role=admin. Source must be container_type=event and
+        status active or completed. Runs atomically via RPC — creates a
+        new recurring container and migrates participants; the source
+        container is left in place, referenced via converted_from_id.
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConvertToRecurringRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/ConvertToRecurringResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/archive:
+    post:
+      tags: [Containers]
+      summary: Archive a container
+      description: "Requires role=admin. Container must currently be status active or completed."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { container: { $ref: '#/components/schemas/Container' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Container not found or cannot be archived from its current status.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /workspaces/{workspaceId}/containers/{containerId}/generate-public-link:
+    post:
+      tags: [Containers]
+      summary: Generate (or regenerate) a public sharing link
+      description: "Requires role=admin. Regenerating invalidates any previously shared link."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/GeneratePublicLinkResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/summary:
+    get:
+      tags: [Containers]
+      summary: Get financial summary and per-participant status
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/ContainerSummaryResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/cycles:
+    get:
+      tags: [Containers]
+      summary: List cycles for a recurring container
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/CycleStatus' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      cycles: { type: array, items: { $ref: '#/components/schemas/ContainerCycle' } }
+                  meta: { $ref: '#/components/schemas/PaginatedMetaEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/cycles/{cycleId}/override:
+    post:
+      tags: [Containers]
+      summary: Apply an override to an upcoming or open cycle
+      description: >-
+        Requires role=admin. pause_pool marks the cycle skipped
+        immediately; skip_member and adjust_target take effect the next
+        time cycle generation runs for that cycle_start.
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/cycleId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CycleOverrideRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      override:
+                        type: object
+                        properties:
+                          id: { type: string, format: uuid }
+                          container_id: { type: string, format: uuid }
+                          cycle_start: { type: string, format: date }
+                          override_type: { $ref: '#/components/schemas/CycleOverrideType' }
+                          member_id: { type: string, format: uuid, nullable: true }
+                          new_target: { type: number, nullable: true }
+                          new_currency: { type: string, nullable: true }
+                          reason: { type: string, nullable: true }
+                          created_by: { type: string, format: uuid }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/outcome-files/upload-url:
+    post:
+      tags: [Containers]
+      summary: Get a signed upload URL for an outcome file (attached when completing a container)
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadUrlRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/UploadUrlResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "20 requests / hour / user"
+
+  /workspaces/{workspaceId}/containers/{containerId}/cover-photos/upload-url:
+    post:
+      tags: [Containers]
+      summary: Get a signed upload URL for a cover photo
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadUrlRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/UploadUrlResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "20 requests / hour / user"
+
+  /workspaces/{workspaceId}/containers/{containerId}/participants:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/containerId'
+    get:
+      tags: [Participants]
+      summary: List participants in a container
+      description: "Requires role=admin."
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      participants: { type: array, items: { $ref: '#/components/schemas/ContainerParticipant' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Participants]
+      summary: Add participants to a container
+      description: "Requires role=admin. Container must be status=active. Invalid/duplicate member IDs are reported, not errored."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddParticipantsRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/AddParticipantsResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/participants/from-group:
+    post:
+      tags: [Participants]
+      summary: Bulk-add all members of a group as participants
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddParticipantsFromGroupRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/AddParticipantsFromGroupResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/participants/{participantId}:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/containerId'
+      - $ref: '#/components/parameters/participantId'
+    patch:
+      tags: [Participants]
+      summary: Update a participant
+      description: "Requires role=admin. money_enabled cannot be set to false if this participant has confirmed ledger entries."
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateParticipantRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { participant: { $ref: '#/components/schemas/ContainerParticipant' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+    delete:
+      tags: [Participants]
+      summary: Remove a participant
+      description: "Requires role=admin. Fails if the participant has confirmed ledger entries."
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/participants/{participantId}/set-target:
+    post:
+      tags: [Participants]
+      summary: Set (or replace) a participant's current contribution target
+      description: "Requires role=admin. Container must have enable_money=true. Runs atomically via RPC."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/participantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetTargetRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/SetTargetResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/participants/{participantId}/target-history:
+    get:
+      tags: [Participants]
+      summary: Get the full history of targets set for a participant
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/participantId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      history: { type: array, items: { $ref: '#/components/schemas/ContributorTarget' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/participants/{participantId}/cycle-targets:
+    get:
+      tags: [Participants]
+      summary: Get per-cycle target/payment status for a participant (recurring containers)
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/participantId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/CycleTargetsResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /workspaces/{workspaceId}/containers/{containerId}/ledger:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/containerId'
+    get:
+      tags: [Ledger]
+      summary: List ledger entries in a container
+      description: "Non-admins only ever see their own entries (contributor_id filter is forced server-side)."
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - name: contributor_id
+          in: query
+          schema: { type: string, format: uuid }
+          description: "Admin only."
+        - name: filter[contributor_id]
+          in: query
+          schema: { type: string, format: uuid }
+          description: "Admin only; alternate param name accepted."
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/LedgerEntryStatus' }
+        - name: filter[status]
+          in: query
+          schema: { $ref: '#/components/schemas/LedgerEntryStatus' }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          entries: { type: array, items: { $ref: '#/components/schemas/LedgerEntry' } }
+                      meta: { $ref: '#/components/schemas/PaginatedMetaEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Ledger]
+      summary: Record a new ledger entry (contribution or expense)
+      description: >-
+        Non-admin submissions are created with status=pending and
+        require confirmation; admin submissions are auto-confirmed. A
+        duplicate-detection window (same container/contributor/amount
+        within 10 minutes) returns 409 unless `?force=true` is set or an
+        X-Idempotency-Key is provided.
+      parameters:
+        - $ref: '#/components/parameters/idempotencyKey'
+        - name: force
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+          description: "Bypasses the 10-minute duplicate-detection window."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateLedgerEntryRequest' }
+      responses:
+        '201':
+          description: New entry created.
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/CreateEntryResponse' } } }
+        '200':
+          description: Idempotency-key match — the original entry is returned (idempotent=true).
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/CreateEntryResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Possible duplicate contribution detected within the last 10 minutes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: CONFLICT, message: "Possible duplicate contribution detected within the last 10 minutes. Use ?force=true to override.", details: { existing_entry_id: "..." } }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/ledger/summary:
+    get:
+      tags: [Ledger]
+      summary: Get aggregate ledger totals for a container
+      description: "Non-admins only see totals for their own entries."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { summary: { $ref: '#/components/schemas/LedgerSummary' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/ledger/{entryId}:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/containerId'
+      - $ref: '#/components/parameters/entryId'
+    get:
+      tags: [Ledger]
+      summary: Get a single ledger entry
+      description: "Non-admins can only view their own entries."
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { entry: { $ref: '#/components/schemas/LedgerEntry' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Ledger]
+      summary: Edit a ledger entry
+      description: "Only entries with status=pending can be edited. Non-admins can only edit their own entries and cannot change contributor_id."
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateLedgerEntryRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { entry: { $ref: '#/components/schemas/LedgerEntry' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+    delete:
+      tags: [Ledger]
+      summary: Delete a ledger entry
+      description: >-
+        Only entries with status pending or proof_uploaded can be
+        deleted (use add-correction to adjust confirmed entries).
+        Non-admins can only delete their own entries.
+      responses:
+        '200':
+          content:
+            application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MessageResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/ledger/{entryId}/upload-proof:
+    post:
+      tags: [Ledger]
+      summary: Get a signed upload URL for a proof file
+      description: "Non-admins can only upload proof for their own entries."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/entryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadUrlRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/UploadUrlResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "20 requests / hour / user"
+
+  /workspaces/{workspaceId}/containers/{containerId}/ledger/{entryId}/confirm-proof:
+    post:
+      tags: [Ledger]
+      summary: Attach an uploaded proof file to the entry
+      description: >-
+        Call after the file has been PUT to the upload_url from
+        upload-proof. The uploaded bytes are verified server-side
+        against the declared MIME type before being trusted. If the
+        entry was status=pending, it transitions to proof_uploaded and
+        admins are notified.
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/entryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmUploadRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { entry: { $ref: '#/components/schemas/LedgerEntry' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: "Uploaded file's actual bytes don't match its declared content type."
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /workspaces/{workspaceId}/containers/{containerId}/ledger/{entryId}/confirm:
+    post:
+      tags: [Ledger]
+      summary: Confirm a pending or proof-uploaded entry
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/entryId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { entry: { $ref: '#/components/schemas/LedgerEntry' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/ledger/{entryId}/add-correction:
+    post:
+      tags: [Ledger]
+      summary: Add a correction entry against a confirmed entry
+      description: >-
+        Requires role=admin. Source entry must be status=confirmed
+        (pending/proof_uploaded entries should be edited or deleted
+        directly instead). Creates a new, separately-confirmed
+        ledger_entries row of entry_type=correction referencing the
+        original via corrects_entry_id.
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/entryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddCorrectionRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/AddCorrectionResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/ledger/{entryId}/proof-url:
+    get:
+      tags: [Ledger]
+      summary: Get a signed download URL for a specific proof file
+      description: "Non-admins can only access proofs on their own entries."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/entryId'
+        - name: file_index
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/DownloadUrlResponse' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/ledger/{entryId}/proof/{proofIndex}:
+    delete:
+      tags: [Ledger]
+      summary: Delete a proof file from an entry
+      description: >-
+        Non-admins can only delete proofs on their own entries, and only
+        if the entry is not yet confirmed (confirmed-entry proofs can
+        only be removed by an admin).
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/entryId'
+        - $ref: '#/components/parameters/proofIndex'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { entry: { $ref: '#/components/schemas/LedgerEntry' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/ledger/{entryId}/dispute:
+    post:
+      tags: [Disputes]
+      summary: Raise a dispute against a ledger entry
+      description: >-
+        Entry must be status confirmed or pending. Non-admins may only
+        dispute their own entries. Transitions the entry to
+        status=disputed and notifies workspace admins.
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/entryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateDisputeRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/RaiseDisputeResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/disputes:
+    get:
+      tags: [Disputes]
+      summary: List disputes in a workspace
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/DisputeStatus' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          disputes: { type: array, items: { $ref: '#/components/schemas/Dispute' } }
+                      meta: { $ref: '#/components/schemas/PaginatedMetaEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/disputes/{disputeId}:
+    get:
+      tags: [Disputes]
+      summary: Get a single dispute with its underlying ledger entry
+      description: "Accessible to admins or the member who raised it."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/disputeId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      dispute: { $ref: '#/components/schemas/Dispute' }
+                      entry:
+                        $ref: '#/components/schemas/LedgerEntry'
+                        nullable: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/disputes/{disputeId}/note:
+    post:
+      tags: [Disputes]
+      summary: Add a note to a dispute
+      description: "Accessible to admins or the member who raised it."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/disputeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddDisputeNoteRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { dispute: { $ref: '#/components/schemas/Dispute' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/disputes/{disputeId}/resolve:
+    post:
+      tags: [Disputes]
+      summary: Resolve a dispute
+      description: "Requires role=admin. Dispute must currently be status=open. Runs atomically via RPC — updates both the dispute and its ledger entry's status."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/disputeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolveDisputeRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { dispute: { $ref: '#/components/schemas/Dispute' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+  /workspaces/{workspaceId}/containers/{containerId}/tasks:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/containerId'
+    get:
+      tags: [Tasks]
+      summary: List tasks in a container
+      description: "Non-admins only see tasks assigned to them."
+      parameters:
+        - name: filter[assigned_to]
+          in: query
+          schema: { type: string, format: uuid }
+          description: "Admin only."
+        - name: filter[status]
+          in: query
+          schema: { $ref: '#/components/schemas/TaskStatus' }
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      tasks: { type: array, items: { $ref: '#/components/schemas/Task' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      description: "Requires role=admin. assigned_to (if set) must already be a participant in this container."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTaskRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { task: { $ref: '#/components/schemas/Task' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/tasks/bulk:
+    post:
+      tags: [Tasks]
+      summary: Create up to 50 tasks in one call
+      description: "Requires role=admin. Each task is processed independently — a failure on one does not roll back the others; see the `failed` array in the response."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkCreateTasksRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/BulkCreateTasksResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/tasks/export:
+    get:
+      tags: [Tasks]
+      summary: Export tasks as CSV
+      description: "Non-admins receive only their own assigned tasks (my-tasks-*.csv); admins receive all tasks (tasks-export-*.csv)."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+      responses:
+        '200':
+          description: CSV file download.
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/tasks/{taskId}:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/containerId'
+      - $ref: '#/components/parameters/taskId'
+    get:
+      tags: [Tasks]
+      summary: Get a single task
+      description: "Non-admins can only view tasks assigned to them."
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { task: { $ref: '#/components/schemas/Task' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Tasks]
+      summary: Update a task
+      description: >-
+        Admins may edit any allowed field. Non-admins may only be the
+        assignee and may only set status (to in_progress or completed)
+        and/or completion_note — any other field is 403 for non-admins.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateTaskRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { task: { $ref: '#/components/schemas/Task' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Tasks]
+      summary: Soft-delete a task
+      description: "Requires role=admin."
+      responses:
+        '204':
+          description: Deleted.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/tasks/{taskId}/reassign:
+    patch:
+      tags: [Tasks]
+      summary: Reassign a task to a different participant
+      description: >-
+        Requires role=admin. New assignee (if set) must be an existing
+        participant. Fails if the task is already in_progress or
+        completed — override the status first if needed.
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/taskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReassignTaskRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { task: { $ref: '#/components/schemas/Task' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/tasks/{taskId}/status:
+    patch:
+      tags: [Tasks]
+      summary: Admin hard-override of task status
+      description: "Requires role=admin. Bypasses normal status-transition rules — use for corrections/exceptions."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/taskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OverrideTaskStatusRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { task: { $ref: '#/components/schemas/Task' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/tasks/{taskId}/confirm:
+    post:
+      tags: [Tasks]
+      summary: Admin confirms a completed task
+      description: "Requires role=admin. Task must be status=completed and not already confirmed."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/taskId'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminConfirmTaskRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { task: { $ref: '#/components/schemas/Task' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleError' }
+
+  /workspaces/{workspaceId}/containers/{containerId}/tasks/{taskId}/upload-proof:
+    post:
+      tags: [Tasks]
+      summary: Get a signed upload URL for task-completion proof
+      description: "Non-admins can only upload proof for tasks assigned to them."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/taskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadUrlRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/UploadUrlResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "20 requests / hour / user"
+
+  /workspaces/{workspaceId}/containers/{containerId}/tasks/{taskId}/confirm-proof:
+    post:
+      tags: [Tasks]
+      summary: Attach an uploaded proof file to a task
+      description: "Non-admins can only attach proof to tasks assigned to them. Uploaded bytes are verified against the declared MIME type."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/taskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmUploadRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { task: { $ref: '#/components/schemas/Task' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: "Uploaded file's actual bytes don't match its declared content type."
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /workspaces/{workspaceId}/containers/{containerId}/tasks/{taskId}/proof/{proofIndex}:
+    delete:
+      tags: [Tasks]
+      summary: Delete a proof file from a task
+      description: "Non-admins can only delete proofs on tasks assigned to them."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/containerId'
+        - $ref: '#/components/parameters/taskId'
+        - $ref: '#/components/parameters/proofIndex'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { task: { $ref: '#/components/schemas/Task' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/milestones:
+    post:
+      tags: [Milestones]
+      summary: Create a milestone
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateMilestoneRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { milestone: { $ref: '#/components/schemas/Milestone' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/milestones/{milestoneId}:
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/milestoneId'
+    get:
+      tags: [Milestones]
+      summary: Get a single milestone
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { milestone: { $ref: '#/components/schemas/Milestone' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Milestones]
+      summary: Update a milestone
+      description: "Requires role=admin."
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateMilestoneRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { milestone: { $ref: '#/components/schemas/Milestone' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Milestones]
+      summary: Soft-delete a milestone
+      description: "Requires role=admin."
+      responses:
+        '204':
+          description: Deleted.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workspaces/{workspaceId}/milestones/{milestoneId}/photos/upload-url:
+    post:
+      tags: [Milestones]
+      summary: Get a signed upload URL for a milestone photo
+      description: "Requires role=admin."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/milestoneId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadUrlRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/UploadUrlResponse' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      x-rate-limit: "20 requests / hour / user"
+
+  /workspaces/{workspaceId}/milestones/{milestoneId}/photos/confirm:
+    post:
+      tags: [Milestones]
+      summary: Attach an uploaded photo to a milestone
+      description: "Requires role=admin. Uploaded bytes are verified against the declared MIME type."
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/milestoneId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmUploadRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { milestone: { $ref: '#/components/schemas/Milestone' } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: "Uploaded file's actual bytes don't match its declared content type."
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List the caller's notifications
+      description: >-
+        User-scoped, not workspace-scoped in the URL — but each
+        notification belongs to a specific workspace membership. If
+        workspace_id is omitted, resolves to the caller's most-recently-
+        joined active membership.
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - name: is_read
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+        - name: workspace_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          notifications: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+                          unread_count: { type: integer }
+                      meta: { $ref: '#/components/schemas/PaginatedMetaEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No active workspace membership found for the caller.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /notifications/count:
+    get:
+      tags: [Notifications]
+      summary: Get the unread notification count
+      description: Lightweight endpoint intended for badge polling.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { unread_count: { type: integer } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No active workspace membership found for the caller.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /notifications/read-all:
+    patch:
+      tags: [Notifications]
+      summary: Mark all notifications as read
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workspace_id:
+                  type: string
+                  format: uuid
+                  description: "If provided, scopes the mark-all-read to this workspace only."
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { updated_count: { type: integer } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No active workspace membership found for the caller.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+  /notifications/{notificationId}/read:
+    patch:
+      tags: [Notifications]
+      summary: Mark a single notification as read
+      parameters:
+        - $ref: '#/components/parameters/notificationId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: object, properties: { notification: { $ref: '#/components/schemas/Notification' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Supabase-issued JWT access token, obtained from /auth/login,
+        /auth/signup (if email confirmation is not required),
+        /auth/refresh, or /auth/google/callback. Send as
+        Authorization Bearer <access_token>.
+  parameters:
+    workspaceId:
+      name: workspaceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Workspace ID. Caller must be an active member.
+    containerId:
+      name: containerId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    memberId:
+      name: memberId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: A workspace_members.id (NOT a users.id).
+    entryId:
+      name: entryId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    taskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    disputeId:
+      name: disputeId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    groupId:
+      name: groupId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    participantId:
+      name: participantId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: A container_participants.id.
+    milestoneId:
+      name: milestoneId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    inviteId:
+      name: inviteId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    cycleId:
+      name: cycleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    contactId:
+      name: contactId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    notificationId:
+      name: notificationId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    proofIndex:
+      name: proofIndex
+      in: path
+      required: true
+      schema: { type: integer, minimum: 0 }
+      description: Zero-based index into the entry/task's proofs array.
+    token:
+      name: token
+      in: path
+      required: true
+      schema: { type: string }
+      description: Opaque invite token.
+    publicToken:
+      name: publicToken
+      in: path
+      required: true
+      schema: { type: string }
+      description: Opaque public-sharing token for a container.
+    page:
+      name: page
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, default: 1 }
+    perPage:
+      name: per_page
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    sort:
+      name: sort
+      in: query
+      required: false
+      schema: { type: string }
+      description: >-
+        Field to sort by. Prefix with - for descending (e.g. -created_at).
+        Unrecognized fields silently fall back to each endpoint's default sort.
+    idempotencyKey:
+      name: X-Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string }
+      description: >-
+        Client-generated UUID. If a ledger entry was already created with
+        this key (within the same workspace), the original entry is
+        returned again with idempotent true instead of creating a
+        duplicate. Recommended on every POST .../ledger.
+  responses:
+    Unauthorized:
+      description: Missing, malformed, or expired bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: { code: UNAUTHORIZED, message: "Invalid or expired token" }
+    Forbidden:
+      description: Authenticated, but not permitted to perform this action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: { code: FORBIDDEN, message: "Admin access required" }
+    NotFound:
+      description: >-
+        Resource not found. Also returned for a workspace the caller is
+        not an active member of (workspace-enumeration protection).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: { code: NOT_FOUND, message: "Resource not found" }
+    ValidationError:
+      description: Request body/query failed schema validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorBody'
+    Conflict:
+      description: The request conflicts with existing state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: { code: CONFLICT, message: "A record with this data already exists." }
+    BusinessRuleError:
+      description: The request is well-formed but violates a business rule.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: { code: BUSINESS_RULE_VIOLATION, message: "Only pending entries can be edited" }
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: { code: RATE_LIMITED, message: "Too many auth attempts. Try again in a minute." }
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_FAILED
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - BUSINESS_RULE_VIOLATION
+                - RATE_LIMITED
+                - INTERNAL_ERROR
+                - SERVICE_UNAVAILABLE
+                - AUTH_ERROR
+            message:
+              type: string
+            field:
+              type: string
+              description: Present on some validation/field-specific errors.
+            details:
+              type: object
+              nullable: true
+    ValidationErrorBody:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [VALIDATION_FAILED]
+            message:
+              type: string
+            field:
+              type: string
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+                  code: { type: string }
+    PaginationMeta:
+      type: object
+      properties:
+        page: { type: integer, example: 1 }
+        per_page: { type: integer, example: 20 }
+        total: { type: integer, example: 47 }
+        total_pages: { type: integer, example: 3 }
+    PaginatedMetaEnvelope:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    # ── Enums (extracted from validators + service logic) ───────────
+    SupportedCurrency:
+      type: string
+      enum: [GBP, USD, CAD, EUR, NGN, KES, GHS, INR, ZAR, JPY, AUD, CHF, CNY, MXN, BRL, SGD, AED, SAR, ZMW]
+    FamilyType:
+      type: string
+      enum: [nuclear, extended, blended, community, association, other]
+    RecurrenceCadence:
+      type: string
+      enum: [monthly, weekly, quarterly, yearly, custom]
+    ContainerType:
+      type: string
+      enum: [event, recurring]
+    ContainerStatus:
+      type: string
+      enum: [active, completed, archived]
+      description: >-
+        `archived` and `completed` are set by the service layer (not a
+        validator enum) via POST .../complete and POST .../archive.
+    EventTypeCategory:
+      type: string
+      enum: [celebration, memorial, financial, logistical, other]
+    MemberRole:
+      type: string
+      enum: [admin, member]
+    RelationshipCategory:
+      type: string
+      enum: [blood, marriage, in_law, friend, other]
+    LedgerEntryType:
+      type: string
+      enum: [contribution, expense, correction, carry_forward]
+      description: >-
+        `contribution`/`expense` are client-settable via POST .../ledger.
+        `correction` is set by POST .../add-correction. `carry_forward`
+        is system-generated by the cycle-lifecycle job.
+    LedgerEntryStatus:
+      type: string
+      enum: [pending, proof_uploaded, confirmed, disputed]
+    PaymentMethod:
+      type: string
+      enum: [cash, bank_transfer, mobile_money, crypto, other]
+      description: >-
+        On create (POST .../ledger), common synonyms are normalized
+        server-side (e.g. "Bank Transfer" / "bank" → bank_transfer,
+        "Mobile Money" → mobile_money); any other string is rejected
+        with a validation error. On update (PATCH .../ledger/:entryId)
+        only the canonical enum values are accepted directly.
+    TaskStatus:
+      type: string
+      enum: [pending, in_progress, completed, overdue, cancelled]
+    DisputeStatus:
+      type: string
+      enum: [open, resolved]
+    MilestoneType:
+      type: string
+      enum: [birth, graduation, wedding, death, migration, achievement, custom]
+    CycleStatus:
+      type: string
+      enum: [upcoming, open, closed, skipped]
+    CycleOverrideType:
+      type: string
+      enum: [pause_pool, skip_member, adjust_target]
+    NotificationType:
+      type: string
+      enum:
+        - contribution_submitted
+        - contribution_confirmed
+        - contribution_disputed
+        - dispute_resolved
+        - task_assigned
+        - task_completed
+        - task_overdue
+        - task_confirmed
+        - invite_accepted
+        - payment_reminder
+        - overdue_reminder
+        - cycle_started
+        - cycle_closing_soon
+        - container_completed
+        - admin_announcement
+        - overdue_summary_admin
+        - member_removed
+      description: >-
+        `task_confirmed` is sent by task.service.adminConfirmTask but has
+        no corresponding entry in notification.service's TEMPLATES
+        registry.
+    ContactType:
+      type: string
+      enum: [email_secondary, whatsapp, phone, telegram, signal, instagram, facebook, twitter, linkedin, custom]
+    UploadFileType:
+      type: string
+      enum: [proof, task_proof, cover_photo, outcome_file, milestone_photo, avatar, workspace_avatar]
+
+    # ── Core domain objects ───────────────────────────────────────
+    User:
+      type: object
+      description: A platform user's profile (public.users row).
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        full_name: { type: string, nullable: true }
+        bio: { type: string, nullable: true }
+        country_of_residence: { type: string, nullable: true }
+        timezone: { type: string, nullable: true }
+        preferred_language: { type: string, example: en }
+        avatar_url: { type: string, format: uri, nullable: true }
+        auth_provider: { type: string, enum: [email, google] }
+        push_enabled: { type: boolean }
+        email_digest_enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true }
+    UserContact:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/ContactType' }
+        value: { type: string }
+        label: { type: string, nullable: true }
+        country_code: { type: string, nullable: true }
+        is_primary: { type: boolean }
+        created_at: { type: string, format: date-time }
+    WorkspaceMembership:
+      type: object
+      description: One of the caller's memberships, as returned by GET /auth/me and GET /workspaces.
+      properties:
+        member_id: { type: string, format: uuid }
+        role: { $ref: '#/components/schemas/MemberRole' }
+        display_name: { type: string }
+        workspace_id: { type: string, format: uuid }
+        workspace_name: { type: string }
+        base_currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        avatar_url: { type: string, format: uri, nullable: true }
+        visibility: { type: string, enum: [private, public] }
+    Workspace:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        base_currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        family_type: { $ref: '#/components/schemas/FamilyType' }
+        description: { type: string, nullable: true }
+        avatar_url: { type: string, format: uri, nullable: true }
+        visibility: { type: string, enum: [private, public] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true }
+    CurrentMember:
+      type: object
+      description: >-
+        The caller's own membership context for the current workspace, as
+        attached to req.member by the requireMembership middleware. Note:
+        camelCase field names, unlike the snake_case WorkspaceMember
+        schema returned by the /members endpoints.
+      properties:
+        id: { type: string, format: uuid }
+        role: { $ref: '#/components/schemas/MemberRole' }
+        displayName: { type: string }
+        isProxy: { type: boolean }
+        isActive: { type: boolean }
+        workspaceId: { type: string, format: uuid }
+    WorkspaceMember:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid, nullable: true, description: "null for proxy members with no login" }
+        display_name: { type: string }
+        role: { $ref: '#/components/schemas/MemberRole' }
+        is_proxy: { type: boolean }
+        proxy_managed_by: { type: string, format: uuid, nullable: true }
+        is_active: { type: boolean }
+        relationship_to_head: { type: string, nullable: true }
+        relationship_category: { $ref: '#/components/schemas/RelationshipCategory' }
+        date_of_birth: { type: string, format: date, nullable: true }
+        admin_notes:
+          type: string
+          nullable: true
+          description: Admin-only field; omitted from the response entirely for non-admin callers.
+        last_active_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Admin-only field; omitted from the response entirely for non-admin callers.
+        contribution_streak_months:
+          type: integer
+          nullable: true
+          description: Admin-only field; omitted from the response entirely for non-admin callers.
+        email: { type: string, format: email, description: "Joined from users table" }
+        country_of_residence: { type: string, nullable: true }
+        timezone: { type: string, nullable: true }
+        joined_at: { type: string, format: date-time, nullable: true }
+        invited_at: { type: string, format: date-time, nullable: true }
+        invite_status: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true }
+    Group:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        created_by: { type: string, format: uuid }
+        member_count: { type: integer }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceMember' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Container:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        name: { type: string }
+        subtitle: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        container_type: { $ref: '#/components/schemas/ContainerType' }
+        status: { $ref: '#/components/schemas/ContainerStatus' }
+        enable_money: { type: boolean }
+        enable_tasks: { type: boolean }
+        event_date: { type: string, format: date, nullable: true }
+        event_type: { type: string, nullable: true }
+        event_type_category: { $ref: '#/components/schemas/EventTypeCategory' }
+        budget_target: { type: number, format: double, nullable: true }
+        budget_currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        recurrence_cadence: { $ref: '#/components/schemas/RecurrenceCadence' }
+        recurrence_days: { type: integer, nullable: true, description: "Only used when recurrence_cadence=custom" }
+        recurrence_start: { type: string, format: date, nullable: true }
+        recurrence_end: { type: string, format: date, nullable: true }
+        carry_forward_unpaid: { type: boolean }
+        auto_generate_cycles: { type: boolean }
+        public_token: { type: string, nullable: true }
+        public_show_names: { type: boolean }
+        outcome_details: { type: string, nullable: true }
+        outcome_files:
+          type: array
+          items: { $ref: '#/components/schemas/UploadedFile' }
+        cover_photos:
+          type: array
+          items: { $ref: '#/components/schemas/UploadedFile' }
+        converted_from_id: { type: string, format: uuid, nullable: true }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }
+        deleted_at: { type: string, format: date-time, nullable: true }
+    ContainerListItem:
+      allOf:
+        - $ref: '#/components/schemas/Container'
+        - type: object
+          properties:
+            participant_count: { type: integer }
+            total_confirmed_base: { type: number, format: double }
+    ContainerCycle:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        container_id: { type: string, format: uuid }
+        cycle_number: { type: integer }
+        cycle_start: { type: string, format: date }
+        cycle_end: { type: string, format: date }
+        status: { $ref: '#/components/schemas/CycleStatus' }
+        total_expected: { type: number, format: double, nullable: true }
+        total_collected: { type: number, format: double, nullable: true }
+        closed_at: { type: string, format: date-time, nullable: true }
+    ContainerParticipant:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        container_id: { type: string, format: uuid }
+        workspace_member_id: { type: string, format: uuid }
+        money_enabled: { type: boolean }
+        tasks_enabled: { type: boolean }
+        role: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        exclude_from_public: { type: boolean }
+        added_by: { type: string, format: uuid }
+        display_name: { type: string }
+        is_proxy: { type: boolean }
+        member_role: { $ref: '#/components/schemas/MemberRole' }
+        target_amount: { type: number, format: double, nullable: true }
+        target_currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        due_date: { type: string, format: date, nullable: true }
+        target_id: { type: string, format: uuid, nullable: true }
+    ContributorTarget:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        container_participant_id: { type: string, format: uuid }
+        container_id: { type: string, format: uuid }
+        workspace_member_id: { type: string, format: uuid }
+        cycle_id: { type: string, format: uuid, nullable: true }
+        target_amount: { type: number, format: double }
+        target_currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        due_date: { type: string, format: date, nullable: true }
+        is_current: { type: boolean }
+        set_by: { type: string, format: uuid }
+        set_by_name: { type: string }
+        set_at: { type: string, format: date-time }
+    UploadedFile:
+      type: object
+      properties:
+        url: { type: string, description: "Storage file_path, not a browsable URL — use the proof-url/download endpoint" }
+        name: { type: string }
+        size: { type: integer }
+        mime_type: { type: string }
+        uploaded_by: { type: string, format: uuid }
+        uploaded_at: { type: string, format: date-time }
+    LedgerEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        container_id: { type: string, format: uuid }
+        cycle_id: { type: string, format: uuid, nullable: true }
+        entry_type: { $ref: '#/components/schemas/LedgerEntryType' }
+        contributor_id: { type: string, format: uuid }
+        contributor_name: { type: string }
+        original_amount: { type: number, format: double }
+        original_currency: { type: string }
+        base_amount: { type: number, format: double }
+        payment_method: { $ref: '#/components/schemas/PaymentMethod' }
+        status: { $ref: '#/components/schemas/LedgerEntryStatus' }
+        note: { type: string, nullable: true }
+        is_crypto: { type: boolean }
+        idempotency_key: { type: string, nullable: true }
+        proofs:
+          type: array
+          items: { $ref: '#/components/schemas/UploadedFile' }
+        corrects_entry_id: { type: string, format: uuid, nullable: true }
+        recorded_by: { type: string, format: uuid, nullable: true }
+        recorded_by_name: { type: string, nullable: true }
+        recorded_at: { type: string, format: date-time }
+        confirmed_by: { type: string, format: uuid, nullable: true }
+        confirmed_by_name: { type: string, nullable: true }
+        confirmed_at: { type: string, format: date-time, nullable: true }
+    LedgerSummary:
+      type: object
+      properties:
+        confirmed_count: { type: integer }
+        confirmed_base_total: { type: number, format: double }
+        pending_count: { type: integer, description: "pending + proof_uploaded" }
+        pending_base_total: { type: number, format: double }
+        disputed_count: { type: integer }
+        disputed_base_total: { type: number, format: double }
+        total_count: { type: integer }
+        total_base_amount: { type: number, format: double }
+    Dispute:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        ledger_entry_id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/DisputeStatus' }
+        reason: { type: string }
+        raised_by: { type: string, format: uuid }
+        raised_by_name: { type: string }
+        raised_at: { type: string, format: date-time }
+        resolved_by: { type: string, format: uuid, nullable: true }
+        resolved_by_name: { type: string, nullable: true }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        resolution_note: { type: string, nullable: true }
+        notes:
+          type: array
+          items:
+            type: object
+            properties:
+              author_id: { type: string, format: uuid }
+              note: { type: string }
+              added_at: { type: string, format: date-time }
+        original_amount: { type: number, format: double }
+        original_currency: { type: string }
+        base_amount: { type: number, format: double }
+        entry_status: { $ref: '#/components/schemas/LedgerEntryStatus' }
+    Task:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        container_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        assigned_to: { type: string, format: uuid, nullable: true }
+        assigned_to_name: { type: string, nullable: true }
+        due_date: { type: string, format: date, nullable: true }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        sort_order: { type: integer }
+        completion_note: { type: string, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        completed_by: { type: string, format: uuid, nullable: true }
+        admin_confirmed_at: { type: string, format: date-time, nullable: true }
+        admin_confirmed_by: { type: string, format: uuid, nullable: true }
+        admin_note: { type: string, nullable: true }
+        proofs:
+          type: array
+          items: { $ref: '#/components/schemas/UploadedFile' }
+        created_by: { type: string, format: uuid }
+        created_by_name: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true }
+    Milestone:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        milestone_date: { type: string, format: date }
+        milestone_type: { $ref: '#/components/schemas/MilestoneType' }
+        photos:
+          type: array
+          items: { $ref: '#/components/schemas/UploadedFile' }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true }
+    TimelineItem:
+      type: object
+      description: A merged, date-sorted feed item — either a completed container or a milestone.
+      properties:
+        type: { type: string, enum: [container_completed, milestone] }
+        date: { type: string, format: date-time }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        photos:
+          type: array
+          items: { $ref: '#/components/schemas/UploadedFile' }
+        reference_id: { type: string, format: uuid }
+        reference_type: { type: string, enum: [container, milestone] }
+    Invite:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        token: { type: string }
+        created_by: { type: string, format: uuid }
+        created_by_name: { type: string, nullable: true }
+        expires_at: { type: string, format: date-time }
+        used_at: { type: string, format: date-time, nullable: true }
+        used_by_user_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid, nullable: true }
+        recipient_id: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/NotificationType' }
+        title: { type: string }
+        body: { type: string }
+        reference_type: { type: string, nullable: true }
+        reference_id: { type: string, format: uuid, nullable: true }
+        is_read: { type: boolean }
+        read_at: { type: string, format: date-time, nullable: true }
+        dedup_key: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    AuditLogEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        actor_user_id: { type: string, format: uuid, nullable: true }
+        actor_member_id: { type: string, format: uuid, nullable: true }
+        actor_name: { type: string, description: "Resolved display name, or 'System' for automated actions" }
+        action: { type: string, example: container.created }
+        target_type: { type: string, nullable: true }
+        target_id: { type: string, format: uuid, nullable: true }
+        metadata: { type: object, nullable: true }
+        ip_address: { type: string, nullable: true }
+        user_agent: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    SearchResult:
+      type: object
+      properties:
+        type: { type: string, enum: [member, container] }
+        id: { type: string, format: uuid }
+        display_name: { type: string, description: "Present when type=member" }
+        role: { $ref: '#/components/schemas/MemberRole' }
+        is_proxy: { type: boolean, description: "Present when type=member" }
+        name: { type: string, description: "Present when type=container" }
+        container_type: { $ref: '#/components/schemas/ContainerType' }
+        status: { type: string, description: "Present when type=container" }
+    UploadUrlResponse:
+      type: object
+      properties:
+        upload_url:
+          type: string
+          format: uri
+          description: Signed Supabase Storage URL. PUT the raw file bytes here directly.
+        file_path:
+          type: string
+          description: Pass this back in the corresponding "confirm" call.
+        expires_in: { type: integer, example: 300 }
+    # ── Auth request bodies ──────────────────────────────────────
+    SignupRequest:
+      type: object
+      required: [email, password, full_name, country_of_residence]
+      properties:
+        email: { type: string, format: email }
+        password:
+          type: string
+          minLength: 8
+          maxLength: 72
+          description: Must contain at least one uppercase letter and one number.
+        full_name: { type: string, minLength: 2, maxLength: 100 }
+        country_of_residence: { type: string, minLength: 2, maxLength: 100 }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1 }
+    RegisterRequest:
+      type: object
+      description: full_name/country_of_residence are optional for OAuth users (auto-populated from Google profile); required for email/password users.
+      properties:
+        full_name: { type: string, minLength: 2, maxLength: 100 }
+        country_of_residence: { type: string, minLength: 2, maxLength: 100 }
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+    ResetPasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password: { type: string, minLength: 8, maxLength: 72, description: Must contain at least one uppercase letter and one number. }
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string, minLength: 1 }
+        new_password: { type: string, minLength: 8, maxLength: 72 }
+    GoogleCallbackRequest:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string }
+    VerifyEmailRequest:
+      type: object
+      required: [token_hash]
+      properties:
+        token_hash: { type: string }
+        type: { type: string, default: email }
+    UpdateProfileRequest:
+      type: object
+      properties:
+        full_name: { type: string, minLength: 2, maxLength: 100 }
+        bio: { type: string, maxLength: 500 }
+        country_of_residence: { type: string, maxLength: 100 }
+        timezone: { type: string, maxLength: 100 }
+        avatar_url: { type: string, format: uri }
+        push_enabled: { type: boolean }
+        email_digest_enabled: { type: boolean }
+        preferred_language: { type: string, maxLength: 10 }
+    UploadUrlRequest:
+      type: object
+      required: [filename, content_type, file_size]
+      properties:
+        filename: { type: string, minLength: 1, maxLength: 255 }
+        content_type: { type: string, description: "MIME type; must be an allowed type for the target fileType (see UploadFileType)." }
+        file_size: { type: integer, minimum: 1, description: "Bytes; must be under the per-fileType max (5-50MB depending on type)." }
+    ConfirmUploadRequest:
+      type: object
+      required: [file_path, name, size, mime_type]
+      properties:
+        file_path: { type: string, description: "The file_path returned by the corresponding upload-url endpoint." }
+        name: { type: string, maxLength: 255 }
+        size: { type: integer, minimum: 1 }
+        mime_type: { type: string }
+    UpsertContactRequest:
+      type: object
+      required: [type, value]
+      properties:
+        type: { $ref: '#/components/schemas/ContactType' }
+        value: { type: string, minLength: 1, maxLength: 200 }
+        label: { type: string, maxLength: 80 }
+        country_code: { type: string, maxLength: 10 }
+        is_primary: { type: boolean, default: false }
+    UpdateContactsRequest:
+      type: object
+      required: [contacts]
+      properties:
+        contacts:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [type, value]
+            properties:
+              type: { $ref: '#/components/schemas/ContactType' }
+              value: { type: string, minLength: 1, maxLength: 200 }
+              label: { type: string, maxLength: 80 }
+              country_code: { type: string, maxLength: 10 }
+              is_primary: { type: boolean, default: false }
+      description: >-
+        Full replacement, scoped per contact type — atomically replaces
+        all existing contacts of each type present in this array.
+    RegisterPushTokenRequest:
+      type: object
+      required: [token, platform]
+      properties:
+        token: { type: string, minLength: 10 }
+        platform: { type: string, enum: [web, ios, android] }
+    NotificationPrefsRequest:
+      type: object
+      properties:
+        push_enabled: { type: boolean }
+        email_digest_enabled: { type: boolean }
+
+    # ── Workspace request bodies ─────────────────────────────────
+    CreateWorkspaceRequest:
+      type: object
+      required: [name, base_currency]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 80 }
+        base_currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        family_type: { $ref: '#/components/schemas/FamilyType' }
+        description: { type: string, maxLength: 500 }
+    UpdateWorkspaceRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 2, maxLength: 80 }
+        base_currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        family_type: { $ref: '#/components/schemas/FamilyType' }
+        description: { type: string, maxLength: 500, nullable: true }
+        avatar_url: { type: string, format: uri, nullable: true }
+        visibility: { type: string, enum: [private, public] }
+    UpdateSettingsRequest:
+      type: object
+      description: Arbitrary key/value settings, upserted into workspace_settings. All fields optional.
+      properties:
+        reminder_templates:
+          type: object
+          properties:
+            due_soon: { type: string, maxLength: 500 }
+            overdue: { type: string, maxLength: 500 }
+        notification_prefs:
+          type: object
+          properties:
+            reminder_days_before: { type: array, items: { type: integer, minimum: 0 } }
+            overdue_notify_after_days: { type: array, items: { type: integer, minimum: 0 } }
+            weekly_digest_enabled: { type: boolean }
+        invite_message:
+          type: object
+          properties:
+            template: { type: string, maxLength: 500 }
+    AnnounceRequest:
+      type: object
+      required: [title, body]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        body: { type: string, minLength: 1, maxLength: 2000 }
+        target_role: { $ref: '#/components/schemas/MemberRole' }
+
+    # ── Member request bodies ────────────────────────────────────
+    CreateMemberRequest:
+      type: object
+      required: [display_name]
+      description: Creates a member directly (e.g. a proxy member with no login), as opposed to inviting a real user.
+      properties:
+        display_name: { type: string, minLength: 2, maxLength: 80 }
+        is_proxy: { type: boolean, default: false }
+        proxy_managed_by: { type: string, format: uuid, nullable: true, description: "Must be an active admin member id if is_proxy=true." }
+        role: { $ref: '#/components/schemas/MemberRole' }
+        relationship_to_head: { type: string, maxLength: 100 }
+        relationship_category: { $ref: '#/components/schemas/RelationshipCategory' }
+        date_of_birth: { type: string, format: date, nullable: true }
+        admin_notes: { type: string, maxLength: 1000 }
+    UpdateMemberRequest:
+      type: object
+      description: >-
+        `role`, `is_proxy`, `proxy_managed_by`, `is_active`, `admin_notes`,
+        and `relationship_category` are admin-only fields — a non-admin
+        caller editing themself gets 403 FORBIDDEN if any are present.
+      properties:
+        display_name: { type: string, minLength: 2, maxLength: 80 }
+        relationship_to_head: { type: string, maxLength: 100, nullable: true }
+        relationship_category: { $ref: '#/components/schemas/RelationshipCategory' }
+        date_of_birth: { type: string, format: date, nullable: true }
+        role: { $ref: '#/components/schemas/MemberRole' }
+        is_proxy: { type: boolean }
+        proxy_managed_by: { type: string, format: uuid, nullable: true }
+        is_active: { type: boolean }
+        admin_notes: { type: string, maxLength: 1000, nullable: true }
+        version:
+          type: string
+          description: "Optimistic-lock token — pass back the member's updated_at from a prior read to detect concurrent edits."
+
+    # ── Group request bodies ─────────────────────────────────────
+    CreateGroupRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 300 }
+        member_ids: { type: array, items: { type: string, format: uuid }, default: [] }
+    UpdateGroupRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 300, nullable: true }
+    AddGroupMembersRequest:
+      type: object
+      required: [member_ids]
+      properties:
+        member_ids: { type: array, items: { type: string, format: uuid }, minItems: 1 }
+
+    # ── Container request bodies ──────────────────────────────────
+    CreateContainerRequest:
+      type: object
+      required: [name, container_type]
+      description: >-
+        If container_type=recurring, recurrence_cadence and
+        recurrence_start become required. budget_target requires
+        enable_money=true.
+      properties:
+        name: { type: string, minLength: 2, maxLength: 100 }
+        subtitle: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        container_type: { $ref: '#/components/schemas/ContainerType' }
+        enable_money: { type: boolean, default: false }
+        enable_tasks: { type: boolean, default: false }
+        event_date: { type: string, format: date, nullable: true }
+        event_type: { type: string, maxLength: 80 }
+        event_type_category: { $ref: '#/components/schemas/EventTypeCategory' }
+        recurrence_cadence: { $ref: '#/components/schemas/RecurrenceCadence' }
+        recurrence_days: { type: integer, minimum: 1, nullable: true, description: "Required when recurrence_cadence=custom" }
+        recurrence_start: { type: string, format: date, nullable: true }
+        recurrence_end: { type: string, format: date, nullable: true }
+        carry_forward_unpaid: { type: boolean, default: false }
+        budget_target: { type: number, format: double, nullable: true }
+        budget_currency: { $ref: '#/components/schemas/SupportedCurrency' }
+    UpdateContainerRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 2, maxLength: 100 }
+        subtitle: { type: string, maxLength: 200, nullable: true }
+        description: { type: string, maxLength: 2000, nullable: true }
+        event_date: { type: string, format: date, nullable: true }
+        event_type: { type: string, maxLength: 80, nullable: true }
+        event_type_category: { $ref: '#/components/schemas/EventTypeCategory' }
+        budget_target: { type: number, format: double, nullable: true }
+        budget_currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        public_show_names: { type: boolean }
+        carry_forward_unpaid: { type: boolean }
+        recurrence_end: { type: string, format: date, nullable: true }
+        enable_tasks: { type: boolean }
+        enable_money:
+          type: boolean
+          description: "Cannot be set to false if the container has any ledger entries (409/422 BUSINESS_RULE_VIOLATION)."
+        cover_photos:
+          type: array
+          items:
+            type: object
+            required: [url, path]
+            properties:
+              url: { type: string, format: uri }
+              path: { type: string }
+              uploaded_at: { type: string, format: date-time }
+    CompleteContainerRequest:
+      type: object
+      properties:
+        outcome_details: { type: string, maxLength: 5000 }
+        outcome_files:
+          type: array
+          maxItems: 10
+          default: []
+          items:
+            type: object
+            required: [url, name, size, mime_type]
+            properties:
+              url: { type: string }
+              name: { type: string }
+              size: { type: integer }
+              mime_type: { type: string }
+    ConvertToRecurringRequest:
+      type: object
+      required: [recurrence_cadence, recurrence_start]
+      properties:
+        recurrence_cadence: { $ref: '#/components/schemas/RecurrenceCadence' }
+        recurrence_days: { type: integer, minimum: 1 }
+        recurrence_start: { type: string, format: date }
+        recurrence_end: { type: string, format: date, nullable: true }
+        carry_forward_unpaid: { type: boolean, default: false }
+        new_name: { type: string, minLength: 2, maxLength: 100 }
+
+    # ── Participant request bodies ────────────────────────────────
+    ParticipantTarget:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: number, format: double, exclusiveMinimum: 0 }
+        currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        due_date: { type: string, format: date, nullable: true }
+    AddParticipantsRequest:
+      type: object
+      required: [participants]
+      properties:
+        participants:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [workspace_member_id]
+            properties:
+              workspace_member_id: { type: string, format: uuid }
+              money_enabled: { type: boolean, default: false }
+              tasks_enabled: { type: boolean, default: false }
+              role: { type: string, maxLength: 80 }
+              notes: { type: string, maxLength: 500 }
+              target: { $ref: '#/components/schemas/ParticipantTarget' }
+    AddParticipantsFromGroupRequest:
+      type: object
+      required: [group_id]
+      properties:
+        group_id: { type: string, format: uuid }
+        money_enabled: { type: boolean, default: false }
+        tasks_enabled: { type: boolean, default: false }
+    UpdateParticipantRequest:
+      type: object
+      properties:
+        money_enabled:
+          type: boolean
+          description: "Cannot be set to false if this participant has confirmed ledger entries."
+        tasks_enabled: { type: boolean }
+        role: { type: string, maxLength: 80, nullable: true }
+        notes: { type: string, maxLength: 500, nullable: true }
+        exclude_from_public: { type: boolean }
+    SetTargetRequest:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: number, format: double, exclusiveMinimum: 0 }
+        currency: { $ref: '#/components/schemas/SupportedCurrency' }
+        due_date: { type: string, format: date, nullable: true }
+    CycleOverrideRequest:
+      type: object
+      required: [override_type]
+      description: >-
+        skip_member requires member_id. adjust_target requires new_target.
+        pause_pool immediately marks the target cycle as skipped.
+      properties:
+        override_type: { $ref: '#/components/schemas/CycleOverrideType' }
+        member_id: { type: string, format: uuid }
+        new_target: { type: number, format: double, exclusiveMinimum: 0 }
+        new_currency: { type: string, minLength: 3, maxLength: 5 }
+        reason: { type: string, maxLength: 500 }
+
+    # ── Ledger request bodies ────────────────────────────────────
+    CreateLedgerEntryRequest:
+      type: object
+      required: [entry_type, original_amount, original_currency, base_amount]
+      properties:
+        entry_type: { type: string, enum: [contribution, expense] }
+        contributor_id:
+          type: string
+          format: uuid
+          description: "Admin only — required if the caller is an admin recording on behalf of someone else. Non-admins always record for themselves."
+        original_amount: { type: number, format: double, exclusiveMinimum: 0 }
+        original_currency: { type: string, minLength: 3, maxLength: 5 }
+        base_amount: { type: number, format: double, exclusiveMinimum: 0 }
+        payment_method: { type: string, nullable: true, description: "See PaymentMethod enum notes on normalization." }
+        note: { type: string, maxLength: 500 }
+        cycle_id: { type: string, format: uuid, nullable: true }
+        is_crypto: { type: boolean, default: false }
+    UpdateLedgerEntryRequest:
+      type: object
+      description: Only entries with status=pending can be edited. Non-admins cannot change contributor_id.
+      properties:
+        original_amount: { type: number, format: double, exclusiveMinimum: 0 }
+        original_currency: { type: string, minLength: 3, maxLength: 5 }
+        base_amount: { type: number, format: double, exclusiveMinimum: 0 }
+        payment_method: { $ref: '#/components/schemas/PaymentMethod' }
+        note: { type: string, maxLength: 500, nullable: true }
+        contributor_id: { type: string, format: uuid, description: "Admin only" }
+    AddCorrectionRequest:
+      type: object
+      required: [original_amount, original_currency, base_amount, note]
+      description: Can only be added to entries with status=confirmed.
+      properties:
+        original_amount: { type: number, format: double, exclusiveMinimum: 0 }
+        original_currency: { type: string, minLength: 3, maxLength: 5 }
+        base_amount: { type: number, format: double, exclusiveMinimum: 0 }
+        note: { type: string, minLength: 10, description: "Minimum 10 characters." }
+
+    # ── Dispute request bodies ───────────────────────────────────
+    CreateDisputeRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 5, maxLength: 1000 }
+    AddDisputeNoteRequest:
+      type: object
+      required: [note]
+      properties:
+        note: { type: string, minLength: 1, maxLength: 1000 }
+    ResolveDisputeRequest:
+      type: object
+      required: [resolution_note]
+      properties:
+        resolution_note: { type: string, minLength: 10, maxLength: 1000 }
+
+    # ── Task request bodies ──────────────────────────────────────
+    CreateTaskRequest:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        assigned_to: { type: string, format: uuid, nullable: true, description: "Must be an existing participant in this container." }
+        due_date: { type: string, format: date, nullable: true }
+    BulkCreateTasksRequest:
+      type: object
+      required: [tasks]
+      properties:
+        tasks:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: '#/components/schemas/CreateTaskRequest' }
+    UpdateTaskRequest:
+      type: object
+      description: >-
+        Non-admins may only set status to in_progress or completed and/or
+        set completion_note; any other field is 403 FORBIDDEN for
+        non-admins.
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000, nullable: true }
+        assigned_to: { type: string, format: uuid, nullable: true }
+        due_date: { type: string, format: date, nullable: true }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        sort_order: { type: integer }
+        completion_note: { type: string, maxLength: 1000, nullable: true }
+    ReassignTaskRequest:
+      type: object
+      required: [assigned_to]
+      properties:
+        assigned_to: { type: string, format: uuid, nullable: true }
+    OverrideTaskStatusRequest:
+      type: object
+      required: [status]
+      description: Admin-only hard override, bypassing normal status-transition rules.
+      properties:
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        note: { type: string, maxLength: 500 }
+    AdminConfirmTaskRequest:
+      type: object
+      description: Task must have status=completed and not already be confirmed.
+      properties:
+        note: { type: string, nullable: true }
+
+    # ── Milestone request bodies ─────────────────────────────────
+    CreateMilestoneRequest:
+      type: object
+      required: [title, milestone_date]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        milestone_date: { type: string, format: date }
+        description: { type: string, maxLength: 2000 }
+        milestone_type: { $ref: '#/components/schemas/MilestoneType' }
+    UpdateMilestoneRequest:
+      type: object
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000, nullable: true }
+        milestone_date: { type: string, format: date }
+        milestone_type: { $ref: '#/components/schemas/MilestoneType' }
+    # ── Response wrapper objects (per-endpoint shapes) ────────────
+    AuthSessionResponse:
+      type: object
+      description: Returned by signup (if email confirmation is off), login, refresh, and Google callback. refresh_token is stripped from the JSON body and set as an httpOnly cookie instead (see endpoint description).
+      properties:
+        access_token: { type: string }
+        expires_in: { type: integer, example: 3600 }
+        token_type: { type: string, example: Bearer }
+        user: { $ref: '#/components/schemas/User' }
+        memberships:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceMembership' }
+        profile_setup_required: { type: boolean }
+    SignupPendingResponse:
+      type: object
+      description: Returned by signup when Supabase email confirmation is required (no session yet).
+      properties:
+        message: { type: string }
+        email: { type: string, format: email }
+        profile_setup_required: { type: boolean }
+    MeResponse:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        memberships:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceMembership' }
+    GoogleAuthUrlResponse:
+      type: object
+      properties:
+        url: { type: string, format: uri }
+        provider: { type: string, example: google }
+    MessageResponse:
+      type: object
+      properties:
+        message: { type: string }
+    DashboardResponse:
+      type: object
+      properties:
+        workspace_summary:
+          type: object
+          properties:
+            member_count: { type: integer }
+            admin_count: { type: integer }
+            proxy_count: { type: integer }
+        active_events:
+          type: array
+          items:
+            allOf:
+              - type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string }
+                  subtitle: { type: string, nullable: true }
+                  event_date: { type: string, format: date, nullable: true }
+                  enable_money: { type: boolean }
+                  enable_tasks: { type: boolean }
+                  budget_target: { type: number, nullable: true }
+                  budget_currency: { type: string, nullable: true }
+                  total_confirmed_base: { type: number }
+                  participant_count: { type: integer }
+                  days_until: { type: integer, nullable: true }
+                  progress_pct: { type: integer, nullable: true }
+        recurring_pools:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              current_cycle:
+                $ref: '#/components/schemas/ContainerCycle'
+                nullable: true
+        upcoming_deadlines:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string, example: contribution }
+              member_name: { type: string, nullable: true }
+              title: { type: string, description: "amount + currency, e.g. '50 USD'" }
+              container_name: { type: string, nullable: true }
+              due_date: { type: string, format: date }
+              days_until: { type: integer, nullable: true }
+        pending_confirmations:
+          type: array
+          description: Admin only; empty array for non-admins.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/LedgerEntry'
+              - type: object
+                properties:
+                  contributor_name: { type: string }
+                  recorded_by_name: { type: string, nullable: true }
+        recent_activity:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/AuditLogEntry'
+              - type: object
+                properties:
+                  description: { type: string, description: "Human-readable summary, e.g. 'created a container'" }
+        unread_notification_count: { type: integer }
+        unread_activity_count: { type: integer }
+    OverdueSummaryResponse:
+      type: object
+      properties:
+        overdue_count: { type: integer }
+        overdue:
+          type: array
+          items:
+            type: object
+            properties:
+              member_id: { type: string, format: uuid }
+              display_name: { type: string, nullable: true }
+              total_outstanding: { type: number, format: double }
+              containers:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    container_id: { type: string, format: uuid }
+                    container_name: { type: string }
+                    outstanding: { type: number, format: double }
+                    currency: { type: string }
+                    due_date: { type: string, format: date }
+    ContainerSummaryResponse:
+      type: object
+      properties:
+        container:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            status: { $ref: '#/components/schemas/ContainerStatus' }
+            budget_target: { type: number, nullable: true }
+            budget_currency: { type: string, nullable: true }
+            enable_money: { type: boolean }
+        total_expected_base: { type: number, format: double }
+        total_confirmed_base: { type: number, format: double }
+        total_pending_base: { type: number, format: double }
+        progress_pct: { type: integer, nullable: true }
+        participants:
+          type: array
+          description: >-
+            Non-admin callers only see full financial detail for their own
+            row; other participants' rows are reduced to
+            {member_id, display_name, is_proxy, role, status}.
+          items:
+            type: object
+            properties:
+              member_id: { type: string, format: uuid }
+              display_name: { type: string, nullable: true }
+              is_proxy: { type: boolean, nullable: true }
+              role: { type: string, nullable: true }
+              status: { type: string, enum: [no_target, paid, partial, overdue, pending] }
+              current_target:
+                type: object
+                nullable: true
+                properties:
+                  amount: { type: number }
+                  currency: { type: string }
+                  due_date: { type: string, format: date, nullable: true }
+              confirmed_paid_base: { type: number, format: double }
+              pending_paid_base: { type: number, format: double }
+              outstanding_base: { type: number, format: double }
+    PublicContainerResponse:
+      type: object
+      properties:
+        name: { type: string }
+        subtitle: { type: string, nullable: true }
+        event_date: { type: string, format: date, nullable: true }
+        budget_target: { type: number, nullable: true }
+        budget_currency: { type: string, nullable: true }
+        total_confirmed_base: { type: number }
+        progress_pct: { type: integer, nullable: true }
+        workspace_name: { type: string }
+        contributors:
+          type: array
+          description: Only present if the container's public_show_names is true.
+          items:
+            type: object
+            properties:
+              display_name: { type: string, nullable: true }
+              status: { type: string, enum: [paid, pending] }
+    InvitePreviewResponse:
+      type: object
+      description: >-
+        Always returns HTTP 200 regardless of validity, to avoid
+        invite-token enumeration — check is_valid.
+      properties:
+        is_valid: { type: boolean }
+        error: { type: string, description: "Present only when is_valid=false" }
+        workspace_name: { type: string, description: "Present only when is_valid=true" }
+        invited_by_name: { type: string, nullable: true }
+        active_containers_preview:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              container_type: { $ref: '#/components/schemas/ContainerType' }
+              enable_money: { type: boolean }
+              budget_target: { type: number, nullable: true }
+              budget_currency: { type: string, nullable: true }
+              total_confirmed_base: { type: number }
+    CreateInviteResponse:
+      type: object
+      properties:
+        token: { type: string }
+        invite_url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+    AcceptInviteResponse:
+      type: object
+      properties:
+        workspace: { $ref: '#/components/schemas/Workspace' }
+        member: { $ref: '#/components/schemas/WorkspaceMember' }
+    ContributionSummaryResponse:
+      type: object
+      properties:
+        total_containers: { type: integer }
+        total_confirmed_count: { type: integer }
+        total_paid_base_currency: { type: number, format: double }
+        last_contribution_date: { type: string, format: date, nullable: true }
+        containers:
+          type: array
+          items:
+            type: object
+            properties:
+              container_name: { type: string }
+              paid_base_amount: { type: number }
+              target_amount: { type: number, nullable: true }
+              target_currency: { type: string, nullable: true }
+              status: { type: string, enum: [paid, pending] }
+    MemberEngagementItem:
+      type: object
+      properties:
+        member_id: { type: string, format: uuid }
+        display_name: { type: string }
+        last_activity: { type: string, format: date, nullable: true }
+        confirmed_contributions_count: { type: integer }
+        pending_contributions_count: { type: integer }
+        overdue_count: { type: integer, description: "Reserved for future use — always returns 0 today." }
+        engagement_level: { type: string, enum: [active, quiet, inactive] }
+    ProfileHistoryEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_member_id: { type: string, format: uuid }
+        changed_by: { type: string, format: uuid }
+        changed_by_name: { type: string, nullable: true }
+        field_name: { type: string }
+        old_value: { type: string, nullable: true }
+        new_value: { type: string, nullable: true }
+        change_source: { type: string, enum: [admin, member] }
+        changed_at: { type: string, format: date-time }
+    AddParticipantsResponse:
+      type: object
+      properties:
+        added:
+          type: array
+          items: { $ref: '#/components/schemas/ContainerParticipant' }
+        skipped_already_present: { type: integer }
+        skipped_invalid_member: { type: integer }
+    AddParticipantsFromGroupResponse:
+      type: object
+      properties:
+        added: { type: integer }
+        skipped: { type: integer }
+    SetTargetResponse:
+      type: object
+      properties:
+        target: { $ref: '#/components/schemas/ContributorTarget' }
+        previous_target:
+          $ref: '#/components/schemas/ContributorTarget'
+          nullable: true
+    CycleTargetsResponse:
+      type: object
+      properties:
+        participant:
+          allOf:
+            - $ref: '#/components/schemas/ContainerParticipant'
+        cycle_targets:
+          type: array
+          items:
+            type: object
+            properties:
+              cycle:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  cycle_number: { type: integer }
+                  cycle_start: { type: string, format: date }
+                  cycle_end: { type: string, format: date }
+                  status: { $ref: '#/components/schemas/CycleStatus' }
+              target:
+                type: object
+                nullable: true
+                properties:
+                  id: { type: string, format: uuid }
+                  amount: { type: number }
+                  currency: { type: string }
+              confirmed_paid_base: { type: number, format: double }
+              status: { type: string, enum: [pending, skipped, paid, partial, overdue] }
+    ConvertToRecurringResponse:
+      type: object
+      properties:
+        new_container: { $ref: '#/components/schemas/Container' }
+        source_container_id: { type: string, format: uuid }
+    GeneratePublicLinkResponse:
+      type: object
+      properties:
+        public_url: { type: string, format: uri }
+        public_token: { type: string }
+    CreateEntryResponse:
+      type: object
+      properties:
+        entry: { $ref: '#/components/schemas/LedgerEntry' }
+        idempotent:
+          type: boolean
+          description: "Present and true only when X-Idempotency-Key matched an existing entry (in which case the ORIGINAL entry is returned, HTTP 200 instead of 201)."
+    AddCorrectionResponse:
+      type: object
+      properties:
+        correction_entry: { $ref: '#/components/schemas/LedgerEntry' }
+    RaiseDisputeResponse:
+      type: object
+      properties:
+        dispute: { $ref: '#/components/schemas/Dispute' }
+        entry: { $ref: '#/components/schemas/LedgerEntry' }
+    DownloadUrlResponse:
+      type: object
+      properties:
+        download_url: { type: string, format: uri }
+        expires_in: { type: integer, example: 900 }
+    BulkCreateTasksResponse:
+      type: object
+      properties:
+        created:
+          type: array
+          items: { $ref: '#/components/schemas/Task' }
+        failed:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              error: { type: string }
+    TimelineResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/TimelineItem' }
+        next_cursor:
+          type: object
+          properties:
+            before_container: { type: string, format: date-time, nullable: true }
+            before_milestone: { type: string, format: date, nullable: true }
+        has_more: { type: boolean }
+    AddGroupMembersResponse:
+      type: object
+      properties:
+        added_count: { type: integer }
+        already_in_group: { type: integer }
+    ListMembersMeta:
+      type: object
+      properties:
+        total: { type: integer }
+        admins_count: { type: integer }
+        proxy_count: { type: integer }
+        active_count: { type: integer }
+    ListContainersMeta:
+      type: object
+      properties:
+        total: { type: integer }
+        active_count: { type: integer }
