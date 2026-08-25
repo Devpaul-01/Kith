@@ -5,13 +5,14 @@ const logger = require('../utils/logger');
 // Get Redis URL and extract hostname for SNI
 const REDIS_URL = process.env.REDIS_URL;
 let redisHostname = null;
+let useTLS = false;
 
-// Extract hostname from Redis URL for SNI
 if (REDIS_URL) {
   try {
     // Parse the URL to get hostname
     const url = new URL(REDIS_URL);
     redisHostname = url.hostname;
+    useTLS = url.protocol === 'rediss:'; // only TLS if scheme says so
   } catch (e) {
     logger.error('Failed to parse REDIS_URL', { error: e.message });
   }
@@ -20,15 +21,15 @@ if (REDIS_URL) {
 const redisOptions = {
   maxRetriesPerRequest: null, // Required for BullMQ
   enableReadyCheck: false,
-  
-  // ✅ FIX: TLS configuration for Layerbase
-  tls: {
-    // SNI: Set servername to the Redis hostname
-    servername: redisHostname || undefined,
-    // Reject unauthorized is false for self-signed certs (optional)
-    rejectUnauthorized: process.env.NODE_ENV === 'production' ? true : false,
-  },
-  
+
+  // ✅ FIX: TLS configuration based on protocol
+  ...(useTLS && {
+    tls: {
+      servername: redisHostname || undefined,
+      rejectUnauthorized: process.env.NODE_ENV === 'production',
+    },
+  }),
+
   retryStrategy(times) {
     const delay = Math.min(times * 100, 3000);
     return delay;
@@ -45,9 +46,9 @@ function getRedis() {
       throw new Error('REDIS_URL is required');
     }
 
-    logger.info('Connecting to Redis with TLS/SNI', { 
+    logger.info('Connecting to Redis', { 
       host: redisHostname,
-      tlsEnabled: true 
+      tlsEnabled: useTLS 
     });
 
     redis = new Redis(process.env.REDIS_URL, redisOptions);
