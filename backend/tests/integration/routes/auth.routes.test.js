@@ -53,7 +53,12 @@ describe('auth.routes.js — /v1/auth (mocked GoTrue)', () => {
 
   afterAll(async () => {
     for (const id of createdUserIds) {
-      await supabaseAdmin.from('users').delete().eq('id', id).catch(() => {});
+      try {
+        await supabaseAdmin.from('users').delete().eq('id', id);
+      } catch (err) {
+        // Best-effort cleanup — ignore failures so one bad row
+        // doesn't fail the whole suite teardown.
+      }
     }
   });
 
