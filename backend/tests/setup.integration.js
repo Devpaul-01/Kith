@@ -56,7 +56,7 @@ process.env.JWT_SECRET = 'test-secret';
 // Doc 3 Section 1. Real Postgres/Redis, fake Firebase/Resend.
 jest.mock('../src/config/firebase', () => require('./mocks/firebase.mock'));
 jest.mock('../src/config/resend',   () => require('./mocks/resend.mock'));
-
+jest.setTimeout(30000);
 const { getRedis } = require('../src/config/redis');
 
 // Doc 4 Section 2.4: Redis is FLUSHDB'd between test FILES (not
