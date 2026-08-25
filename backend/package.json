@@ -60,15 +60,15 @@
         "displayName": "integration",
         "testEnvironment": "node",
         "setupFilesAfterEnv": ["<rootDir>/tests/setup.integration.js"],
-        "testMatch": ["<rootDir>/tests/integration/**/*.test.js"],
-        "testTimeout": 30000
+        "testMatch": ["<rootDir>/tests/integration/**/*.test.js"]
+        
       },
       {
         "displayName": "rate-limit",
         "testEnvironment": "node",
         "setupFilesAfterEnv": ["<rootDir>/tests/setup.ratelimit.js"],
-        "testMatch": ["<rootDir>/tests/integration/redis/rate-limiting.test.js"],
-        "testTimeout": 30000
+        "testMatch": ["<rootDir>/tests/integration/redis/rate-limiting.test.js"]
+        
       }
     ]
   },
