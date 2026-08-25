@@ -101,6 +101,8 @@ jobs:
             -e PGRST_DB_ANON_ROLE="postgres" \
             -e PGRST_SERVER_PORT="3001" \
             -e PGRST_JWT_SECRET="test-jwt-secret-at-least-32-characters-long" \
+            -e PGRST_DB_POOL="20" \
+            -e PGRST_DB_POOL_ACQUISITION_TIMEOUT="10" \
             postgrest/postgrest:v12.0.2
 
           echo "Waiting for PostgREST to start..."
