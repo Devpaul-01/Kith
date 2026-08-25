@@ -38,6 +38,8 @@ async function seedWorkspaceWithAdmin(supabaseAdmin, overrides = {}) {
     .select()
     .single();
   if (uErr) {
+    console.error('DEBUG supabaseAdmin restUrl:', supabaseAdmin?.rest?.url);
+    console.error('DEBUG process.env.SUPABASE_URL:', process.env.SUPABASE_URL);
     console.error('DEBUG uErr:', uErr);
     console.error('DEBUG uErr keys:', Object.getOwnPropertyNames(uErr));
     console.error('DEBUG uErr message:', uErr.message);
