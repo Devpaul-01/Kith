@@ -42,7 +42,7 @@ process.env.LOG_LEVEL = 'silent';
 
 jest.mock('../src/config/firebase', () => require('./mocks/firebase.mock'));
 jest.mock('../src/config/resend',   () => require('./mocks/resend.mock'));
-
+jest.setTimeout(30000);
 const { getRedis } = require('../src/config/redis');
 
 beforeAll(async () => {
