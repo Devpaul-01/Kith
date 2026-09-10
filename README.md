@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/Devpaul-01/Kith/actions/workflows/test.yml/badge.svg)
 
-**Live demo:** [ADD YOUR LIVE URL HERE] · [Architecture](docs/ARCHITECTURE.md) · [Product Overview](docs/PRODUCT_OVERVIEW.md)
+**Live demo:** https://kith-self.vercel.app · [Architecture](docs/ARCHITECTURE.md) · [Product Overview](docs/PRODUCT_OVERVIEW.md)
 
 Kith is a family coordination platform for managing shared money, responsibilities, and recurring obligations in one place. It replaces the group chat, the spreadsheet, and the person who has to remember to open this month's rent pool with structured family **workspaces**, a trustworthy financial **ledger**, automated **recurring pools**, **tasks**, a **dispute workflow**, and an **audit trail**.
 
