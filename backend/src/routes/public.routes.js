@@ -27,5 +27,21 @@ router.post(
 // Shared read-only view of a container. Privacy is controlled by
 // containers.public_show_names — names are omitted if false.
 router.get('/containers/:publicToken', publicLookupLimiter, cCtrl.getPublicContainer);
+// routes/public.routes.js (add to existing router)
+router.post('/track-visit', async (req, res) => {
+  try {
+    const ip = req.ip; // trust proxy is already set, so this is the real client IP
+    const userAgent = req.headers['user-agent'] || null;
 
+    const { error } = await supabase.rpc('upsert_visit', {
+      p_ip: ip,
+      p_user_agent: userAgent,
+    });
+
+    if (error) throw error;
+    res.status(204).end();
+  } catch (err) {
+    res.status(500).json({ error: { code: 'TRACK_FAILED', message: err.message } });
+  }
+});
 module.exports = router;

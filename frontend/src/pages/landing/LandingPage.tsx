@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ArrowRight,
   Menu,
@@ -123,6 +123,21 @@ function NavBar({ mobileOpen, setMobileOpen }: { mobileOpen: boolean; setMobileO
 
 export default function LandingPage() {
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Fire-and-forget visit tracking. Runs once on mount, never blocks
+  // rendering, and any failure is swallowed silently — this must never
+  // affect the user's experience of the landing page.
+  useEffect(() => {
+    const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+    if (!apiBaseUrl) return;
+
+    fetch(`${apiBaseUrl}/v1/public/track-visit`, {
+      method: 'POST',
+      credentials: 'include',
+    }).catch(() => {
+      // Intentionally ignored — visit tracking is best-effort only.
+    });
+  }, []);
 
   return (
     <div className="min-h-screen bg-surface-page">
