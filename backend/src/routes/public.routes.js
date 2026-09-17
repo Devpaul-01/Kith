@@ -8,6 +8,7 @@
 const router  = require('express').Router();
 const iCtrl   = require('../controllers/invite.controller');
 const cCtrl   = require('../controllers/container.controller');
+const { supabase } = require('../config/supabase'); // adjust path to your actual client module
 const { requireAuth, loadDbUser } = require('../middleware/auth');
 const { inviteLimiter, publicLookupLimiter } = require('../middleware/rateLimiter');
 
