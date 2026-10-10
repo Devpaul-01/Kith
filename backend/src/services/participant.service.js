@@ -4,7 +4,7 @@
 // set_contributor_target_atomic RPC usage.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { NotFoundError, BusinessRuleError } = require('../utils/errors');
+const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const audit = require('./audit.service');
 const logger = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
@@ -255,7 +255,11 @@ async function setTarget({ containerId, participantId, amount, currency, due_dat
     p_set_by:                    actorMemberId,
   });
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    // Two concurrent first-time target writes: the partial unique index rejects the loser.
+    if (error.code === '23505') throw new ConflictError('A target was just set for this participant. Refresh and try again.');
+    throw new Error(error.message);
+  }
 
   return { target: rpcResult.new_target, previous_target: rpcResult.previous_target };
 }

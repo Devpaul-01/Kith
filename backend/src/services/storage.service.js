@@ -42,7 +42,7 @@ function matchesMagicBytes(buffer, contentType) {
     );
   }
   const signatures = MAGIC_BYTES[contentType];
-  if (!signatures) return true; // no known signature for this type — don't block
+  if (!signatures) return false; // fail closed: every allowed type has a signature above
   return signatures.some((sig) => sig.every((byte, i) => buffer[i] === byte));
 }
 
@@ -68,6 +68,8 @@ async function verifyUploadedFile(filePath, declaredContentType) {
     const buffer = Buffer.from(await data.arrayBuffer());
 
     if (!matchesMagicBytes(buffer, declaredContentType)) {
+      // Don't leave the rejected object sitting in the bucket.
+      try { await supabase.storage.from(BUCKET).remove([filePath]); } catch { /* best effort */ }
       throw new BusinessRuleError(
         `Uploaded file does not match its declared type (${declaredContentType}). The file may be corrupted, mislabeled, or not actually an image/PDF.`
       );
@@ -78,6 +80,17 @@ async function verifyUploadedFile(filePath, declaredContentType) {
     if (err instanceof BusinessRuleError) throw err;
     logger.error('File verification failed unexpectedly', { filePath, declaredContentType, error: err.message });
     throw new BusinessRuleError('Could not verify the uploaded file. Please try uploading again.');
+  }
+}
+
+/**
+ * The confirm step receives a client-supplied file_path. Require it to sit under the
+ * exact folder generateUploadUrl issued for THIS record, so a caller can't attach a
+ * file from another workspace or record.
+ */
+function assertUploadPath(filePath, expectedPrefix) {
+  if (typeof filePath !== 'string' || !filePath.startsWith(expectedPrefix) || filePath.includes('..')) {
+    throw new BusinessRuleError('Invalid file path for this record.');
   }
 }
 
@@ -113,9 +126,8 @@ function validateUpload(fileType, contentType, fileSize) {
     );
   }
 
-  const isAllowedType =
-    allowedTypes.includes(contentType) ||
-    (contentType.startsWith('image/') && allowedTypes.some((t) => t.startsWith('image/')));
+  // Exact match only. A blanket image/* rule would admit types like image/svg+xml.
+  const isAllowedType = allowedTypes.includes(contentType);
 
   if (!isAllowedType) {
     throw new BusinessRuleError(`File type "${contentType}" is not allowed for ${fileType}`);
@@ -190,4 +202,4 @@ async function deleteFile(filePath) {
   if (error) throw new Error(`Storage delete error: ${error.message}`);
 }
 
-module.exports = { generateUploadUrl, generateDownloadUrl, deleteFile, validateUpload, verifyUploadedFile };
+module.exports = { generateUploadUrl, generateDownloadUrl, deleteFile, validateUpload, verifyUploadedFile, assertUploadPath };

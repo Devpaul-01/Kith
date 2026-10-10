@@ -312,10 +312,19 @@ async function changePassword({ userEmail, userId, current_password, new_passwor
 
 function isAllowedGoogleRedirect(url) {
   if (!url) return false;
-  if (url.startsWith(process.env.FRONTEND_URL)) return true;
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+
+  // Compare parsed origins, not string prefixes: startsWith(FRONTEND_URL) accepts
+  // https://app.example.com.evil.com when FRONTEND_URL is https://app.example.com.
+  try {
+    if (parsed.origin === new URL(process.env.FRONTEND_URL).origin) return true;
+  } catch { /* FRONTEND_URL unparsable: fall through to deep-link schemes */ }
+
   const allowedSchemes = (process.env.ALLOWED_DEEPLINK_SCHEMES || '')
-    .split(',').map((s) => s.trim()).filter(Boolean);
-  return allowedSchemes.some((scheme) => url.startsWith(scheme));
+    .split(',').map((s) => s.trim()).filter(Boolean)
+    .map((s) => { const p = s.replace(/\/.*$/, ''); return p.endsWith(':') ? p : `${p}:`; });
+  return allowedSchemes.includes(parsed.protocol);
 }
 
 async function getGoogleAuthUrl({ requestedRedirect, requestIp }) {

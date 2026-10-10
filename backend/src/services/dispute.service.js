@@ -4,7 +4,7 @@
 // fix on the entry lookup.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
+const { NotFoundError, BusinessRuleError, ForbiddenError, ConflictError } = require('../utils/errors');
 const notification = require('./notification.service');
 const audit        = require('./audit.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
@@ -83,7 +83,13 @@ async function raiseDispute({ workspaceId, containerId, entryId, reason, callerI
     p_raised_by:       callerId,
     p_reason:          reason,
   });
-  if (rpcErr) throw new Error(rpcErr.message);
+  if (rpcErr) {
+    const m = rpcErr.message || '';
+    if (rpcErr.code === '23505' || m.includes('DISPUTE_ALREADY_OPEN')) throw new ConflictError('This entry already has an open dispute');
+    if (m.includes('ENTRY_NOT_DISPUTABLE')) throw new BusinessRuleError('Can only dispute confirmed or pending entries');
+    if (m.includes('ENTRY_NOT_FOUND')) throw new NotFoundError('Ledger entry not found');
+    throw new Error(m);
+  }
   const dispute = disputeData;
 
   const { data: admins } = await supabaseAdmin

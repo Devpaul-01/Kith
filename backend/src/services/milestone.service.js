@@ -11,7 +11,7 @@
 
 const { supabaseAdmin }      = require('../config/supabase');
 const { NotFoundError }      = require('../utils/errors');
-const { generateUploadUrl, verifyUploadedFile } = require('./storage.service');
+const { generateUploadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 
 async function getTimeline({ workspaceId, limit, before, beforeContainer, beforeMilestone }) {
   const safeLimit = Math.min(100, parseInt(limit) || 50);
@@ -124,6 +124,7 @@ async function confirmMilestonePhoto({ workspaceId, milestoneId, filePayload, ac
 
   // Verify the uploaded file's actual bytes match its declared content
   // type before trusting it as a milestone photo.
+  assertUploadPath(filePayload.file_path, `workspaces/${workspaceId}/milestones/${milestoneId}/`);
   await verifyUploadedFile(filePayload.file_path, filePayload.mime_type);
 
   const fileObject    = { url: filePayload.file_path, name: filePayload.name, size: filePayload.size, mime_type: filePayload.mime_type, uploaded_by: actorMemberId, uploaded_at: new Date().toISOString() };
