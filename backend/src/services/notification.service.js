@@ -22,6 +22,7 @@ const TEMPLATES = {
   admin_announcement:      { title: '{title}',                          body: '{body}',                                                         channels: ['in_app','push','email'], urgent: true },
   overdue_summary_admin:   { title: 'Overdue contributions',            body: '{count} contributors overdue in {container}',                    channels: ['in_app'] },
   member_removed:          { title: 'Removed from workspace',           body: 'You have been removed from {workspace}',                         channels: ['in_app','push'] },
+  task_confirmed:          { title: 'Task confirmed',                   body: '{actor} confirmed: {task_title}',                                channels: ['in_app'] },
 };
 
 function renderTemplate(template, variables) {
@@ -39,7 +40,9 @@ function buildDedupKey(type, variables) {
   if (variables.due_date)       parts.push(variables.due_date);
   if (variables.days)           parts.push(variables.days + 'd');
   if (variables.cycle_id)       parts.push(variables.cycle_id);
-  return parts.join(':') || null;
+  // Only dedup when the variables actually identify the event. A bare type would
+  // collapse to `type:recipient` and silently drop every later notification of that type.
+  return parts.length > 1 ? parts.join(':') : null;
 }
 
 /**

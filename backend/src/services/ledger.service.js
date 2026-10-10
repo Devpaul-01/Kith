@@ -6,7 +6,7 @@
 
 const { supabaseAdmin } = require('../config/supabase');
 const { NotFoundError, BusinessRuleError, ConflictError, ForbiddenError } = require('../utils/errors');
-const { generateUploadUrl, generateDownloadUrl, verifyUploadedFile } = require('./storage.service');
+const { generateUploadUrl, generateDownloadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 const notification = require('./notification.service');
 const audit        = require('./audit.service');
 const { exportLedgerCSV } = require('./export.service');
@@ -204,7 +204,17 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
     .select()
     .single();
 
-  if (entryErr) throw new Error(entryErr.message);
+  if (entryErr) {
+    // Lost an idempotency race: a concurrent request with the same key inserted first.
+    // Return that entry (idempotent replay) instead of surfacing a 409.
+    if (entryErr.code === '23505' && idempotencyKey && IDEMPOTENCY_ENABLED) {
+      const { data: winner } = await supabaseAdmin
+        .from('ledger_entries').select('*')
+        .eq('idempotency_key', idempotencyKey).eq('workspace_id', workspaceId).maybeSingle();
+      if (winner) return { entry: winner, idempotent: true };
+    }
+    throw new Error(entryErr.message);
+  }
 
   if (member?.is_proxy) {
     await supabaseAdmin.from('proxy_actions').insert({
@@ -359,6 +369,7 @@ async function confirmProof({ workspaceId, containerId, entryId, isAdmin, caller
 
   // Verify the uploaded file's actual bytes match its declared content
   // type before trusting it as proof.
+  assertUploadPath(filePayload.file_path, `workspaces/${workspaceId}/proofs/${entryId}/`);
   await verifyUploadedFile(filePayload.file_path, filePayload.mime_type);
 
   const fileObject    = { url: filePayload.file_path, name: filePayload.name, size: filePayload.size, mime_type: filePayload.mime_type, uploaded_by: callerId, uploaded_at: new Date().toISOString() };

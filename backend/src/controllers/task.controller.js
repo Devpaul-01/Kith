@@ -173,10 +173,10 @@ async function getTaskProofUploadUrl(req, res, next) {
 async function confirmTaskProof(req, res, next) {
   try {
     const data                    = confirmProofSchema.parse(req.body);
-    const { containerId, taskId } = req.params;
+    const { workspaceId, containerId, taskId } = req.params;
 
     const task = await taskService.confirmTaskProof({
-      containerId, taskId,
+      workspaceId, containerId, taskId,
       isAdmin: req.member.role === 'admin',
       callerId: req.member.id,
       filePayload: data,

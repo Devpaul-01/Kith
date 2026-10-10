@@ -4,7 +4,7 @@
 
 const { supabaseAdmin }      = require('../config/supabase');
 const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
-const { generateUploadUrl, verifyUploadedFile } = require('./storage.service');
+const { generateUploadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 const notification           = require('./notification.service');
 const { exportTasksCSV }     = require('./export.service');
 const audit                  = require('./audit.service');
@@ -251,13 +251,14 @@ async function getTaskProofUploadUrl({ workspaceId, containerId, taskId, isAdmin
   return generateUploadUrl({ workspaceId, folder: `task-proofs/${taskId}`, filename, contentType, fileSize, fileType: 'task_proof' });
 }
 
-async function confirmTaskProof({ containerId, taskId, isAdmin, callerId, filePayload }) {
+async function confirmTaskProof({ workspaceId, containerId, taskId, isAdmin, callerId, filePayload }) {
   const task = await fetchTask(containerId, taskId);
   if (!task) throw new NotFoundError('Task not found');
   if (!isAdmin && task.assigned_to !== callerId) throw new ForbiddenError('Access denied');
 
   // Verify the uploaded file's actual bytes match its declared content
   // type before trusting it as proof.
+  assertUploadPath(filePayload.file_path, `workspaces/${workspaceId}/task-proofs/${taskId}/`);
   await verifyUploadedFile(filePayload.file_path, filePayload.mime_type);
 
   const fileObject    = { url: filePayload.file_path, name: filePayload.name, size: filePayload.size, mime_type: filePayload.mime_type, uploaded_by: callerId, uploaded_at: new Date().toISOString() };

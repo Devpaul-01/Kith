@@ -38,9 +38,11 @@ async function previewInvite({ token }) {
     .eq('token', token)
     .maybeSingle();
 
-  if (error || !invite) return { is_valid: false, error: 'Invite not found' };
-  if (new Date(invite.expires_at) < new Date()) return { is_valid: false, error: 'This invite link has expired' };
-  if (invite.used_at)                           return { is_valid: false, error: 'This invite link has already been used' };
+  // One message for not-found / expired / used, so this public endpoint
+  // cannot be used to tell those states apart.
+  if (error || !invite || new Date(invite.expires_at) < new Date() || invite.used_at) {
+    return { is_valid: false, error: 'This invite is invalid or no longer available' };
+  }
 
   const { data: containers } = await supabaseAdmin
     .from('containers')
@@ -111,7 +113,12 @@ async function acceptInvite({ token, userId, actorCtx }) {
     .select()
     .single();
 
-  if (memErr) throw new Error(memErr.message);
+  if (memErr) {
+    // The claim and the member insert are separate calls; release the claim so a
+    // failed insert doesn't burn the invite.
+    await supabaseAdmin.from('invite_links').update({ used_at: null, used_by_user_id: null }).eq('id', invite.id);
+    throw new Error(memErr.message);
+  }
 
   const workspace = invite.workspaces;
 

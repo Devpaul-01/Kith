@@ -9,6 +9,10 @@ const { supabaseAdmin } = require('../config/supabase');
 const { getQueue }      = require('../queues');
 const logger             = require('../utils/logger');
 
+// Each sweep re-enqueues with 3 BullMQ attempts, so 9 = ~3 sweeps before giving up.
+// Without a cap a permanently failing delivery (e.g. a dead email address) loops forever.
+const MAX_DELIVERY_ATTEMPTS = 9;
+
 async function runNotificationOutboxScan() {
   const staleThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
@@ -29,6 +33,8 @@ async function runNotificationOutboxScan() {
     .in('status', ['pending', 'failed'])
     .neq('channel', 'in_app')
     .lt('created_at', staleThreshold)
+    .lt('retry_count', MAX_DELIVERY_ATTEMPTS)
+    .order('created_at', { ascending: true })
     .limit(50);
 
   if (!(stale || []).length) return;
