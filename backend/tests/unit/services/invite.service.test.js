@@ -57,7 +57,7 @@ describe('services/invite.service', () => {
 
       const result = await inviteService.previewInvite({ token: 'unknown' });
 
-      expect(result).toEqual({ is_valid: false, error: 'Invite not found' });
+      expect(result).toEqual({ is_valid: false, error: 'This invite is invalid or no longer available' });
     });
 
     it('expired -> { is_valid: false, error }', async () => {
@@ -65,7 +65,7 @@ describe('services/invite.service', () => {
 
       const result = await inviteService.previewInvite({ token: 'expired-tok' });
 
-      expect(result).toEqual({ is_valid: false, error: 'This invite link has expired' });
+      expect(result).toEqual({ is_valid: false, error: 'This invite is invalid or no longer available' });
     });
 
     it('already used -> { is_valid: false, error }', async () => {
@@ -73,7 +73,7 @@ describe('services/invite.service', () => {
 
       const result = await inviteService.previewInvite({ token: 'used-tok' });
 
-      expect(result).toEqual({ is_valid: false, error: 'This invite link has already been used' });
+      expect(result).toEqual({ is_valid: false, error: 'This invite is invalid or no longer available' });
     });
 
     it('valid invite -> { is_valid: true } with workspace_name, invited_by_name, container preview', async () => {
