@@ -104,16 +104,16 @@ describe('cycle_lifecycle.service.js — runCycleLifecycle', () => {
       expect(updated.closed_at).not.toBeNull();
     });
 
-    it('carry_forward_unpaid: true, outstanding balance + a next cycle exists -> carry-forward entry inserted (system-recorded, confirmed)', async () => {
+    it('carry_forward_unpaid: true, outstanding balance + a next cycle with no prior target -> raises a NEW target for the next cycle, no ledger entry', async () => {
       freezeTime('2026-03-01T00:00:00Z');
       const { container, member } = await seedContainer({ carry_forward_unpaid: true });
 
       const { data: closingCycle } = await supabaseAdmin.from('container_cycles').insert({
         container_id: container.id, cycle_number: 1, cycle_start: '2026-01-01', cycle_end: '2026-01-31', status: 'open',
       }).select().single();
-      await supabaseAdmin.from('container_cycles').insert({
+      const { data: nextCycle } = await supabaseAdmin.from('container_cycles').insert({
         container_id: container.id, cycle_number: 2, cycle_start: '2026-02-01', cycle_end: '2026-02-28', status: 'upcoming',
-      });
+      }).select().single();
 
       const { data: participant } = await supabaseAdmin.from('container_participants').insert({
         container_id: container.id, workspace_member_id: member.id, money_enabled: true,
@@ -131,16 +131,65 @@ describe('cycle_lifecycle.service.js — runCycleLifecycle', () => {
 
       await runCycleLifecycle();
 
-      const { data: carryForwardEntries } = await supabaseAdmin
-        .from('ledger_entries').select('*').eq('entry_type', 'carry_forward').eq('contributor_id', member.id);
-      expect(carryForwardEntries.length).toBe(1);
-      expect(parseFloat(carryForwardEntries[0].base_amount)).toBe(60);
-      expect(carryForwardEntries[0].status).toBe('confirmed');
-      expect(carryForwardEntries[0].recorded_by).toBeNull();
-      expect(carryForwardEntries[0].confirmed_by).toBeNull();
+      // No ledger_entries row of any kind — debt lives in contributor_targets, not the ledger.
+      const { count: ledgerCount } = await supabaseAdmin
+        .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('entry_type', 'carry_forward').eq('contributor_id', member.id);
+      expect(ledgerCount).toBe(0);
+
+      const { data: carryRows } = await supabaseAdmin
+        .from('cycle_carry_forwards').select('*').eq('container_participant_id', participant.id).eq('from_cycle_id', closingCycle.id);
+      expect(carryRows.length).toBe(1);
+      expect(parseFloat(carryRows[0].amount)).toBe(60);
+      expect(carryRows[0].to_cycle_id).toBe(nextCycle.id);
+
+      const { data: nextTarget } = await supabaseAdmin
+        .from('contributor_targets').select('*').eq('container_participant_id', participant.id).eq('cycle_id', nextCycle.id).eq('is_current', true).single();
+      expect(parseFloat(nextTarget.target_amount)).toBe(60);
+      expect(nextTarget.id).toBe(carryRows[0].resulting_target_id);
     });
 
-    it('carry_forward_unpaid: true, no next cycle -> no entry created, no error', async () => {
+    it('carry_forward_unpaid: true, next cycle already has a target -> that target is superseded by target+outstanding, old row kept for history', async () => {
+      freezeTime('2026-03-01T00:00:00Z');
+      const { container, member } = await seedContainer({ carry_forward_unpaid: true });
+
+      const { data: closingCycle } = await supabaseAdmin.from('container_cycles').insert({
+        container_id: container.id, cycle_number: 1, cycle_start: '2026-01-01', cycle_end: '2026-01-31', status: 'open',
+      }).select().single();
+      const { data: nextCycle } = await supabaseAdmin.from('container_cycles').insert({
+        container_id: container.id, cycle_number: 2, cycle_start: '2026-02-01', cycle_end: '2026-02-28', status: 'upcoming',
+      }).select().single();
+
+      const { data: participant } = await supabaseAdmin.from('container_participants').insert({
+        container_id: container.id, workspace_member_id: member.id, money_enabled: true,
+      }).select().single();
+      await supabaseAdmin.from('contributor_targets').insert({
+        container_participant_id: participant.id, container_id: container.id, workspace_member_id: member.id,
+        cycle_id: closingCycle.id, target_amount: 100, target_currency: 'USD', is_current: true, set_by: member.id,
+      });
+      // Next cycle already has its normal, pre-generated target (as cycle_generation.service.js would create).
+      const { data: existingNextTarget } = await supabaseAdmin.from('contributor_targets').insert({
+        container_participant_id: participant.id, container_id: container.id, workspace_member_id: member.id,
+        cycle_id: nextCycle.id, target_amount: 100, target_currency: 'USD', is_current: true, set_by: member.id,
+      }).select().single();
+      await supabaseAdmin.from('ledger_entries').insert({
+        workspace_id: container.workspace_id, container_id: container.id, cycle_id: closingCycle.id,
+        entry_type: 'contribution', contributor_id: member.id, original_amount: 40, original_currency: 'USD',
+        base_amount: 40, status: 'confirmed', recorded_by: member.id, confirmed_by: member.id, confirmed_at: new Date().toISOString(),
+      });
+
+      await runCycleLifecycle();
+
+      const { data: oldTarget } = await supabaseAdmin.from('contributor_targets').select('*').eq('id', existingNextTarget.id).single();
+      expect(oldTarget.is_current).toBe(false);
+      expect(oldTarget.superseded_at).not.toBeNull();
+
+      const { data: nextTarget } = await supabaseAdmin
+        .from('contributor_targets').select('*').eq('container_participant_id', participant.id).eq('cycle_id', nextCycle.id).eq('is_current', true).single();
+      expect(parseFloat(nextTarget.target_amount)).toBe(160); // 100 regular + 60 carried forward
+      expect(oldTarget.superseded_by).toBe(nextTarget.id);
+    });
+
+    it('carry_forward_unpaid: true, no next cycle -> no target raised, no cycle_carry_forwards row, no error', async () => {
       freezeTime('2026-03-01T00:00:00Z');
       const { container, member } = await seedContainer({ carry_forward_unpaid: true });
 
@@ -158,7 +207,7 @@ describe('cycle_lifecycle.service.js — runCycleLifecycle', () => {
 
       await expect(runCycleLifecycle()).resolves.not.toThrow();
 
-      const { count } = await supabaseAdmin.from('ledger_entries').select('*', { count: 'exact', head: true }).eq('entry_type', 'carry_forward').eq('contributor_id', member.id);
+      const { count } = await supabaseAdmin.from('cycle_carry_forwards').select('*', { count: 'exact', head: true }).eq('container_participant_id', participant.id);
       expect(count).toBe(0);
     });
 
@@ -183,11 +232,11 @@ describe('cycle_lifecycle.service.js — runCycleLifecycle', () => {
 
       await runCycleLifecycle();
 
-      const { count } = await supabaseAdmin.from('ledger_entries').select('*', { count: 'exact', head: true }).eq('entry_type', 'carry_forward').eq('contributor_id', member.id);
+      const { count } = await supabaseAdmin.from('cycle_carry_forwards').select('*', { count: 'exact', head: true }).eq('container_participant_id', participant.id);
       expect(count).toBe(0);
     });
 
-    it('fully-paid participant gets no carry-forward entry', async () => {
+    it('fully-paid participant gets no carry-forward', async () => {
       freezeTime('2026-03-01T00:00:00Z');
       const { container, member } = await seedContainer({ carry_forward_unpaid: true });
 
@@ -213,7 +262,7 @@ describe('cycle_lifecycle.service.js — runCycleLifecycle', () => {
 
       await runCycleLifecycle();
 
-      const { count } = await supabaseAdmin.from('ledger_entries').select('*', { count: 'exact', head: true }).eq('entry_type', 'carry_forward').eq('contributor_id', member.id);
+      const { count } = await supabaseAdmin.from('cycle_carry_forwards').select('*', { count: 'exact', head: true }).eq('container_participant_id', participant.id);
       expect(count).toBe(0);
     });
 

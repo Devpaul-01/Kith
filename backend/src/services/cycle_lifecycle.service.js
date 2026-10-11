@@ -58,10 +58,27 @@ async function openDueCycles(today) {
   return (toOpen || []).length;
 }
 
+// Carry-forward is a DEBT, not a payment: it raises the participant's
+// target for the next cycle by whatever they still owed on the closed
+// one. It does NOT insert a ledger_entries row. Every summary/report in
+// this app treats a confirmed ledger entry as money actually received
+// (getLedgerSummary, dashboard/container/participant/invite previews),
+// so a 'confirmed' carry_forward entry for the outstanding amount used
+// to make an unpaid participant look like they'd already paid it in the
+// new cycle. Raising contributor_targets.target_amount instead means
+// their existing paid-vs-target comparison (participant.service.js
+// #getCycleTargets) now naturally shows "partial"/"overdue" until they
+// actually pay the larger amount — no other reporting code needed to
+// change.
+//
+// apply_cycle_carry_forward_atomic (002_ledger_integrity_and_carry_forward_debt.sql)
+// does the supersede-and-insert atomically and is idempotent per
+// (participant, closed cycle) via a unique constraint, so a lifecycle
+// re-run can't double-apply the same debt.
 async function carryForwardUnpaid(cycle) {
   const { data: participants } = await supabaseAdmin
     .from('container_participants')
-    .select('workspace_member_id, contributor_targets(target_amount, target_currency, cycle_id, is_current)')
+    .select('id, workspace_member_id, contributor_targets(target_amount, target_currency, cycle_id, is_current)')
     .eq('container_id', cycle.container_id)
     .eq('money_enabled', true);
 
@@ -73,7 +90,7 @@ async function carryForwardUnpaid(cycle) {
 
   const { data: nextCycle } = await supabaseAdmin
     .from('container_cycles')
-    .select('id')
+    .select('id, cycle_end')
     .eq('container_id', cycle.container_id)
     .in('status', ['open', 'upcoming'])
     .neq('id', cycle.id)
@@ -83,20 +100,7 @@ async function carryForwardUnpaid(cycle) {
 
   if (!nextCycle?.id) return;
 
-  const note = `Carried forward from cycle (closed ${cycle.cycle_end})`;
-
-  // Skip contributors already carried forward (a retry after a partial failure).
-  const { data: existing } = await supabaseAdmin
-    .from('ledger_entries')
-    .select('contributor_id')
-    .eq('cycle_id', nextCycle.id)
-    .eq('entry_type', 'carry_forward')
-    .eq('note', note);
-  const already = new Set((existing || []).map((e) => e.contributor_id));
-
   for (const p of (participants || [])) {
-    if (already.has(p.workspace_member_id)) continue;
-
     const cycleTarget = (p.contributor_targets || []).find((t) => t.cycle_id === cycle.id && t.is_current);
     if (!cycleTarget) continue;
 
@@ -104,30 +108,47 @@ async function carryForwardUnpaid(cycle) {
     const outstanding = parseFloat(cycleTarget.target_amount) - paid;
     if (outstanding <= 0) continue;
 
-    const { error } = await supabaseAdmin.from('ledger_entries').insert({
-      workspace_id:      cycle.containers.workspace_id,
-      container_id:      cycle.container_id,
-      cycle_id:          nextCycle.id,
-      entry_type:        'carry_forward',
-      contributor_id:    p.workspace_member_id,
-      original_amount:   outstanding,
-      original_currency: cycleTarget.target_currency,
-      base_amount:       outstanding,
-      status:            'confirmed',
-      // NULL = recorded by the system, not a member (requires 002_hardening.sql)
-      recorded_by:       null,
-      confirmed_at:      new Date().toISOString(),
-      confirmed_by:      null,
-      note,
-    });
-    if (error) throw new Error(error.message);
+    try {
+      const { data: result, error } = await supabaseAdmin.rpc('apply_cycle_carry_forward_atomic', {
+        p_container_participant_id: p.id,
+        p_container_id:             cycle.container_id,
+        p_workspace_member_id:      p.workspace_member_id,
+        p_from_cycle_id:            cycle.id,
+        p_to_cycle_id:              nextCycle.id,
+        p_amount:                   outstanding,
+        p_currency:                 cycleTarget.target_currency,
+        p_due_date:                 nextCycle.cycle_end,
+        // System-applied, like cycle_generation.service.js's per-cycle
+        // target rows — attributed to whoever created the container
+        // rather than a nullable "system" actor.
+        p_set_by:                   cycle.containers.created_by,
+      });
+      if (error) throw new Error(error.message);
+
+      if (!result?.applied) continue; // already carried forward by a previous run
+
+      await notification.send({
+        type:          'carry_forward_applied',
+        workspaceId:   cycle.containers.workspace_id,
+        recipientIds:  [p.workspace_member_id],
+        referenceType: 'container',
+        referenceId:   cycle.container_id,
+        dedupKey:      `carry_forward_applied:${cycle.id}:${p.workspace_member_id}`,
+        variables: {
+          amount:    `${outstanding.toFixed(2)} ${cycleTarget.target_currency}`,
+          container: cycle.container_id,
+        },
+      });
+    } catch (err) {
+      logger.error('Cycle lifecycle: failed to carry forward unpaid balance', { cycleId: cycle.id, nextCycleId: nextCycle.id, memberId: p.workspace_member_id, error: err.message });
+    }
   }
 }
 
 async function closeDueCycles(today) {
   const { data: toClose } = await supabaseAdmin
     .from('container_cycles')
-    .select('*, containers!inner(workspace_id, carry_forward_unpaid)')
+    .select('*, containers!inner(workspace_id, carry_forward_unpaid, created_by)')
     .eq('status', 'open')
     .lt('cycle_end', today);
 
