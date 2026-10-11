@@ -143,8 +143,9 @@ Workspace (a household)
      ├─ type: "event" (one-off) | "recurring" (pool)
      ├─ Participants (per-container opt-in to money/task tracking, targets)
      ├─ Cycles (recurring containers only — generated/opened/closed automatically)
-     ├─ Ledger entries (contribution | expense | correction | carry_forward)
+     ├─ Ledger entries (contribution | expense | correction)
      │   └─ Disputes
+     ├─ Contributor targets (standing or per-cycle; carries forward unpaid balances)
      ├─ Tasks
      └─ Milestones / timeline entries
 ```

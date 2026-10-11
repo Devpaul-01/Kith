@@ -43,6 +43,12 @@ database-side transaction:
 - `set_contributor_target_atomic` (`participant.service.js#setTarget`) —
   replaces three sequential, non-transactional writes with a single atomic
   operation.
+- `apply_cycle_carry_forward_atomic` (`cycle_lifecycle.service.js#carryForwardUnpaid`,
+  added in `002_ledger_integrity_and_carry_forward_debt.sql`) — claims
+  idempotency via an insert into `cycle_carry_forwards`, then supersedes
+  the participant's next-cycle target row, all inside one transaction so
+  a partial failure can't leave the carry-forward "claimed" without the
+  target actually being raised, or vice versa. See ADR-0020.
 - `convert_event_to_recurring_atomic`
   (`container.service.js#convertToRecurring`) — runs the container insert
   and participant upsert inside one Postgres transaction, so a failure
