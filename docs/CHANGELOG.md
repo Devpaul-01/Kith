@@ -26,6 +26,14 @@ does not follow a dated release cadence.
   credentialed requests would be rejected by browsers anyway — removing
   the fallback keeps the failure mode explicit rather than silently
   breaking cookie-based auth.
+- **Confirmed ledger entries are immutable at the database level, not
+  just in application code.** `ledger.service.js` already refused to edit
+  or delete a confirmed/disputed/resolved entry, but that check was
+  bypassable by anything using the service-role key directly. A
+  `BEFORE UPDATE`/`BEFORE DELETE` trigger on `ledger_entries` now enforces
+  the same rule in Postgres: every column is frozen once an entry is
+  confirmed, except `status` (only via the whitelisted
+  `confirmed → disputed → resolved` transitions) and `proofs`.
 - **File uploads (ledger proofs, task proofs, milestone photos) are
   validated against their actual uploaded bytes**, not just the
   client-declared `content_type` and `file_size`. `verifyUploadedFile()`
@@ -117,6 +125,25 @@ does not follow a dated release cadence.
 - **Participants cannot have money tracking disabled while they hold
   confirmed ledger entries** — the same protection that exists at the
   container level is enforced at the participant level too.
+- **Cycle-lifecycle carry-forward no longer inserts a `ledger_entries` row
+  for an outstanding balance.** It previously inserted one with
+  `status: 'confirmed'`, which every summary in the app reads as "money
+  received" — making an unpaid participant look like they'd already paid
+  the carried-forward amount. It now raises the participant's target for
+  the next cycle instead (`apply_cycle_carry_forward_atomic`), so the
+  existing paid-vs-target comparison naturally shows the debt as owed, not
+  paid. This also fixed a latent bug where the insert set
+  `recorded_by: null` against a `NOT NULL` column, which would have
+  thrown on every run for any container with `carry_forward_unpaid`
+  enabled and an outstanding balance.
+- **Carry-forward idempotency moved from an application-layer note-text
+  match to a DB unique constraint** (`cycle_carry_forwards(container_participant_id, from_cycle_id)`),
+  closing the same non-atomic check-then-act race this codebase already
+  uses atomic RPCs to avoid elsewhere.
+- **A single participant's carry-forward failure no longer reopens the
+  whole cycle for retry.** It's caught, logged, and skipped per
+  participant — consistent with how per-participant notification
+  failures are already handled in the same job.
 
 ## Architecture
 

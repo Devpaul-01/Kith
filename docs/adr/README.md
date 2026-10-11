@@ -94,6 +94,8 @@ reordered, even if a later ADR supersedes an earlier one.
 | [0016](./ADR-0016-zod-schema-validation-with-shared-enums.md) | Zod Schema Validation with Shared Enum Sources of Truth | Accepted |
 | [0017](./ADR-0017-typed-error-hierarchy-and-central-handler.md) | Typed Error Hierarchy with a Central Error Handler | Accepted |
 | [0018](./ADR-0018-shared-pagination-and-sorting-utilities.md) | Shared Pagination and Sorting Utilities | Accepted |
+| [0019](./ADR-0019-db-level-ledger-entry-immutability.md) | Database-Level Immutability Trigger for Confirmed Ledger Entries | Accepted |
+| [0020](./ADR-0020-carry-forward-as-target-not-ledger-entry.md) | Carry-Forward Represented as a Target Increase, Not a Ledger Entry | Accepted |
 
 ## Related documentation
 

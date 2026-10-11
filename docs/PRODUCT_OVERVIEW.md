@@ -85,7 +85,7 @@ Understanding Kith means understanding six nouns and how they nest inside each o
 | **Workspace Member** | A person's membership within one workspace. A single human (one `users` row) can be a member of multiple workspaces (e.g., their own nuclear family and their in-laws' family), and each membership is a separate identity with its own role, display name, and proxy status. | An employee's record in a specific company — same person, different "seat" per organization. |
 | **Container** | A thing the family is coordinating: either a one-off **event** (wedding, funeral, graduation) or a **recurring pool** (monthly susu, ongoing care fund). Containers optionally track money (`enable_money`), tasks (`enable_tasks`), or both. | A "project" or "budget line" the family has opened. |
 | **Container Participant** | A workspace member's involvement in one specific container — separate from container-level ledger/task settings, because not everyone participating in an event necessarily owes money or has tasks. | Being "on" a specific project, with your own target/budget for that project. |
-| **Ledger Entry** | A single financial record: a contribution, an expense, a correction, or a system-generated carry-forward. This is the immutable-once-confirmed record of money movement. | A journal entry in an accounting system. |
+| **Ledger Entry** | A single financial record: a contribution, an expense, or a correction. This is the immutable-once-confirmed record of money movement, enforced both in application code and (as of `002_ledger_integrity_and_carry_forward_debt.sql`) by a DB trigger. An unpaid balance carried into the next cycle is *not* a ledger entry — see **Carry-Forward** below. | A journal entry in an accounting system. |
 | **Group** | A named, reusable subset of workspace members (e.g., "The Cousins," "Immediate Family") used to quickly add the same set of people to multiple containers. | A distribution list or a saved audience segment. |
 
 **Nesting, visually:**
@@ -611,6 +611,8 @@ Only entries still in `pending` status can be edited or deleted, and only by the
 Per-container and per-workspace summaries roll up confirmed/pending/disputed counts and totals. A full CSV export (workspace-wide, optionally filtered to one container and/or a date range) is available to admins for reconciliation, tax records, or sharing with family members who want the raw numbers.
 
 ![The full ledger view for a recurring pool: a proof-uploaded entry awaiting confirmation, a directly-confirmed entry handed over in person, a currency-converted entry, and a system-attributed carry-forward entry at the bottom](../media/kith-ledger-multi-currency-mixed-status.png)
+
+> **Doc/screenshot TODO:** the "system-attributed carry-forward entry" at the bottom of this screenshot reflects the pre-`002_ledger_integrity_and_carry_forward_debt.sql` behavior. New carry-forward amounts no longer appear as ledger entries at all (see "Carry-forward logic" above) — a re-capture would show that row simply absent, with the balance folded into the open cycle's target instead.
 *Six entries spanning nearly every status and provenance the ledger supports in one container — proof-uploaded, member-submitted and admin-confirmed, a same-admin direct entry, a converted-currency contribution, and the carried-forward balance confirmed by "System" rather than a person.*
 
 ### Business rules
@@ -639,6 +641,8 @@ Either the person who raised the dispute or an admin can append notes to an open
 Admin-only, requires a resolution note of at least 10 characters (preventing a bare "resolved" with no explanation). Like raising, resolution is atomic — the dispute's status and the underlying ledger entry's status update together. The person who originally raised the dispute is notified of the resolution.
 
 ![Disputes list showing one open dispute (a currency-conversion question) and one resolved dispute (a carry-forward balance query), each with the raiser's summary and current status](../media/kith-disputes-list-open-and-resolved.png)
+
+> **Doc/screenshot TODO:** the resolved dispute shown here was raised against a carry-forward *entry* under the old implementation. Carry-forward no longer creates a ledger entry (see "Carry-forward logic" above), so this specific example no longer occurs — a re-capture would show a dispute against an ordinary contribution instead. The dispute flow itself is unaffected; this is purely about what example happens to be pictured.
 *The workspace-level dispute list an admin sees — an open dispute awaiting review and a resolved one for reference, both showing who raised them and why. This is the entry point into the single-dispute detail view below.*
 
 ### Corrections
@@ -937,7 +941,7 @@ Nine BullMQ queues, each with a dedicated worker, backed by the shared Redis ins
 | Job | Schedule | What it does |
 |---|---|---|
 | **Reminder scan** | Daily, 07:00 UTC | Sends upcoming-payment reminders (due within 7 days), overdue reminders, admin overdue summaries per container, and cycle-closing-soon reminders (within 3 days, only to members with an outstanding balance) |
-| **Cycle lifecycle** | Daily, 00:01 UTC | Opens any `upcoming` cycle whose start date has arrived (notifying each participant of *their own* target amount for that cycle); closes any `open` cycle past its end date, optionally carrying forward unpaid balances as new ledger entries into the next cycle |
+| **Cycle lifecycle** | Daily, 00:01 UTC | Opens any `upcoming` cycle whose start date has arrived (notifying each participant of *their own* target amount for that cycle); closes any `open` cycle past its end date, optionally carrying forward unpaid balances onto the next cycle's target |
 | **Task overdue check** | Daily, 06:00 UTC | Flips pending tasks past due date to `overdue`, notifies the assignee and all admins |
 | **Invite cleanup** | Daily, 02:00 UTC | Deletes expired, never-used invite links |
 | **Engagement check** | Weekly, Sunday 06:00 UTC | Recomputes each non-proxy member's `last_active_at` from their most recent login, confirmed contribution, or completed task |
@@ -950,7 +954,11 @@ Nine BullMQ queues, each with a dedicated worker, backed by the shared Redis ins
 For each active recurring container, the system computes the next cycle's start/end dates based on cadence (weekly = 7 days, monthly = calendar month, quarterly = 3 months, yearly = 1 year, custom = a configurable day count), respects any admin-configured pause/skip/adjust overrides for that specific cycle, and creates per-participant contributor targets for the new cycle from each participant's standing target (or an override, if one exists for that cycle). This runs far enough ahead (3 months) that a family should never open the app to find "no cycle exists yet" for the current period.
 
 ### Carry-forward logic
-When a recurring container has `carry_forward_unpaid` enabled and a cycle closes with a participant still owing money, the shortfall is automatically recorded as a new, pre-confirmed `carry_forward` ledger entry attributed to the system (not any human) in the *next* cycle — so an unpaid balance doesn't just vanish when a cycle rolls over, and the next cycle's numbers honestly reflect the accumulated obligation.
+When a recurring container has `carry_forward_unpaid` enabled and a cycle closes with a participant still owing money, the shortfall is **added to that participant's target for the next cycle** (via `apply_cycle_carry_forward_atomic`, which supersedes their current `contributor_targets` row the same way an admin's manual target edit would) — so an unpaid balance doesn't just vanish when a cycle rolls over, and the next cycle's numbers honestly reflect the accumulated obligation.
+
+This is deliberately *not* a ledger entry. A ledger entry's `status: 'confirmed'` means "money was received" everywhere it's read (dashboards, container/member summaries, the invite preview) — representing an unpaid debt that way made an unpaid participant look like they'd already paid it. Raising the target means the participant simply owes more for the new cycle, and their existing paid-vs-target comparison shows "partial" or "overdue" exactly as it would for any other underpayment, with zero special-casing anywhere else in the app. A `cycle_carry_forwards` row records which closed cycle the debt came from, for history/audit purposes.
+
+A contribution a participant makes toward the carried-forward portion of their target is an ordinary ledger entry, submitted and confirmed exactly like any other contribution — it goes through the same dispute flow if something about it is wrong. Nothing about carry-forward needs special handling on that front.
 
 ### Fault isolation
 Several of these jobs (reminder scan, in particular) deliberately isolate failures per-item rather than per-batch — if sending one member's reminder throws (a malformed record, a transient error), the other 200 reminders in that day's scan still go out, and the failure is logged rather than causing BullMQ to retry (and thus potentially re-send) the entire batch.
@@ -1114,7 +1122,7 @@ A consolidated, quick-reference list of the "why can't I do that" rules a suppor
 4. Nightly cycle-lifecycle job opens the current month's cycle on its start date, notifying each participant of *their own* target for that cycle.
 5. Throughout the month, participants record contributions against the open cycle exactly as in a normal container.
 6. If a family member is going through a hard month, an admin applies a cycle override (`adjust_target` or `skip_member`) for just that cycle.
-7. At month-end, the cycle-lifecycle job closes the cycle. Anyone with an outstanding balance and `carry_forward_unpaid` enabled has that shortfall automatically recorded as a new ledger entry in the next cycle.
+7. At month-end, the cycle-lifecycle job closes the cycle. Anyone with an outstanding balance and `carry_forward_unpaid` enabled has that shortfall automatically added to their target for the next cycle — not recorded as a new ledger entry (see "Carry-forward logic" above).
 8. The daily cycle-generation maintenance job keeps extending the rolling 3-month horizon indefinitely, with no admin action required to keep the pool running.
 
 ### Flow: A dispute
@@ -1160,7 +1168,7 @@ Kith is deliberately built so that almost nothing is an island — most features
 
 **Container completion → Milestones → Timeline.** Completing an event container is the single action in the system that reaches across domain boundaries to create an entity in a completely different feature (milestones) automatically, specifically so the family's narrative history stays complete without duplicate manual entry.
 
-**Container type/cadence → Cycle generation → Cycle lifecycle → Ledger carry-forward.** A recurring container's cadence setting determines how cycle-generation computes cycle boundaries; cycle-lifecycle's nightly open/close sweep is what actually makes those cycles "live" (accepting contributions) or "closed" (potentially carrying forward unpaid balances as new ledger entries) — three separate systems chained by one container-level setting.
+**Container type/cadence → Cycle generation → Cycle lifecycle → Target carry-forward.** A recurring container's cadence setting determines how cycle-generation computes cycle boundaries; cycle-lifecycle's nightly open/close sweep is what actually makes those cycles "live" (accepting contributions) or "closed" (potentially carrying forward unpaid balances onto the next cycle's target) — three separate systems chained by one container-level setting.
 
 **Ledger status transitions → Notifications → Dashboard → Member engagement scoring.** Every ledger status change (submitted, proof-uploaded, confirmed, disputed) ripples into at least one notification and is reflected on the dashboard's live aggregates; a confirmed entry's timestamp also feeds directly into that contributor's engagement score.
 
@@ -1236,8 +1244,9 @@ Planned product surface area to extend on top of the current feature set — the
 | **Cycle** | One recurring time-window instance of a recurring pool (e.g., "March 2026") with its own targets and open/closed lifecycle. |
 | **Participant** | A workspace member's specific involvement in one container, with their own money/task enablement and target. |
 | **Contributor Target** | The amount, currency, and due date a specific participant is expected to contribute — either standing (container-wide) or cycle-specific. |
-| **Ledger Entry** | A single financial record: a contribution, expense, correction, or system-generated carry-forward. |
+| **Ledger Entry** | A single financial record: a contribution, expense, or correction. |
 | **Correction** | A new ledger entry that adjusts a previously confirmed entry's recorded numbers without editing the original. |
+| **Carry-Forward** | An unpaid balance from a closed cycle, added to the participant's target for the next cycle (`contributor_targets`, not a ledger entry). |
 | **Dispute** | A formal, admin-adjudicated challenge to a specific ledger entry's accuracy. |
 | **Group** | A named, reusable set of workspace members, used to bulk-add participants to containers. |
 | **Invite Link** | A single-use, 7-day-expiry token that lets a new person join a workspace as a member. |
