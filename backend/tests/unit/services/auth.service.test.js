@@ -318,10 +318,10 @@ describe('services/auth.service', () => {
       expect(authService.isAllowedGoogleRedirect('kithapp://callback')).toBe(true);
     });
 
-    it('ADVERSARIAL: documents current startsWith behavior for a domain-suffix bypass attempt', () => {
+    it('ADVERSARIAL: a domain-suffix bypass attempt is REJECTED by origin comparison', () => {
       const bypassAttempt = 'https://app.test.local.evil.com';
       const result = authService.isAllowedGoogleRedirect(bypassAttempt);
-      expect(result).toBe(bypassAttempt.startsWith(process.env.FRONTEND_URL));
+      expect(result).toBe(false);
     });
 
     it('getGoogleAuthUrl falls back to the default redirect when requestedRedirect is disallowed', async () => {

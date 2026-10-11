@@ -77,9 +77,9 @@ describe('services/storage.service', () => {
       });
     });
 
-    it('unknown/unlisted content type -> permissive default, verification succeeds (no signature to check against)', async () => {
+    it('unknown/unlisted content type -> fails closed (no signature to check against)', async () => {
       stubDownloadedBytes([0x00, 0x01, 0x02]);
-      await expect(verifyUploadedFile('p', 'application/octet-stream')).resolves.toBe(true);
+      await expect(verifyUploadedFile('p', 'application/octet-stream')).rejects.toBeInstanceOf(BusinessRuleError);
     });
 
     it('a buffer shorter than the expected signature -> fails verification, no throw of an unexpected error', async () => {
@@ -105,8 +105,8 @@ describe('services/storage.service', () => {
       expect(() => validateUpload('proof', 'application/pdf', 1000)).not.toThrow();
     });
 
-    it('accepts an unlisted image/* content type via the permissive image/* fallback', () => {
-      expect(() => validateUpload('avatar', 'image/bmp', 1000)).not.toThrow();
+    it('rejects an unlisted image/* content type (exact match only, no image/* fallback)', () => {
+      expect(() => validateUpload('avatar', 'image/bmp', 1000)).toThrow(BusinessRuleError);
     });
 
     it('rejects a content type not allowed and not image/* for a non-image fileType', () => {
