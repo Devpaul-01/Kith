@@ -17,6 +17,7 @@ const TEMPLATES = {
   payment_reminder:        { title: 'Contribution reminder',            body: 'Reminder: {amount} for {container} due {due_date}',              channels: ['in_app','push'] },
   overdue_reminder:        { title: 'Overdue contribution',             body: 'Your contribution for {container} is now overdue',               channels: ['in_app','push'] },
   cycle_started:           { title: 'New cycle started',                body: '{container} — your contribution: {amount}',                      channels: ['in_app'] },
+  carry_forward_applied:   { title: 'Unpaid balance carried forward',   body: 'A {amount} unpaid balance from the last cycle was added to your target for {container}', channels: ['in_app','push'] },
   cycle_closing_soon:      { title: 'Pool cycle ending soon',           body: '{container} cycle ends {due_date}. {outstanding} remaining.',    channels: ['in_app','push'] },
   container_completed:     { title: 'Event completed',                  body: '{container} has been completed',                                 channels: ['in_app','push'] },
   admin_announcement:      { title: '{title}',                          body: '{body}',                                                         channels: ['in_app','push','email'], urgent: true },
