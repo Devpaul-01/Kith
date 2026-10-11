@@ -303,8 +303,8 @@ backend/src/
 Clone the repo, then install the backend and frontend separately — each has its own `package.json`.
 
 ```bash
-git clone <this-repo>
-cd <this-repo>
+git clone https://github.com/Devpaul-01/Kith
+cd Kith
 
 # Backend
 cd backend
