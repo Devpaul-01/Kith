@@ -48,13 +48,14 @@ const MONEY_CARDS = [
   { title: 'Shared contribution progress', desc: 'Everyone sees how close the family is to reaching the goal.' },
   { title: 'Transparent history', desc: "Every contribution becomes part of the family's shared record." },
   { title: 'Payment confirmation', desc: 'Members submit proof of payment so everyone stays informed.' },
+  { title: 'A page you can share outside the family', desc: 'Generate a public link for an event or fund so extended relatives and friends can see progress toward the goal — you choose whether contributor names are shown.' },
 ];
 
 const TRUST_POINTS = [
   { icon: History, title: 'Contribution History', description: "Every contribution becomes part of a running record — who gave, when, and what it was for. Nobody has to ask, and nobody has to remember." },
   { icon: Users, title: 'Shared Activity', description: "Everyone in the family sees the same updates as they happen, so no one is left wondering what they missed." },
   { icon: ClipboardCheck, title: 'Clear Responsibilities', description: "Every task has an owner and a status, so it's always obvious what's done and what still needs attention." },
-  { icon: Archive, title: 'Organized Records', description: "Receipts, notes, and updates stay attached to the event they belong to, instead of buried in a chat thread from months ago." },
+  { icon: Archive, title: 'Organized Records', description: "Receipts, notes, and updates stay attached to the event they belong to, instead of buried in a chat thread from months ago. Admins can review — and export — a full audit log of every change." },
 ];
 
 function NavBar({ mobileOpen, setMobileOpen }: { mobileOpen: boolean; setMobileOpen: (v: boolean) => void }) {
@@ -200,7 +201,8 @@ export default function LandingPage() {
             <CurrencyBar />
           </div>
           <p className="mt-3 text-xs text-text-secondary">
-            A few examples — Kith supports every global currency, so distance never gets in the way of family.
+            A few examples — Kith supports every global currency. Relatives contribute in whatever they pay
+            with, and it all rolls up into one clear family total.
           </p>
         </Reveal>
       </section>
@@ -303,7 +305,7 @@ export default function LandingPage() {
           <Reveal delay={120} className="mt-14">
             <LedgerStrip />
           </Reveal>
-          <div className="mt-10 grid gap-5 sm:grid-cols-3">
+          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
             {MONEY_CARDS.map((c, i) => (
               <Reveal key={c.title} delay={i * 90}>
                 <div className="h-full rounded-2xl border border-border bg-white p-6 shadow-card">
@@ -348,6 +350,12 @@ export default function LandingPage() {
                 Monthly healthcare support. Education funds. Community obligations. Instead of recreating
                 everything from scratch every month, Kith keeps recurring coordination running smoothly so
                 everyone always knows what's next.
+              </p>
+              <p className="mt-4 text-base leading-relaxed text-text-secondary">
+                Reminders go out automatically before a payment is due, and again if it's missed — so admins
+                aren't the ones chasing people down. And if someone falls behind, Kith doesn't quietly mark
+                them as paid: the unpaid amount carries forward and is added to what they owe next cycle, so
+                the record always matches what actually happened.
               </p>
             </Reveal>
             <Reveal delay={120}>
