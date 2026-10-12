@@ -576,4 +576,190 @@ describe('services/ledger.service', () => {
       ).rejects.toBeInstanceOf(BusinessRuleError);
     });
   });
+
+  // ── listEntries ────────────────────────────────────────────────────
+  //
+  // Previously untested despite being the primary read path every ledger
+  // UI screen hits. Covers the admin/non-admin visibility split (the
+  // single most important access-control branch in this function), the
+  // joined-name reshaping, query filters, and the fail-loud error path.
+  describe('listEntries', () => {
+    it('non-admin caller is scoped to their own contributor_id regardless of query filters', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null, count: 0 });
+
+      await ledgerService.listEntries({
+        workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
+        isAdmin: false, callerId: CALLER_ID,
+        query: { contributor_id: 'someone-else' }, // a non-admin trying to view another member's entries
+        page: 1, perPage: 20, offset: 0,
+      });
+
+      const eqCalls = mockSupabaseInstance.builder.eq.mock.calls;
+      expect(eqCalls).toContainEqual(['contributor_id', CALLER_ID]);
+      expect(eqCalls).not.toContainEqual(['contributor_id', 'someone-else']);
+    });
+
+    it('admin caller may filter by an explicit contributor_id', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null, count: 0 });
+
+      await ledgerService.listEntries({
+        workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
+        isAdmin: true, callerId: CALLER_ID,
+        query: { contributor_id: 'target-member' },
+        page: 1, perPage: 20, offset: 0,
+      });
+
+      expect(mockSupabaseInstance.builder.eq.mock.calls).toContainEqual(['contributor_id', 'target-member']);
+    });
+
+    it('admin caller with no contributor_id filter sees the whole container (no contributor_id eq applied)', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null, count: 0 });
+
+      await ledgerService.listEntries({
+        workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
+        isAdmin: true, callerId: CALLER_ID,
+        query: {}, page: 1, perPage: 20, offset: 0,
+      });
+
+      const contributorEqCalls = mockSupabaseInstance.builder.eq.mock.calls.filter((c) => c[0] === 'contributor_id');
+      expect(contributorEqCalls).toHaveLength(0);
+    });
+
+    it('applies status and date-range filters when present in query', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null, count: 0 });
+
+      await ledgerService.listEntries({
+        workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
+        isAdmin: true, callerId: CALLER_ID,
+        query: { status: 'confirmed', from: '2026-01-01', to: '2026-02-01' },
+        page: 1, perPage: 20, offset: 0,
+      });
+
+      expect(mockSupabaseInstance.builder.eq.mock.calls).toContainEqual(['status', 'confirmed']);
+      expect(mockSupabaseInstance.builder.gte.mock.calls).toContainEqual(['recorded_at', '2026-01-01']);
+      expect(mockSupabaseInstance.builder.lte.mock.calls).toContainEqual(['recorded_at', '2026-02-01']);
+    });
+
+    it('reshapes joined contributor/recorder/confirmer rows into flat *_name fields and strips the nested objects', async () => {
+      mockSupabaseInstance.mockNextResponse({
+        data: [{
+          id: 'e1',
+          contributor: { display_name: 'Alice' },
+          recorded_by_member: { display_name: 'Bob' },
+          confirmed_by_member: { display_name: 'Carol' },
+        }],
+        error: null,
+        count: 1,
+      });
+
+      const { entries, count } = await ledgerService.listEntries({
+        workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
+        isAdmin: true, callerId: CALLER_ID,
+        query: {}, page: 1, perPage: 20, offset: 0,
+      });
+
+      expect(count).toBe(1);
+      expect(entries[0]).toMatchObject({
+        id: 'e1',
+        contributor_name: 'Alice',
+        recorded_by_name: 'Bob',
+        confirmed_by_name: 'Carol',
+      });
+      expect(entries[0].contributor).toBeUndefined();
+      expect(entries[0].recorded_by_member).toBeUndefined();
+      expect(entries[0].confirmed_by_member).toBeUndefined();
+    });
+
+    it('a null count from Postgres is normalized to 0, not passed through as null', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null, count: null });
+
+      const { count } = await ledgerService.listEntries({
+        workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
+        isAdmin: true, callerId: CALLER_ID,
+        query: {}, page: 1, perPage: 20, offset: 0,
+      });
+
+      expect(count).toBe(0);
+    });
+
+    it('query error is fail-loud (throws rather than returning an empty page)', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: { message: 'relation does not exist' } });
+
+      await expect(
+        ledgerService.listEntries({
+          workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
+          isAdmin: true, callerId: CALLER_ID,
+          query: {}, page: 1, perPage: 20, offset: 0,
+        })
+      ).rejects.toThrow('relation does not exist');
+    });
+  });
+
+  // ── getEntry ──────────────────────────────────────────────────────
+  //
+  // Single-entry read, gated by the same admin/owner access rule as
+  // every mutating ledger endpoint — but previously the only ledger
+  // service function with that rule that had no direct test.
+  describe('getEntry', () => {
+    it('returns the reshaped entry for its own contributor (non-admin)', async () => {
+      mockSupabaseInstance.mockNextResponse({
+        data: {
+          id: 'e1',
+          contributor_id: CALLER_ID,
+          contributor: { display_name: 'Alice' },
+          recorded_by_member: null,
+          confirmed_by_member: null,
+        },
+        error: null,
+      });
+
+      const entry = await ledgerService.getEntry({
+        containerId: CONTAINER_ID, entryId: 'e1', isAdmin: false, callerId: CALLER_ID,
+      });
+
+      expect(entry.id).toBe('e1');
+      expect(entry.contributor_name).toBe('Alice');
+      expect(entry.contributor).toBeUndefined();
+    });
+
+    it('non-admin requesting a DIFFERENT contributor\'s entry is rejected with ForbiddenError', async () => {
+      mockSupabaseInstance.mockNextResponse({
+        data: { id: 'e1', contributor_id: 'someone-else', contributor: null },
+        error: null,
+      });
+
+      await expect(
+        ledgerService.getEntry({ containerId: CONTAINER_ID, entryId: 'e1', isAdmin: false, callerId: CALLER_ID })
+      ).rejects.toBeInstanceOf(ForbiddenError);
+    });
+
+    it('admin may read any contributor\'s entry', async () => {
+      mockSupabaseInstance.mockNextResponse({
+        data: { id: 'e1', contributor_id: 'someone-else', contributor: null },
+        error: null,
+      });
+
+      const entry = await ledgerService.getEntry({
+        containerId: CONTAINER_ID, entryId: 'e1', isAdmin: true, callerId: CALLER_ID,
+      });
+
+      expect(entry.id).toBe('e1');
+    });
+
+    it('non-existent entry -> NotFoundError', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null });
+
+      await expect(
+        ledgerService.getEntry({ containerId: CONTAINER_ID, entryId: 'missing', isAdmin: true, callerId: CALLER_ID })
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it('query error is fail-loud (throws)', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: { message: 'connection reset' } });
+
+      await expect(
+        ledgerService.getEntry({ containerId: CONTAINER_ID, entryId: 'e1', isAdmin: true, callerId: CALLER_ID })
+      ).rejects.toThrow('connection reset');
+    });
+  });
 });
