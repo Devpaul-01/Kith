@@ -153,6 +153,14 @@ export const taskService = {
       )
       .then((r) => r.data),
 
+  /** Remove a single uploaded proof file by its index in the task's proof list. */
+  deleteProof: (workspaceId: string, containerId: string, taskId: string, proofIndex: number) =>
+    api
+      .delete(
+        `/v1/workspaces/${workspaceId}/containers/${containerId}/tasks/${taskId}/proof/${proofIndex}`
+      )
+      .then((r) => r.data),
+
   // ── Export ────────────────────────────────────────────────────────────────
 
   /** Download tasks as CSV.

@@ -29,7 +29,9 @@ import {
   Pencil,
   Plus,
   Receipt,
+  Trash2,
   Upload,
+  X,
 } from 'lucide-react';
 import type { LedgerEntry, Participant, Workspace, WorkspaceMember } from '@/types/models';
 import { LEDGER_STATUSES } from '@/constants/enums';
@@ -273,6 +275,26 @@ const moneyEnabledParticipants = participants.filter(p => p.money_enabled);
     onError: () => showToast.error('Failed to add correction'),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (entryId: string) =>
+      ledgerService.delete(workspaceId, containerId!, entryId),
+    onSuccess: () => {
+      invalidate();
+      showToast.success('Entry deleted');
+    },
+    onError: () => showToast.error('Failed to delete entry'),
+  });
+
+  const deleteProofMutation = useMutation({
+    mutationFn: ({ entryId, proofIndex }: { entryId: string; proofIndex: number }) =>
+      ledgerService.deleteProof(workspaceId, containerId!, entryId, proofIndex),
+    onSuccess: () => {
+      invalidate();
+      showToast.success('Proof removed');
+    },
+    onError: () => showToast.error('Failed to remove proof'),
+  });
+
   const disputeMutation = useMutation({
     mutationFn: ({ entryId, reason }: { entryId: string; reason: string }) =>
       api
@@ -373,6 +395,15 @@ const moneyEnabledParticipants = participants.filter(p => p.money_enabled);
 
   const canDispute = (e: LedgerEntry) =>
     e.status === 'confirmed' && (isAdmin || e.contributor_id === memberId);
+
+  // Mirrors backend ledger.service.js deleteEntry: pending/proof_uploaded only, owner or admin
+  const canDelete = (e: LedgerEntry) =>
+    ['pending', 'proof_uploaded'].includes(e.status) && (isAdmin || e.contributor_id === memberId);
+
+  // Mirrors backend ledger.service.js deleteProof: owner or admin, but only admins
+  // may remove proofs from an already-confirmed entry
+  const canDeleteProof = (e: LedgerEntry) =>
+    (isAdmin || e.contributor_id === memberId) && (isAdmin || e.status !== 'confirmed');
     return (
     <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-5">
 
@@ -505,6 +536,21 @@ const moneyEnabledParticipants = participants.filter(p => p.money_enabled);
                   </button>
                 )}
 
+                {hasProofs && canDeleteProof(entry) && (
+                  <button
+                    title="Remove proof"
+                    onClick={() => {
+                      if (confirm('Remove this proof file?')) {
+                        deleteProofMutation.mutate({ entryId: entry.id, proofIndex: entry.proofs!.length - 1 });
+                      }
+                    }}
+                    disabled={deleteProofMutation.isPending}
+                    className="text-text-secondary hover:text-danger transition-colors disabled:opacity-50"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+
                 {canDispute(entry) && (
                   <button
                     title="Raise dispute"
@@ -522,6 +568,21 @@ const moneyEnabledParticipants = participants.filter(p => p.money_enabled);
                     className="text-text-secondary hover:text-primary transition-colors"
                   >
                     <GitBranch size={14} />
+                  </button>
+                )}
+
+                {canDelete(entry) && (
+                  <button
+                    title="Delete entry"
+                    onClick={() => {
+                      if (confirm('Delete this entry? This cannot be undone.')) {
+                        deleteMutation.mutate(entry.id);
+                      }
+                    }}
+                    disabled={deleteMutation.isPending}
+                    className="text-text-secondary hover:text-danger transition-colors disabled:opacity-50"
+                  >
+                    <Trash2 size={14} />
                   </button>
                 )}
               </div>
