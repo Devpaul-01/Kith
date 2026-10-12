@@ -14,11 +14,16 @@ const containerService = require('../services/container.service');
 async function listContainers(req, res, next) {
   try {
     const { workspaceId } = req.params;
+    const isAdmin = req.member?.role === 'admin';
     const result = await containerService.listContainers({
       workspaceId,
       typeFilter: req.query['type'],
       statusFilter: req.query['status'],
       sortQuery: req.query,
+      // Only admins may request soft-deleted containers (e.g. to restore one);
+      // the flag is silently ignored for non-admins, who always get the
+      // normal non-deleted view regardless of what they pass.
+      includeDeleted: isAdmin && req.query['include_deleted'] === 'true',
     });
     success(res, result);
   } catch (err) { next(err); }
