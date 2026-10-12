@@ -13,6 +13,8 @@ import { GeneralSettingsTab } from '@/components/workspace/GeneralSettingsTab';
 import { AppearanceTab } from '@/components/workspace/AppearanceTab';
 import { PreferencesTab } from '@/components/workspace/PreferencesTab';
 import { DangerZoneTab } from '@/components/workspace/DangerZoneTab';
+import { AnnouncementsTab } from '@/components/workspace/AnnouncementsTab';
+import { useIsAdmin } from '@/hooks/useIsAdmin';
 import showToast from '@/lib/toast';
 
 export default function WorkspaceSettingsPage() {
@@ -20,6 +22,7 @@ export default function WorkspaceSettingsPage() {
   const { clear: clearWs } = useWorkspaceStore();
   const qc = useQueryClient();
   const nav = useNavigate();
+  const isAdmin = useIsAdmin();
   const [activeTab, setActiveTab] = useState('general');
 
   // Fetch workspace details (refresh after updates)
@@ -67,6 +70,18 @@ export default function WorkspaceSettingsPage() {
     },
   });
 
+  const announceMutation = useMutation({
+    mutationFn: (payload: Parameters<typeof workspaceService.announce>[1]) =>
+      workspaceService.announce(workspaceId, payload),
+    onSuccess: (data) => {
+      showToast.success(`Sent to ${data.sent_count} member${data.sent_count === 1 ? '' : 's'}`);
+    },
+    onError: (error: any) => {
+      const message = error?.response?.data?.error?.message || 'Failed to send announcement';
+      showToast.error(message);
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: () => workspaceService.delete(workspaceId),
     onSuccess: () => {
@@ -101,6 +116,7 @@ export default function WorkspaceSettingsPage() {
     { id: 'general', label: 'General' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'preferences', label: 'Preferences' },
+    ...(isAdmin ? [{ id: 'announcements', label: 'Announcements' }] : []),
     { id: 'danger', label: 'Danger Zone' },
   ];
 
@@ -140,6 +156,13 @@ export default function WorkspaceSettingsPage() {
           settings={settings || {}}
           onUpdate={(payload) => updateSettingsMutation.mutate(payload)}
           isUpdating={updateSettingsMutation.isPending}
+        />
+      )}
+
+      {activeTab === 'announcements' && isAdmin && (
+        <AnnouncementsTab
+          onSend={(payload) => announceMutation.mutate(payload)}
+          isSending={announceMutation.isPending}
         />
       )}
 

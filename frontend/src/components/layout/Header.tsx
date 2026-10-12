@@ -1,5 +1,5 @@
 // components/layout/Header.tsx
-import { Menu, Bell, LogOut, UserPlus } from 'lucide-react';
+import { Menu, Bell, LogOut, UserPlus, Search } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useNotificationCount } from '@/hooks/useNotifications';
 import { Avatar } from '@/components/ui/Avatar';
@@ -8,6 +8,7 @@ import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import { InviteModal } from '@/components/workspace/InviteModal';
+import { GlobalSearchModal } from './GlobalSearchModal';
 import { useAuthStore } from '@/store/authStore';
 import { useWorkspaceStore } from '@/store/workspaceStore';
 import { useIsAdmin } from '@/hooks/useIsAdmin';
@@ -24,6 +25,7 @@ export function Header() {
   const { clear: clearAuth } = useAuthStore();
   const { clear: clearWorkspace } = useWorkspaceStore();
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showSearchModal, setShowSearchModal] = useState(false);
   
   const count = (data as { unread_count?: number })?.unread_count ?? 0;
 
@@ -58,6 +60,15 @@ export function Header() {
         </div>
         
         <div className="flex items-center gap-2">
+          {/* Search Button */}
+          <button
+            onClick={() => setShowSearchModal(true)}
+            className="p-2 rounded-xl hover:bg-slate-100 text-text-secondary transition-colors"
+            title="Search members and events"
+          >
+            <Search size={20} />
+          </button>
+
           {/* Invite Members Button - Admin Only */}
           {isAdmin && (
             <button
@@ -109,6 +120,13 @@ export function Header() {
       <InviteModal
         open={showInviteModal}
         onClose={() => setShowInviteModal(false)}
+        workspaceId={useWorkspaceStore.getState().activeWorkspaceId || ''}
+      />
+
+      {/* Search Modal */}
+      <GlobalSearchModal
+        open={showSearchModal}
+        onClose={() => setShowSearchModal(false)}
         workspaceId={useWorkspaceStore.getState().activeWorkspaceId || ''}
       />
     </>

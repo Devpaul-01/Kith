@@ -1,13 +1,16 @@
-import{api}from'@/lib/axios';import type{FileInfo}from'@/types/models';
+import{api}from'@/lib/axios';import type{FileInfo,User,UserContact}from'@/types/models';
 export const authService={
   signup:(p:{email:string;password:string;full_name:string;country_of_residence:string})=>api.post('/v1/auth/signup',p).then(r=>r.data),
   login:(p:{email:string;password:string})=>api.post('/v1/auth/login',p).then(r=>r.data),
   refreshToken:(t:string)=>api.post('/v1/auth/refresh',{refresh_token:t}).then(r=>r.data),
   
 logout: () => api.post('/v1/auth/logout').then(r => r.data),
+  logoutAllDevices: () => api.post('/v1/auth/logout-all-devices').then(r => r.data),
   forgotPassword:(email:string)=>api.post('/v1/auth/forgot-password',{email}).then(r=>r.data),
   resetPassword:(password:string)=>api.post('/v1/auth/reset-password',{password}).then(r=>r.data),
+  changePassword:(p:{current_password:string;new_password:string})=>api.post('/v1/auth/change-password',p).then(r=>r.data),
   getGoogleUrl:(redirectTo?:string)=>{const p=redirectTo?`?redirect_to=${encodeURIComponent(redirectTo)}`:'';return api.get(`/v1/auth/google/url${p}`).then(r=>r.data);},
+  googleCallback:(code:string)=>api.post('/v1/auth/google/callback',{code}).then(r=>r.data),
   register:(p?:{full_name?:string;country_of_residence?:string})=>api.post('/v1/auth/register',p??{}).then(r=>r.data),
   getMe:()=>api.get('/v1/auth/me').then(r=>r.data),
   
@@ -15,7 +18,7 @@ logout: () => api.post('/v1/auth/logout').then(r => r.data),
   updateContacts:(contacts:Array<{type:string;value:string;label?:string;country_code?:string;is_primary?:boolean}>)=>api.patch('/v1/auth/contacts',{contacts}).then(r=>r.data),
   registerPushToken:(token:string,platform:'web'|'ios'|'android')=>api.post('/v1/auth/push-token',{token,platform}).then(r=>r.data),
   updateNotificationPrefs:(p:{push_enabled?:boolean;email_digest_enabled?:boolean})=>api.patch('/v1/auth/notification-preferences',p).then(r=>r.data),
-  requestDataExport:()=>api.post('/v1/auth/request-data-export').then(r=>r.data),
+  requestDataExport:()=>api.post('/v1/auth/data-export').then(r=>r.data),
   // services/auth.service.ts - add these methods
 
 // Get user contacts

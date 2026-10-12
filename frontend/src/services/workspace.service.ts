@@ -49,6 +49,12 @@ export interface UpdateWorkspacePayload {
 }
 
 export const workspaceService = {
+  announce: (
+    workspaceId: string,
+    payload: { title: string; body: string; target_role?: 'admin' | 'member' },
+  ): Promise<{ sent_count: number }> =>
+    api.post(`/v1/workspaces/${workspaceId}/announce`, payload).then(r => r.data),
+
   list: (): Promise<{ memberships: Array<{
     member_id: string;
     role: string;
