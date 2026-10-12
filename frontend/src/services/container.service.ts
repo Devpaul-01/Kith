@@ -150,6 +150,10 @@ export const containerService = {
   delete: (workspaceId: string, containerId: string): Promise<{ message: string }> =>
     api.delete(`/v1/workspaces/${workspaceId}/containers/${containerId}`).then(r => r.data),
 
+  /** Undo a soft-delete; admin only */
+  restore: (workspaceId: string, containerId: string): Promise<{ container: Container }> =>
+    api.post(`/v1/workspaces/${workspaceId}/containers/${containerId}/restore`).then(r => r.data),
+
   /**
    * Mark a container as completed.
    *

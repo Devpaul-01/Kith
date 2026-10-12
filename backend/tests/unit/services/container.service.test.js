@@ -102,6 +102,38 @@ describe('services/container.service', () => {
     });
   });
 
+  describe('listContainers — includeDeleted', () => {
+    it('defaults to only non-deleted containers (.is deleted_at null)', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null });
+
+      await containerService.listContainers({ workspaceId: WORKSPACE_ID, sortQuery: {} });
+
+      const calls = mockSupabaseInstance.getCalls();
+      expect(calls.some((c) => c.method === 'is' && c.args[0] === 'deleted_at' && c.args[1] === null)).toBe(true);
+      expect(calls.some((c) => c.method === 'not')).toBe(false);
+    });
+
+    it('includeDeleted: true queries only soft-deleted containers (.not deleted_at null)', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null });
+
+      await containerService.listContainers({ workspaceId: WORKSPACE_ID, sortQuery: {}, includeDeleted: true });
+
+      const calls = mockSupabaseInstance.getCalls();
+      expect(calls.some((c) => c.method === 'not' && c.args[0] === 'deleted_at' && c.args[1] === 'is' && c.args[2] === null)).toBe(true);
+      expect(calls.some((c) => c.method === 'is' && c.args[0] === 'deleted_at')).toBe(false);
+    });
+
+    it('includeDeleted: false behaves identically to omitting the flag', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [{ id: CONTAINER_ID, name: 'Party', status: 'active' }], error: null });
+
+      const result = await containerService.listContainers({ workspaceId: WORKSPACE_ID, sortQuery: {}, includeDeleted: false });
+
+      expect(result.containers).toHaveLength(1);
+      const calls = mockSupabaseInstance.getCalls();
+      expect(calls.some((c) => c.method === 'is' && c.args[0] === 'deleted_at' && c.args[1] === null)).toBe(true);
+    });
+  });
+
   describe('updateContainer — fail-closed count-query guard (Issue C6)', () => {
     it('rejects disabling money tracking when confirmed ledger entries exist (count > 0)', async () => {
       mockSupabaseInstance.mockNextResponse({ data: { id: CONTAINER_ID, enable_money: true }, error: null }); // fetch current
