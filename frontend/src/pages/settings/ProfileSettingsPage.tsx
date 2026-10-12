@@ -14,10 +14,11 @@ import { Tabs } from '@/components/ui/Tabs';
 import { useFileUpload } from '@/hooks/useFileUpload';
 import { ProfileContacts } from '@/components/profile/ProfileContacts';
 import { ProfilePreferences } from '@/components/profile/ProfilePreferences';
+import { AccountSecurity } from '@/components/profile/AccountSecurity';
 import showToast from '@/lib/toast';
 import type { User } from '@/types/models';
 import { useRef, useState } from 'react';
-import { LogOut, User as UserIcon, Bell, Phone as PhoneIcon } from 'lucide-react';
+import { LogOut, User as UserIcon, Bell, Phone as PhoneIcon, Shield } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const TIMEZONES = [
@@ -59,7 +60,7 @@ export default function ProfileSettingsPage() {
   const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
   const { uploadFile, uploading } = useFileUpload();
-  const [activeTab, setActiveTab] = useState<'profile' | 'contacts' | 'preferences'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'contacts' | 'preferences' | 'security'>('profile');
 
   const { register, handleSubmit, formState: { errors } } = useForm<Form>({
     resolver: zodResolver(schema),
@@ -113,6 +114,7 @@ export default function ProfileSettingsPage() {
     { id: 'profile', label: 'Profile', icon: UserIcon },
     { id: 'contacts', label: 'Contacts', icon: PhoneIcon },
     { id: 'preferences', label: 'Preferences', icon: Bell },
+    { id: 'security', label: 'Security', icon: Shield },
   ];
 
   if (!dbUser) return null;
@@ -192,6 +194,11 @@ export default function ProfileSettingsPage() {
       {/* Preferences Tab */}
       {activeTab === 'preferences' && dbUser && (
         <ProfilePreferences user={dbUser} />
+      )}
+
+      {/* Security Tab */}
+      {activeTab === 'security' && (
+        <AccountSecurity />
       )}
 
       {/* Danger Zone */}

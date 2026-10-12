@@ -621,7 +621,7 @@ export default function ContainerDetailPage() {
     if (confirm('Archive this container?')) archiveMutation.mutate();
   };
   const handleDelete = () => {
-    if (confirm('Delete this container? This cannot be undone.')) deleteMutation.mutate();
+    if (confirm('Delete this container? You can restore it later from "Recently deleted" on the Events & Pools page.')) deleteMutation.mutate();
   };
   const handleCompleteSuccess = () => {
     qc.invalidateQueries({ queryKey: KEYS.container(workspaceId, id!) });

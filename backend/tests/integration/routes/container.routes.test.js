@@ -163,6 +163,57 @@ describe('container.routes.js + nested participant/task routes', () => {
     });
   });
 
+  describe('GET /v1/workspaces/:workspaceId/containers?include_deleted=true', () => {
+    it('admin sees only soft-deleted containers; default listing excludes them', async () => {
+      const { workspace, adminMember, adminAuthHeader } = await seedTenant();
+      const active = buildContainer({ workspace_id: workspace.id, created_by: adminMember.id, name: 'Active One' });
+      const toDelete = buildContainer({ workspace_id: workspace.id, created_by: adminMember.id, name: 'Deleted One' });
+      await supabaseAdmin.from('containers').insert([active, toDelete]);
+      await request(app)
+        .delete(`/v1/workspaces/${workspace.id}/containers/${toDelete.id}`)
+        .set('Authorization', adminAuthHeader);
+
+      const defaultRes = await request(app)
+        .get(`/v1/workspaces/${workspace.id}/containers`)
+        .set('Authorization', adminAuthHeader);
+      expect(defaultRes.status).toBe(200);
+      expect(defaultRes.body.data.containers.map((c) => c.id)).toContain(active.id);
+      expect(defaultRes.body.data.containers.map((c) => c.id)).not.toContain(toDelete.id);
+
+      const deletedRes = await request(app)
+        .get(`/v1/workspaces/${workspace.id}/containers?include_deleted=true`)
+        .set('Authorization', adminAuthHeader);
+      expect(deletedRes.status).toBe(200);
+      expect(deletedRes.body.data.containers.map((c) => c.id)).toContain(toDelete.id);
+      expect(deletedRes.body.data.containers.map((c) => c.id)).not.toContain(active.id);
+
+      await supabaseAdmin.from('containers').delete().eq('id', active.id);
+      await supabaseAdmin.from('containers').delete().eq('id', toDelete.id);
+    });
+
+    it('non-admin passing include_deleted=true is silently ignored (gets the normal non-deleted view)', async () => {
+      const { workspace, adminMember, adminAuthHeader } = await seedTenant();
+      const { authHeader: memberAuthHeader } = await seedNonAdmin(workspace.id);
+      const active = buildContainer({ workspace_id: workspace.id, created_by: adminMember.id, name: 'Active Two' });
+      const toDelete = buildContainer({ workspace_id: workspace.id, created_by: adminMember.id, name: 'Deleted Two' });
+      await supabaseAdmin.from('containers').insert([active, toDelete]);
+      await request(app)
+        .delete(`/v1/workspaces/${workspace.id}/containers/${toDelete.id}`)
+        .set('Authorization', adminAuthHeader);
+
+      const res = await request(app)
+        .get(`/v1/workspaces/${workspace.id}/containers?include_deleted=true`)
+        .set('Authorization', memberAuthHeader);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.containers.map((c) => c.id)).toContain(active.id);
+      expect(res.body.data.containers.map((c) => c.id)).not.toContain(toDelete.id);
+
+      await supabaseAdmin.from('containers').delete().eq('id', active.id);
+      await supabaseAdmin.from('containers').delete().eq('id', toDelete.id);
+    });
+  });
+
   describe('POST /v1/workspaces/:workspaceId/containers/:containerId/complete', () => {
     it('non-active status is rejected', async () => {
       const { workspace, adminMember, adminAuthHeader } = await seedTenant();

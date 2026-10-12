@@ -15,12 +15,16 @@ const logger       = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { getSort } = require('../utils/sorting');
 
-async function listContainers({ workspaceId, typeFilter, statusFilter, sortQuery }) {
+async function listContainers({ workspaceId, typeFilter, statusFilter, sortQuery, includeDeleted }) {
   let query = supabaseAdmin
     .from('containers')
     .select('*, container_participants(id), ledger_entries(base_amount, status)')
-    .eq('workspace_id', workspaceId)
-    .is('deleted_at', null);
+    .eq('workspace_id', workspaceId);
+
+  // includeDeleted is only ever true for an admin's explicit "show deleted"
+  // request (see container.controller.js) — everyone else always gets the
+  // normal, non-deleted view, same as before this parameter existed.
+  query = includeDeleted ? query.not('deleted_at', 'is', null) : query.is('deleted_at', null);
 
   if (typeFilter)   query = query.eq('container_type', typeFilter);
   if (statusFilter) query = query.eq('status', statusFilter);

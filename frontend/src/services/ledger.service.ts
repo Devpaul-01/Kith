@@ -12,6 +12,12 @@ export const ledgerService = {
   update: (w: string, c: string, e: string, p: Record<string, unknown>) =>
     api.patch(`/v1/workspaces/${w}/containers/${c}/ledger/${e}`, p).then(r => r.data),
 
+  delete: (w: string, c: string, e: string) =>
+    api.delete(`/v1/workspaces/${w}/containers/${c}/ledger/${e}`).then(r => r.data),
+
+  deleteProof: (w: string, c: string, e: string, proofIndex: number) =>
+    api.delete(`/v1/workspaces/${w}/containers/${c}/ledger/${e}/proof/${proofIndex}`).then(r => r.data),
+
   getUploadProofUrl: (w: string, c: string, e: string, f: Record<string, unknown>) =>
     api.post(`/v1/workspaces/${w}/containers/${c}/ledger/${e}/upload-proof`, f).then(r => r.data),
 
