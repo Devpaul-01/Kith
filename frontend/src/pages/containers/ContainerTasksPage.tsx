@@ -244,6 +244,18 @@ export default function ContainerTasksPage() {
     onError: () => showToast.error('Failed to confirm task'),
   });
 
+  const deleteProofMutation = useMutation({
+    mutationFn: ({ taskId, proofIndex }: { taskId: string; proofIndex: number }) =>
+      taskService.deleteProof(workspaceId, containerId!, taskId, proofIndex),
+    onSuccess: (data: unknown) => {
+      invalidateTasks();
+      const { task } = data as { task: Task };
+      setDetailTask(task);
+      showToast.success('Proof removed');
+    },
+    onError: () => showToast.error('Failed to remove proof'),
+  });
+
   // ── Handlers ─────────────────────────────────────────────────────────────
 
   function handleDelete(task: Task) {
@@ -489,9 +501,25 @@ export default function ContainerTasksPage() {
                             className="text-xs text-primary hover:underline ml-2 flex-shrink-0">View</a>
                         </div>
                       )}
-                      <p className="text-[10px] text-text-secondary px-3 py-1">
-                        Uploaded {formatDate(proof.uploaded_at)}
-                      </p>
+                      <div className="flex items-center justify-between px-3 py-1">
+                        <p className="text-[10px] text-text-secondary">
+                          Uploaded {formatDate(proof.uploaded_at)}
+                        </p>
+                        {(isAdmin || detailTask.assigned_to === currentMemberId) && (
+                          <button
+                            title="Remove proof"
+                            onClick={() => {
+                              if (confirm('Remove this proof file?')) {
+                                deleteProofMutation.mutate({ taskId: detailTask.id, proofIndex: i });
+                              }
+                            }}
+                            disabled={deleteProofMutation.isPending}
+                            className="text-text-secondary hover:text-danger transition-colors disabled:opacity-50"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
