@@ -60,8 +60,8 @@
         "displayName": "integration",
         "testEnvironment": "node",
         "setupFilesAfterEnv": ["<rootDir>/tests/setup.integration.js"],
-        "testMatch": ["<rootDir>/tests/integration/**/*.test.js"]
-        
+        "testMatch": ["<rootDir>/tests/integration/**/*.test.js"],
+        "testPathIgnorePatterns": ["<rootDir>/tests/integration/redis/rate-limiting.test.js"]
       },
       {
         "displayName": "rate-limit",

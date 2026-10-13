@@ -21,14 +21,29 @@
 // rateLimiter.js's module-level createLimiter() calls execute.
 //
 // Everything else mirrors setup.integration.js.
+//
+// FIX: SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY must be real signed
+// JWTs here too, for the exact same reason setup.integration.js signs
+// them (see that file's header comment) — PostgREST decodes the bearer
+// token as a JWT to pick a Postgres role, and this file's tests call
+// seedWorkspaceWithAdmin/seedAdditionalMember (dbHelper.js), which hit
+// supabaseAdmin.from(...) → real PostgREST, same as integration tests.
+// Plain placeholder strings fail every one of those calls with
+// JWSError (CompactDecodeError: Expected 3 parts; got 1) — previously
+// undiagnosed here because this project's failures were easy to
+// misattribute to "flaky CI" rather than this specific env gap.
+
+const jwt = require('jsonwebtoken');
 
 process.env.NODE_ENV = 'production'; // deliberately NOT 'test' — see header comment
 
 // FIX (see docker-compose.test.yml's header comment): SUPABASE_URL must
 // point at PostgREST, not at Postgres's own wire-protocol port.
 process.env.SUPABASE_URL = process.env.TEST_SUPABASE_URL || 'http://localhost:3001';
-process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
-process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY || 'test-anon-key';
+
+const JWT_SECRET = process.env.TEST_JWT_SECRET || 'test-jwt-secret-at-least-32-characters-long';
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY || jwt.sign({ role: 'postgres' }, JWT_SECRET);
+process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY || jwt.sign({ role: 'anon' }, JWT_SECRET);
 
 process.env.REDIS_URL = process.env.TEST_REDIS_URL || 'redis://localhost:63790/2'; // separate DB index from setup.integration.js's /1
 
