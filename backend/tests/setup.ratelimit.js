@@ -27,8 +27,19 @@ process.env.NODE_ENV = 'production'; // deliberately NOT 'test' — see header c
 // FIX (see docker-compose.test.yml's header comment): SUPABASE_URL must
 // point at PostgREST, not at Postgres's own wire-protocol port.
 process.env.SUPABASE_URL = process.env.TEST_SUPABASE_URL || 'http://localhost:3001';
-process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
-process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY || 'test-anon-key';
+
+// FIX: this file's seed helpers (seedWorkspaceWithAdmin, etc.) call
+// supabaseAdmin, which sends these as a PostgREST bearer token.
+// PostgREST decodes that token to find a `role` claim to SET ROLE as;
+// a plain placeholder string isn't a JWT at all and fails immediately
+// with JWSError (CompactDecodeError: Expected 3 parts; got 1). Sign
+// real JWTs here too, the same way setup.integration.js does, with
+// the same secret as PGRST_JWT_SECRET in the workflow and
+// docker-compose.test.yml.
+const jwt = require('jsonwebtoken');
+const JWT_SECRET = process.env.TEST_JWT_SECRET || 'test-jwt-secret-at-least-32-characters-long';
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY || jwt.sign({ role: 'postgres' }, JWT_SECRET);
+process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY || jwt.sign({ role: 'anon' }, JWT_SECRET);
 
 process.env.REDIS_URL = process.env.TEST_REDIS_URL || 'redis://localhost:63790/2'; // separate DB index from setup.integration.js's /1
 
