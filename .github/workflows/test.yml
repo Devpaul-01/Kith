@@ -116,8 +116,17 @@ jobs:
           done
           echo "✅ Redis is up."
 
-      - name: Run DB migration
-        run: psql -h localhost -p 54322 -U postgres -d kith_test -v ON_ERROR_STOP=1 -f migrations/001_schema.sql
+      - name: Run DB migrations
+        # migrations/ lives at the repo root, not under backend/ (this
+        # job's working-directory) — apply every migration in order so
+        # newer ones (e.g. 002_*) aren't silently skipped the way
+        # 001 was when this path previously pointed at a nonexistent
+        # backend/migrations/001_schema.sql.
+        run: |
+          for f in $(ls ../migrations/*.sql | sort); do
+            echo "Applying $f..."
+            psql -h localhost -p 54322 -U postgres -d kith_test -v ON_ERROR_STOP=1 -f "$f"
+          done
         env:
           PGPASSWORD: test
 
