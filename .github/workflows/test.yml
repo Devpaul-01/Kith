@@ -61,6 +61,7 @@ jobs:
   integration-tests:
     name: Integration & Rate Limit Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: backend
