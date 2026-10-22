@@ -8,16 +8,26 @@
 
 const request = require('supertest');
 const { getTestApp, resetTestApp } = require('../../helpers/testApp');
+const { closeQueues } = require('../../../src/queues');
 
 describe('Bull Board admin panel — /admin/queues', () => {
   const originalUsername = process.env.BULL_BOARD_USERNAME;
   const originalPassword = process.env.BULL_BOARD_PASSWORD;
   const originalWhitelist = process.env.ADMIN_IP_WHITELIST;
 
-  afterEach(() => {
+  afterEach(async () => {
     process.env.BULL_BOARD_USERNAME = originalUsername;
     process.env.BULL_BOARD_PASSWORD = originalPassword;
     process.env.ADMIN_IP_WHITELIST = originalWhitelist;
+    // Each setupMountedApp() -> resetTestApp() -> require('../../src/app')
+    // runs getAllQueues() again at module-load time (app.js's conditional
+    // Bull Board mount), creating 9 fresh BullMQ Queue instances — each
+    // holding its own Redis connection — that are never otherwise closed.
+    // Across this file's 5 mounted-app tests that's up to 45 leaked
+    // connections, which is exactly what was leaving Jest unable to exit
+    // after `--runInBand` finished (every test passed/failed and
+    // reported, but the process hung afterward on open handles).
+    await closeQueues();
     resetTestApp();
     jest.resetModules();
   });

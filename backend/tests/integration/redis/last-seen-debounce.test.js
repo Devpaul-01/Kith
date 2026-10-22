@@ -39,7 +39,14 @@ describe('last-seen debounce (middleware/auth.js) against real Redis', () => {
 
   afterAll(async () => {
     for (const id of createdUserIds) {
-      await supabaseAdmin.from('users').delete().eq('id', id).catch(() => {});
+      // PostgrestFilterBuilder is thenable but not a real Promise, so
+      // .catch() chained directly on it is not guaranteed to exist as a
+      // method — wrap in try/catch instead.
+      try {
+        await supabaseAdmin.from('users').delete().eq('id', id);
+      } catch {
+        // best-effort cleanup
+      }
     }
   });
 

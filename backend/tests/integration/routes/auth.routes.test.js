@@ -50,7 +50,15 @@ describe('auth.routes.js — /v1/auth', () => {
       await cleanupWorkspace(supabaseAdmin, id).catch(() => {});
     }
     for (const id of seededUserIds) {
-      await supabaseAdmin.from('users').delete().eq('id', id).catch(() => {});
+      // PostgrestFilterBuilder is thenable but not a real Promise, so
+      // .catch() chained directly on it (without first awaiting/then-ing)
+      // is not guaranteed to exist as a method — wrap in try/catch
+      // instead of relying on Promise-only chaining.
+      try {
+        await supabaseAdmin.from('users').delete().eq('id', id);
+      } catch {
+        // best-effort cleanup
+      }
     }
   });
 
