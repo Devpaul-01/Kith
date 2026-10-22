@@ -119,8 +119,11 @@ describe('services/ledger.service', () => {
 
       freshSupabaseInstance.mockNextResponse({ data: validParticipant, error: null }); // participant lookup (no idempotency lookup first)
       freshSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null }); // member lookup
-      freshSupabaseInstance.mockNextResponse({ data: null, error: null }); // duplicate-window check: none found (idempotency disabled, so this runs)
-      freshSupabaseInstance.mockNextResponse({ data: { id: 'entry-x' }, error: null }); // insert
+      // No idempotency key (or disabled): createEntry goes through the
+      // create_ledger_entry_checked RPC, which does the duplicate-window
+      // check and the insert atomically under an advisory lock. See
+      // migrations/004_fix_ledger_entry_duplicate_check_race.sql.
+      freshSupabaseInstance.mockNextRpcResponse({ data: { duplicate: false, entry: { id: 'entry-x' } }, error: null });
 
       await freshLedgerService.createEntry({
         workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
@@ -139,8 +142,7 @@ describe('services/ledger.service', () => {
     it('4a. non-admin omitting contributor_id -> defaults to self (callerId)', async () => {
       mockSupabaseInstance.mockNextResponse({ data: validParticipant, error: null }); // participant lookup
       mockSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // duplicate-window check: none found
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'entry-1', contributor_id: CALLER_ID }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: { duplicate: false, entry: { id: 'entry-1', contributor_id: CALLER_ID } }, error: null });
 
       await ledgerService.createEntry({
         workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, data: baseEntryData,
@@ -193,8 +195,7 @@ describe('services/ledger.service', () => {
     it('6b. proxy contributor, admin caller -> succeeds and inserts a proxy_actions audit row', async () => {
       mockSupabaseInstance.mockNextResponse({ data: validParticipant, error: null });
       mockSupabaseInstance.mockNextResponse({ data: proxyMember, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // duplicate-window check: none found
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'entry-proxy' }, error: null }); // insert entry
+      mockSupabaseInstance.mockNextRpcResponse({ data: { duplicate: false, entry: { id: 'entry-proxy' } }, error: null }); // check+insert entry
       mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // proxy_actions insert
 
       await ledgerService.createEntry({
@@ -241,7 +242,12 @@ describe('services/ledger.service', () => {
     it('9a. duplicate-window hit, no force/idempotency -> ConflictError with existing_entry_id', async () => {
       mockSupabaseInstance.mockNextResponse({ data: validParticipant, error: null });
       mockSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'dup-entry-1' }, error: null }); // dup lookup: found
+      // The duplicate-window check and the insert happen atomically inside
+      // create_ledger_entry_checked (under a pg_advisory_xact_lock keyed on
+      // container_id+contributor_id), so a hit is reported as a single RPC
+      // result rather than a separate SELECT response. See
+      // migrations/004_fix_ledger_entry_duplicate_check_race.sql.
+      mockSupabaseInstance.mockNextRpcResponse({ data: { duplicate: true, existing_entry_id: 'dup-entry-1' }, error: null });
 
       let caught;
       try {
@@ -261,10 +267,7 @@ describe('services/ledger.service', () => {
     it('9b. force=true bypasses the duplicate-window check', async () => {
       mockSupabaseInstance.mockNextResponse({ data: validParticipant, error: null });
       mockSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null });
-      // no duplicate-lookup response queued — if the code queried it, it'd get the next
-      // queued response (the insert) and misinterpret; asserting instead that no
-      // dup-window .gte('recorded_at', ...) call happened when force=true.
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'entry-forced' }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: { duplicate: false, entry: { id: 'entry-forced' } }, error: null });
 
       await ledgerService.createEntry({
         workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, data: baseEntryData,
@@ -272,17 +275,19 @@ describe('services/ledger.service', () => {
         actorDisplayName: 'Bob', actorCtx: ACTOR_CTX,
       });
 
-      const dupCheckCalls = mockSupabaseInstance.getCalls().filter(
-        (c) => c.method === 'gte' && c.args[0] === 'recorded_at'
-      );
-      expect(dupCheckCalls.length).toBe(0);
+      // force=true is passed through as p_force: true, so
+      // create_ledger_entry_checked skips its internal duplicate check
+      // entirely — assert the RPC was called with the force flag set,
+      // rather than asserting the absence of a separate .gte() call
+      // (there no longer is one on this path).
+      const rpcCall = mockSupabaseInstance.getRpcCalls().find((c) => c.fnName === 'create_ledger_entry_checked');
+      expect(rpcCall.params.p_force).toBe(true);
     });
 
     it('10a. admin-created entry -> status confirmed immediately, no admin notification sent', async () => {
       mockSupabaseInstance.mockNextResponse({ data: validParticipant, error: null });
       mockSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // duplicate-window check: none found
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'entry-admin', status: 'confirmed' }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: { duplicate: false, entry: { id: 'entry-admin', status: 'confirmed' } }, error: null });
 
       await ledgerService.createEntry({
         workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
@@ -291,16 +296,15 @@ describe('services/ledger.service', () => {
         actorDisplayName: 'Admin', actorCtx: ACTOR_CTX,
       });
 
-      const insertCall = mockSupabaseInstance.getCalls().find((c) => c.method === 'insert' && c.args[0]?.contributor_id);
-      expect(insertCall.args[0].status).toBe('confirmed');
+      const rpcCall = mockSupabaseInstance.getRpcCalls().find((c) => c.fnName === 'create_ledger_entry_checked');
+      expect(rpcCall.params.p_status).toBe('confirmed');
       expect(notification.send).not.toHaveBeenCalled();
     });
 
     it('10b. non-admin-created entry -> status pending, admins notified', async () => {
       mockSupabaseInstance.mockNextResponse({ data: validParticipant, error: null });
       mockSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // duplicate-window check: none found
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'entry-pending', status: 'pending' }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: { duplicate: false, entry: { id: 'entry-pending', status: 'pending' } }, error: null });
       mockSupabaseInstance.mockNextResponse({ data: [{ id: 'admin-1' }], error: null }); // admins lookup
 
       await ledgerService.createEntry({
@@ -318,8 +322,7 @@ describe('services/ledger.service', () => {
     it('11a. resulting status confirmed -> audit action is LEDGER_CONFIRMED', async () => {
       mockSupabaseInstance.mockNextResponse({ data: validParticipant, error: null });
       mockSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // duplicate-window check: none found
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'entry-1', status: 'confirmed' }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: { duplicate: false, entry: { id: 'entry-1', status: 'confirmed' } }, error: null });
 
       await ledgerService.createEntry({
         workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
@@ -334,8 +337,7 @@ describe('services/ledger.service', () => {
     it('11b. resulting status pending -> audit action is LEDGER_SUBMITTED', async () => {
       mockSupabaseInstance.mockNextResponse({ data: validParticipant, error: null });
       mockSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // duplicate-window check: none found
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'entry-2', status: 'pending' }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: { duplicate: false, entry: { id: 'entry-2', status: 'pending' } }, error: null });
       mockSupabaseInstance.mockNextResponse({ data: [], error: null }); // admins lookup (empty, no notif needed but still queried)
 
       await ledgerService.createEntry({

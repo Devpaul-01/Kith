@@ -164,56 +164,90 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
     if (!cycle) throw new BusinessRuleError('Cycle does not belong to this container');
   }
 
-  if (!force && !(idempotencyKey && IDEMPOTENCY_ENABLED)) {
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-    const { data: dup } = await supabaseAdmin
-      .from('ledger_entries')
-      .select('id')
-      .eq('container_id', containerId)
-      .eq('contributor_id', contributorId)
-      .eq('original_amount', data.original_amount)
-      .gte('recorded_at', tenMinutesAgo)
-      .maybeSingle();
-
-    if (dup) throw new ConflictError('Possible duplicate contribution detected within the last 10 minutes. Use ?force=true to override.', { existing_entry_id: dup.id });
-  }
-
   const now    = new Date().toISOString();
   const status = isAdmin ? 'confirmed' : 'pending';
 
-  const { data: entry, error: entryErr } = await supabaseAdmin
-    .from('ledger_entries')
-    .insert({
-      workspace_id:      workspaceId,
-      container_id:      containerId,
-      cycle_id:          data.cycle_id || null,
-      entry_type:        data.entry_type,
-      contributor_id:    contributorId,
-      original_amount:   data.original_amount,
-      original_currency: data.original_currency,
-      base_amount:       data.base_amount,
-      payment_method:    data.payment_method || null,
-      note:              data.note           || null,
-      is_crypto:         data.is_crypto      || false,
-      idempotency_key:   IDEMPOTENCY_ENABLED ? idempotencyKey : null,
-      status,
-      recorded_by:       callerId,
-      confirmed_at:      status === 'confirmed' ? now : null,
-      confirmed_by:      status === 'confirmed' ? callerId : null,
-    })
-    .select()
-    .single();
+  let entry;
 
-  if (entryErr) {
-    // Lost an idempotency race: a concurrent request with the same key inserted first.
-    // Return that entry (idempotent replay) instead of surfacing a 409.
-    if (entryErr.code === '23505' && idempotencyKey && IDEMPOTENCY_ENABLED) {
-      const { data: winner } = await supabaseAdmin
-        .from('ledger_entries').select('*')
-        .eq('idempotency_key', idempotencyKey).eq('workspace_id', workspaceId).maybeSingle();
-      if (winner) return { entry: winner, idempotent: true };
+  if (idempotencyKey && IDEMPOTENCY_ENABLED) {
+    // Idempotency-key path: a plain INSERT, backed by the real UNIQUE
+    // constraint on idempotency_key. Two concurrent requests sharing a
+    // key race on the INSERT itself (not a separate check), and the
+    // loser's 23505 is caught below and turned into a clean idempotent
+    // replay. This path was independently verified under concurrency
+    // (scripts/experiments/m2-idempotency-race.js — 9/9 runs, 0
+    // violations) and is unchanged by this fix.
+    const { data: inserted, error: entryErr } = await supabaseAdmin
+      .from('ledger_entries')
+      .insert({
+        workspace_id:      workspaceId,
+        container_id:      containerId,
+        cycle_id:          data.cycle_id || null,
+        entry_type:        data.entry_type,
+        contributor_id:    contributorId,
+        original_amount:   data.original_amount,
+        original_currency: data.original_currency,
+        base_amount:       data.base_amount,
+        payment_method:    data.payment_method || null,
+        note:              data.note           || null,
+        is_crypto:         data.is_crypto      || false,
+        idempotency_key:   idempotencyKey,
+        status,
+        recorded_by:       callerId,
+        confirmed_at:      status === 'confirmed' ? now : null,
+        confirmed_by:      status === 'confirmed' ? callerId : null,
+      })
+      .select()
+      .single();
+
+    if (entryErr) {
+      // Lost an idempotency race: a concurrent request with the same key inserted first.
+      // Return that entry (idempotent replay) instead of surfacing a 409.
+      if (entryErr.code === '23505') {
+        const { data: winner } = await supabaseAdmin
+          .from('ledger_entries').select('*')
+          .eq('idempotency_key', idempotencyKey).eq('workspace_id', workspaceId).maybeSingle();
+        if (winner) return { entry: winner, idempotent: true };
+      }
+      throw new Error(entryErr.message);
     }
-    throw new Error(entryErr.message);
+    entry = inserted;
+  } else {
+    // No idempotency key: the 10-minute duplicate-detection window has
+    // no database constraint behind it, so the check and the insert
+    // must happen atomically under a lock, or two concurrent identical
+    // submissions (e.g. a double-tapped submit button) both pass the
+    // check and both insert. create_ledger_entry_checked takes a
+    // pg_advisory_xact_lock keyed on (container_id, contributor_id)
+    // around the check-then-insert so concurrent callers for the same
+    // contributor serialize instead of racing past the check. See
+    // migrations/004_fix_ledger_entry_duplicate_check_race.sql.
+    const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc('create_ledger_entry_checked', {
+      p_workspace_id:      workspaceId,
+      p_container_id:      containerId,
+      p_cycle_id:          data.cycle_id || null,
+      p_entry_type:        data.entry_type,
+      p_contributor_id:    contributorId,
+      p_original_amount:   data.original_amount,
+      p_original_currency: data.original_currency,
+      p_base_amount:       data.base_amount,
+      p_payment_method:    data.payment_method || null,
+      p_note:              data.note           || null,
+      p_is_crypto:         data.is_crypto      || false,
+      p_status:            status,
+      p_recorded_by:       callerId,
+      p_confirmed_at:      status === 'confirmed' ? now : null,
+      p_confirmed_by:      status === 'confirmed' ? callerId : null,
+      p_dup_window:        '10 minutes',
+      p_force:             !!force,
+    });
+
+    if (rpcErr) throw new Error(rpcErr.message);
+
+    if (rpcResult.duplicate) {
+      throw new ConflictError('Possible duplicate contribution detected within the last 10 minutes. Use ?force=true to override.', { existing_entry_id: rpcResult.existing_entry_id });
+    }
+    entry = rpcResult.entry;
   }
 
   if (member?.is_proxy) {
