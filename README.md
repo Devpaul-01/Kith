@@ -201,13 +201,13 @@ One honest architectural note: because the backend uses Supabase's **service-rol
 
 ## Testing & CI
 
-Tests are split into three Jest projects and run automatically on every push and pull request to `main`/`develop` via GitHub Actions.
+Tests are split into three Jest projects: unit, integration, and rate-limit. **Not all three currently run in CI on every push/PR** — see the per-suite table and the development-status note below before trusting a green check mark as "everything passed."
 
-| Suite | Command | What it covers |
-|---|---|---|
-| Unit | `npm run test:unit` | Isolated service/utility logic, no external dependencies |
-| Integration | `npm run test:integration` | Full request flows against a real Postgres (via PostgREST) and Redis instance |
-| Rate limiting | `npm run test:ratelimit` | Redis-backed request throttling behavior specifically, isolated from the rest of the integration suite |
+| Suite | Command | What it covers | Runs in CI? |
+|---|---|---|---|
+| Unit | `npm run test:unit` | Isolated service/utility logic, no external dependencies | Yes, on every push/PR to `main`/`develop` |
+| Rate limiting | `npm run test:ratelimit` | Redis-backed request throttling behavior, isolated from the rest of the integration suite | Yes, via a dedicated `rate-limit-tests` job (own Postgres/PostgREST/Redis services) |
+| Integration | `npm run test:integration` | Full request flows against a real Postgres (via PostgREST) and Redis instance | **No — currently disabled in CI**, see below |
 
 ```bash
 npm test                # runs all three Jest projects
@@ -224,7 +224,19 @@ npm run test:ratelimit
 npm run test:docker:down    # tears the containers back down
 ```
 
-**In CI**, the integration job goes a step further than local Docker Compose: it also spins up [PostgREST](https://postgrest.org/) in front of the test Postgres instance, since the app talks to Supabase through a PostgREST-compatible client — this makes the CI environment a much closer match to the real Supabase-backed production setup than hitting Postgres directly would be. Unit tests run in a separate, lighter job with no service containers at all. See [`.github/workflows/test.yml`](.github/workflows/test.yml) for the full configuration.
+**In CI**, the rate-limit job goes a step further than local Docker Compose: it also spins up [PostgREST](https://postgrest.org/) in front of the test Postgres instance, since the app talks to Supabase through a PostgREST-compatible client — this makes the CI environment a much closer match to the real Supabase-backed production setup than hitting Postgres directly would be. Unit and frontend tests run in separate, lighter jobs with no PostgREST/Postgres service containers. See [`.github/workflows/test.yml`](.github/workflows/test.yml) for the full configuration, including the still-disabled `integration-tests` job (kept commented out as a reference for re-enabling it).
+
+### Development status: integration-test flakiness in CI
+
+Integration-test reliability in CI is an **acknowledged, ongoing issue** — the `integration-tests` job in `.github/workflows/test.yml` is currently disabled (not deleted) because of intermittent failures that were traced, at least in part, to PostgREST schema-cache visibility and service start-up ordering in the CI environment. This is actively being worked on.
+
+A few things follow from that:
+
+- A green CI run right now reflects unit tests, frontend tests, and the rate-limit suite — **not** the full integration suite. It is not evidence that every integration-level code path is currently verified in CI.
+- This is a CI-environment reliability problem, not a claim that the application itself is broken. The integration tests still run, and pass, locally against the Docker Compose stack (`npm run test:integration`); the issue is specifically getting them to behave reliably inside GitHub Actions.
+- Until this notice is removed, treat `integration-tests` CI status as "not currently enforced," and rely on local runs plus the rate-limit and unit suites in the meantime.
+
+This note will be removed once the integration-test job has been re-enabled in CI and shown to be reliable over multiple runs — not just once it passes a single time.
 
 ---
 
