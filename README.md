@@ -228,6 +228,27 @@ npm run test:docker:down    # tears the containers back down
 
 ---
 
+## Measured, Not Assumed
+
+Four correctness/performance claims below are independently verified against the real service code and a real local Postgres/PostgREST/Redis stack — not mocked, not estimated. Each experiment is a standalone script that exercises the actual production function (`ledger.service.js createEntry()`, the `set_contributor_target_atomic` RPC, the `enforce_ledger_entry_immutability` trigger, the membership cache) directly, with raw timestamped JSON output kept for every run.
+
+| # | Question | Result |
+|---|---|---|
+| M1 | Does `set_contributor_target_atomic` keep exactly one current target under concurrent re-assignment? | **Invariant holds at every tested concurrency level (5/25/50)** — but most concurrent callers surface a raw Postgres duplicate-key error rather than succeeding gracefully; see [the fix](#race-condition-fix-concurrent-target-re-assignment) below |
+| M2 | Do concurrent `createEntry()` calls sharing one idempotency key produce exactly one ledger row? | **9/9 runs, 0 violations** (concurrency 5/15/30) — the losing caller always gets back the winner's row as a clean idempotent replay, never an error |
+| M3 | Can a confirmed ledger entry's amount be mutated by a direct SQL connection, bypassing the app entirely? | **No** — the DB-level trigger rejects it with `P0001`; a legitimate status transition on the same row still succeeds |
+| M4 | How much latency does the Redis membership cache save vs. the uncached two-query path? | **~14x p50 speedup** (4 runs, 300 sequential calls/run), 2 DB round-trips avoided per cache hit |
+
+Full methodology, baselines, and stated limitations for each: [`backend/scripts/results/EXPERIMENT_RESULTS.md`](backend/scripts/results/EXPERIMENT_RESULTS.md). Raw run output: `backend/scripts/results/{target-race,idempotency,immutability,cache}/`. How to reproduce any of these locally (no Docker required): [`backend/scripts/MEASUREMENT_README.md`](backend/scripts/MEASUREMENT_README.md).
+
+### Race condition fix: concurrent target re-assignment
+
+M1 found a real liveness bug in `set_contributor_target_atomic`: its `SELECT ... FOR UPDATE` locks the existing current-target row, but once the lock holder commits and supersedes that row, a transaction that was blocked on the lock re-checks its `WHERE is_current = true` clause under READ COMMITTED, finds no match, and attempts a fresh `INSERT` that collides with the winner — a raw `duplicate key value violates unique constraint "idx_targets_current_event"` error instead of a clean serialize. At C=50 concurrent requests, only 11 succeeded; the other 39 failed with that error. The underlying data invariant (never more than one current target) never broke, since it's independently enforced by a partial unique index — but most callers shouldn't have to see a hard DB error for a routine re-assignment race.
+
+Fixed in [`migrations/003_fix_contributor_target_race.sql`](migrations/003_fix_contributor_target_race.sql): the function now retries its supersede-then-insert sequence (bounded, up to 5 attempts) on `unique_violation`, re-reading whichever row is current before each retry, so concurrent callers serialize through the lock instead of surfacing the race to the caller.
+
+---
+
 ## Backend Tech Stack
 
 | Layer | Technology |
@@ -398,7 +419,8 @@ Route access is layered through composed guards (`ProtectedRoute` → `ProfileGu
 - **No migration runner.** The schema is maintained directly as a single, up-to-date `migrations/001_schema.sql` file (applied directly to the target Supabase project, and used to seed the test database in CI) rather than as an incremental migration history.
 - **30-second membership cache staleness.** Membership authorization data is cached in Redis for up to 30 seconds (see [Architecture](#architecture)); a role/access change made outside this application entirely could remain visible for up to that window. Any change made *through* the app invalidates the cache immediately.
 - **File-signature verification covers a fixed format set.** Only JPEG, PNG, GIF, WEBP, and PDF are recognized; other declared content types are not blocked for lack of a known signature to check against.
-- **Idempotency-key uniqueness is workspace-scoped, not global**, and the 10-minute duplicate-detection window is a heuristic, not a guarantee — a legitimate contribution submitted twice, 11 minutes apart with no idempotency key, will create two entries. A conscious choice: false positives on a genuine second contribution would be more harmful than an occasional true duplicate needing manual correction.
+- **Idempotency-key uniqueness is workspace-scoped, not global**, and the 10-minute duplicate-detection window is a heuristic, not a guarantee — a legitimate contribution submitted twice, 11 minutes apart with no idempotency key, will create two entries. A conscious choice: false positives on a genuine second contribution would be more harmful than an occasional true duplicate needing manual correction. (Independently verified under concurrency — see [Measured, Not Assumed](#measured-not-assumed).)
+- **Concurrency correctness experiments are single-process.** M1/M2 in [Measured, Not Assumed](#measured-not-assumed) fire concurrent requests from one Node process against a local stack — an appropriate scope for DB-transaction-level correctness questions, but not a substitute for a true multi-process/distributed load test.
 - **Service-role Postgres access, not RLS, is the enforcement boundary** (see [Security Highlights](#security-highlights)) — correct as long as the service-role key stays server-side and the middleware chain is never bypassed, but there's no independent database-layer backstop today.
 
 Further reading: [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system design and every documented trade-off, and [PRODUCT_OVERVIEW.md](docs/PRODUCT_OVERVIEW.md) for the complete feature and product-decision reference.
