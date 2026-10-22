@@ -1,0 +1,25 @@
+{
+  "experiment_name": "M1_target_race",
+  "run_id": "2026-10-14T21-50-42-196Z_af15e8",
+  "started_at_utc": "2026-10-14T21:50:42.197Z",
+  "finished_at_utc": "2026-10-14T21:50:43.295Z",
+  "repository": {
+    "commit_sha": "e647e78306feefdb1cb8712c326f1cb0d20abdd8",
+    "branch": "main",
+    "dirty": true
+  },
+  "runtime": {
+    "node_version": "v22.22.2",
+    "platform": "linux 6.18.44-fc-v114",
+    "arch": "x64",
+    "cpus": 1,
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "total_memory_mb": 3998
+  },
+  "command": "node scripts/experiments/m1-target-race.js",
+  "exit_code": 0,
+  "signal": null,
+  "timed_out": false,
+  "stdout": "{\n  \"experiment\": \"M1_target_race\",\n  \"question\": \"Under N concurrent set-target requests, does exactly one is_current=true row survive, and how do naive vs. RPC paths differ?\",\n  \"runs\": [\n    {\n      \"concurrency\": 5,\n      \"naive\": {\n        \"ok\": 1,\n        \"failed\": 4,\n        \"error_types\": {\n          \"duplicate key value violates unique constraint \\\"idx_targets_current_event\\\"\": 4\n        },\n        \"current_targets_after\": 1\n      },\n      \"rpc\": {\n        \"ok\": 2,\n        \"failed\": 3,\n        \"error_types\": {\n          \"Failed to set contributor target: duplicate key value violates unique constraint \\\"idx_targets_current_event\\\"\": 3\n        },\n        \"current_targets_after\": 1\n      }\n    },\n    {\n      \"concurrency\": 25,\n      \"naive\": {\n        \"ok\": 2,\n        \"failed\": 23,\n        \"error_types\": {\n          \"duplicate key value violates unique constraint \\\"idx_targets_current_event\\\"\": 23\n        },\n        \"current_targets_after\": 1\n      },\n      \"rpc\": {\n        \"ok\": 7,\n        \"failed\": 18,\n        \"error_types\": {\n          \"Failed to set contributor target: duplicate key value violates unique constraint \\\"idx_targets_current_event\\\"\": 18\n        },\n        \"current_targets_after\": 1\n      }\n    },\n    {\n      \"concurrency\": 50,\n      \"naive\": {\n        \"ok\": 2,\n        \"failed\": 48,\n        \"error_types\": {\n          \"duplicate key value violates unique constraint \\\"idx_targets_current_event\\\"\": 48\n        },\n        \"current_targets_after\": 1\n      },\n      \"rpc\": {\n        \"ok\": 11,\n        \"failed\": 39,\n        \"error_types\": {\n          \"Failed to set contributor target: duplicate key value violates unique constraint \\\"idx_targets_current_event\\\"\": 39\n        },\n        \"current_targets_after\": 1\n      }\n    }\n  ],\n  \"invariant_current_targets_always_1\": true,\n  \"finding\": \"Invariant held at every concurrency level for both paths (current_targets_after === 1 always). However, the RPC path still rejects most concurrent requests with a raw duplicate-key error (see rpc.error_types) rather than serializing them gracefully, because its SELECT ... FOR UPDATE locks the *existing* current-target row; once the lock holder commits and supersedes that row, a transaction that was blocked on it re-checks `WHERE is_current = true` under READ COMMITTED, finds no match (the row the lock was on is no longer current), treats it as \\\"no previous target\\\", and attempts a fresh INSERT that collides with whichever transaction already won — causing a duplicate-key exception instead of a clean retry/serialize. The outcome is always correct (never >1 current target), but under concurrent load most competing requests surface as hard errors to the caller rather than succeeding in turn.\"\n}\n",
+  "stderr": "(node:897) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n"
+}
