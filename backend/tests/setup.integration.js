@@ -58,6 +58,7 @@ jest.mock('../src/config/firebase', () => require('./mocks/firebase.mock'));
 jest.mock('../src/config/resend',   () => require('./mocks/resend.mock'));
 jest.setTimeout(30000);
 const { getRedis } = require('../src/config/redis');
+const { closeQueues } = require('../src/queues');
 
 // Doc 4 Section 2.4: Redis is FLUSHDB'd between test FILES (not
 // individual tests) — every test within a file that touches
@@ -73,6 +74,20 @@ beforeAll(async () => {
 afterAll(async () => {
   const redis = getRedis();
   await redis.flushdb();
+  // Safety net: app.js's Bull Board mount (conditional on
+  // BULL_BOARD_USERNAME/PASSWORD) calls getAllQueues() at module-load
+  // time, creating 9 BullMQ Queue instances. Each one duplicates the
+  // shared getRedis() connection internally for blocking operations, so
+  // 9 queues means 9 EXTRA ioredis connections beyond the one `redis`
+  // above — closing just `redis` never touched those. bull-board.test.js
+  // is the main offender (it re-requires app.js, and therefore
+  // re-creates all 9 queues, up to 5 times per run) and closes them
+  // itself, but closing here too means ANY test file that loads app.js
+  // with those env vars set can't leave an open handle behind. This was
+  // exactly what left Jest unable to exit after `--runInBand` finished
+  // reporting results. Closed BEFORE quitting `redis` itself, since
+  // BullMQ's own close handshake may still need that base connection.
+  await closeQueues();
   await redis.quit();
 });
 

@@ -57,6 +57,7 @@ jest.mock('../src/config/firebase', () => require('./mocks/firebase.mock'));
 jest.mock('../src/config/resend',   () => require('./mocks/resend.mock'));
 jest.setTimeout(30000);
 const { getRedis } = require('../src/config/redis');
+const { closeQueues } = require('../src/queues');
 
 beforeAll(async () => {
   const redis = getRedis();
@@ -66,5 +67,12 @@ beforeAll(async () => {
 afterAll(async () => {
   const redis = getRedis();
   await redis.flushdb();
+  // Safety net — see setup.integration.js's identical afterAll comment
+  // for why this must run BEFORE redis.quit(): closes any BullMQ Queue
+  // instances app.js may have created (its Bull Board mount is
+  // conditional on BULL_BOARD_USERNAME/PASSWORD, not normally set for
+  // this project, but closing unconditionally costs nothing when
+  // there's nothing to close).
+  await closeQueues();
   await redis.quit();
 });
