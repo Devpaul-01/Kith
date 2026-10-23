@@ -20,6 +20,16 @@ BEGIN
 END;
 $$;
 
+-- Trigger function: blocks UPDATE/DELETE on audit_log to keep it append-only.
+-- Attached to public.audit_log below.
+CREATE FUNCTION public.audit_log_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_log is append-only';
+END;
+$$;
+
 -- =====================================================================
 -- CORE: users, workspaces, membership
 -- =====================================================================
@@ -1031,10 +1041,3 @@ EXCEPTION
 END;
 $$;
 
-CREATE FUNCTION public.audit_log_append_only() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-                                                                                                                   BEGIN
-                                                                                                                     RAISE EXCEPTION 'audit_log is append-only';
-                                                                                                                     END;
-                                                                                                                     $$;
