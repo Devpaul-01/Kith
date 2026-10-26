@@ -247,7 +247,6 @@ jobs:
   # Disabled on: 2026-08-25
   # Reason: PostgREST schema cache issues and flaky test environment setup
   # TODO: Re-enable after fixing PostgREST table visibility and service health checks
-  # See: https://github.com/your-org/your-repo/issues/INT-123
   #
   # integration-tests:
   #   name: Integration Tests
