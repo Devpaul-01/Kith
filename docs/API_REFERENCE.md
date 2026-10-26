@@ -591,11 +591,12 @@ and act on everyone's.
 - Only `pending` entries can be edited or deleted directly. A `confirmed`
   entry can only be adjusted by adding a **correction** — a separate
   ledger row (`entry_type: correction`) referencing the original. This is
-  enforced both by the service layer and, as of
-  `002_ledger_integrity_and_carry_forward_debt.sql`, by a DB trigger that
-  rejects the write regardless of which client issues it.
+  enforced both by the service layer and by DB triggers defined in
+  `migrations/001_schema.sql` (`enforce_ledger_entry_immutability`,
+  `prevent_locked_ledger_entry_delete`) that
+  reject the write regardless of which client issues it.
 - `carry_forward` remains a valid `entry_type` for historical rows written
-  before `002_ledger_integrity_and_carry_forward_debt.sql`, but the daily
+  by earlier versions of the cycle-lifecycle job, but the daily
   cycle-lifecycle job no longer creates new ones: an outstanding balance
   on a `carry_forward_unpaid` container is now applied by raising the
   participant's `contributor_targets.target_amount` for the next cycle,

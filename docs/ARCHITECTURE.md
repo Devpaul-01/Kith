@@ -193,8 +193,9 @@ All routes are mounted under `/v1`. Resources are nested to reflect real ownersh
 
 ```
 /v1/auth/...                                              (identity, not tenant-scoped)
-/v1/public/...                                             (unauthenticated read-only)
-/v1/notifications/...                                      (user-scoped, not workspace-scoped)
+/v1/public/...                                             (invite preview + public container view unauthenticated; invite accept requires auth)
+/v1/invites/...                                            (legacy invite preview/accept, kept for backwards compatibility)
+/v1/notifications/...                                      (user-scoped, not workspace-scoped; uses a local `resolveMember` middleware instead of `requireMembership`)
 /v1/workspaces                                              (list/create — no :workspaceId)
 /v1/workspaces/:workspaceId/...                              (everything tenant-scoped)
   ├── members, invites, groups, disputes                    (workspace-level resources)
@@ -366,6 +367,8 @@ Rather than emulate transactions with multiple sequential JS calls (which cannot
 | `resolve_dispute_atomic` | `dispute.service.js#resolveDispute` | Same, for resolution |
 | `set_contributor_target_atomic` | `participant.service.js#setTarget` | Three sequential, non-transactional writes leaving target history inconsistent |
 | `create_workspace_with_admin` | `workspace.service.js#createWorkspace` | Workspace created without its founding admin membership row |
+| `create_ledger_entry_checked` | `ledger.service.js#createEntry` | Concurrent submissions slipping past the duplicate-window check (serialized per container/contributor with `pg_advisory_xact_lock`; `p_force` bypasses the heuristic) |
+| `apply_cycle_carry_forward_atomic` | `cycle_lifecycle.service.js#carryForwardUnpaid` | Double-applying a carry-forward (idempotent via `ON CONFLICT (container_participant_id, from_cycle_id) DO NOTHING`) or a claimed carry-forward with no resulting target |
 
 This is a deliberate, consistent pattern: **application code owns orchestration and business rules; the database owns atomicity guarantees that application code cannot provide over a REST-style client.**
 
@@ -641,7 +644,7 @@ This section consolidates security-relevant decisions referenced individually el
 | Sensitive column exposure | `bank_details` deliberately **not** selected in `requireMembership`'s workspace query, since nothing in the app reads it — avoiding fetching a sensitive JSONB column into every single workspace-scoped request for zero consumers | `middleware/workspace.js` |
 | Secrets in code | All external credentials (`SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`, etc.) sourced from environment variables only; service-role key errors are fatal at boot | `config/*.js`, `server.js` |
 
-**Row-Level Security (RLS) note:** because the backend exclusively uses the Supabase **service-role** client (which bypasses RLS) for nearly all operations, RLS policies (if configured in the Supabase project) are not the primary authorization boundary for this application — the middleware chain (§8) is. This is architecturally sound *as long as* the service-role key never reaches a client directly, which the code respects (the anon-key client is used only for the narrow set of user-facing Auth SDK calls).
+**Row-Level Security (RLS) note:** because the backend exclusively uses the Supabase **service-role** client (which bypasses RLS) for nearly all operations, RLS is not enabled by `migrations/001_schema.sql` (it contains no `ENABLE ROW LEVEL SECURITY` or `CREATE POLICY` statements), and any policies added directly in a Supabase project would not be the primary authorization boundary for this application — the middleware chain (§8) is. This is architecturally sound *as long as* the service-role key never reaches a client directly, which the code respects (the anon-key client is used only for the narrow set of user-facing Auth SDK calls).
 
 ---
 
@@ -716,7 +719,7 @@ sequenceDiagram
 ```
 
 ![Ledger entry submission, admin confirmation, and the resulting confirmed-immutable entry branching into dispute and correction flows](../media/kith-architecture-ledger-lifecycle-diagram.png)
-*The same submission→confirmation flow as the sequence diagram above, redrawn to emphasize what happens *after* confirmation — the entry becomes immutable (enforced both in `ledger.service.js` and, since `002_ledger_integrity_and_carry_forward_debt.sql`, by a DB trigger — see SECURITY.md §7), and a dispute or a correction are the only two ways its effective state can subsequently change, each going through its own atomic Postgres RPC (§9.3).*
+*The same submission→confirmation flow as the sequence diagram above, redrawn to emphasize what happens *after* confirmation — the entry becomes immutable (enforced both in `ledger.service.js` and, by a DB trigger defined in `migrations/001_schema.sql` — see SECURITY.md §7), and a dispute or a correction are the only two ways its effective state can subsequently change, each going through its own atomic Postgres RPC (§9.3).*
 
 ### 21.2 Recurring pool cycle lifecycle
 1. **Generation** (`cycle_generation.service.js`, triggered on container creation and daily maintenance): computes future cycle date ranges from `recurrence_cadence`, applies any `pool_cycle_overrides` (pause/skip/adjust), and upserts per-participant `contributor_targets` scoped to each cycle.
@@ -796,10 +799,10 @@ flowchart TB
 ```
 
 - **`server.js`** — API only. Runs pre-flight DB/Redis connectivity checks, fails fast if the DB check fails (Redis failure only warns — the API can serve some traffic degraded, per §10's fail-open design), then binds to `PORT`.
-- **`workers/index.js`** — worker fleet only. Validates required env vars with raw `console.error` (deliberately *not* the Winston logger, since the logger itself might depend on unvalidated env vars), instantiates all 9 workers, registers lifecycle listeners (`completed`/`failed`/`error`/`stalled`) per worker, runs the scheduler, and implements graceful shutdown with a 10-second force-exit timeout on `SIGTERM`/`SIGINT`/`uncaughtException`.
+- **`workers/index.js`** — worker fleet only. Validates required env vars with raw `console.error` (deliberately *not* the Winston logger, since the logger itself might depend on unvalidated env vars), instantiates all 9 workers, registers lifecycle listeners (`completed`/`failed`/`error`/`stalled`) per worker, runs the scheduler (it calls `setupScheduler()` itself, so a separate `npm run scheduler` process is optional), and implements graceful shutdown with a 10-second force-exit timeout on `SIGTERM`/`SIGINT`/`uncaughtException`.
 - **`start-all.js`** — combines both for environments where running two separate processes isn't worth the operational overhead (e.g., early-stage deployment on a single small instance). Reuses the exact same worker-factory functions as `workers/index.js`.
 
-Both `server.js` and `start-all.js` validate a required-env-var list and `process.exit(1)` immediately if anything is missing, writing directly to `process.stderr` rather than through the logger (same reasoning — the logger shouldn't be assumed safe to use before env validation completes).
+Both `server.js` and `start-all.js` validate a required-env-var list and `process.exit(1)` immediately if anything is missing (`server.js` requires `REDIS_URL`; `start-all.js` does not — it warns and runs the API without workers/scheduler), writing directly to `process.stderr` rather than through the logger (same reasoning — the logger shouldn't be assumed safe to use before env validation completes).
 
 **Bull Board** (`/admin/queues`), an optional queue-monitoring dashboard, mounts only if `BULL_BOARD_USERNAME`/`BULL_BOARD_PASSWORD` are set, gated by IP allow-list + Basic Auth (§18).
 
@@ -885,7 +888,7 @@ Environment variables read via `process.env.*` across the codebase:
 | `SUPABASE_URL` | ✓ | `config/supabase.js`, `server.js`, `start-all.js`, `workers/index.js` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✓ | `config/supabase.js` | Admin client — bypasses RLS |
 | `SUPABASE_ANON_KEY` | | `config/supabase.js` | Auth-only client; app boots without it but auth endpoints are disabled |
-| `REDIS_URL` | ✓ | `config/redis.js` | BullMQ + rate limiting + caches |
+| `REDIS_URL` | ✓ (`server.js`, `workers/index.js`); optional for `start-all.js` | `config/redis.js` | BullMQ + rate limiting + caches. `start-all.js` warns and skips workers/scheduler if unset |
 | `FRONTEND_URL` | ✓ | `app.js` (CORS), `auth.service.js` (redirect URLs, email links) | CORS origin allow-list, OAuth/reset-link redirect target |
 | `ALLOWED_DEEPLINK_SCHEMES` | | `auth.service.js` | Comma-separated mobile deep-link schemes allowed as OAuth redirect targets |
 | `PORT` | | `server.js`, `start-all.js` | HTTP listen port (default 3000) |
