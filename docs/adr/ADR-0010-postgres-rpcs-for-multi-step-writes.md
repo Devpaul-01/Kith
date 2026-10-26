@@ -44,7 +44,7 @@ database-side transaction:
   replaces three sequential, non-transactional writes with a single atomic
   operation.
 - `apply_cycle_carry_forward_atomic` (`cycle_lifecycle.service.js#carryForwardUnpaid`,
-  added in `002_ledger_integrity_and_carry_forward_debt.sql`) — claims
+  defined in `001_schema.sql`) — claims
   idempotency via an insert into `cycle_carry_forwards`, then supersedes
   the participant's next-cycle target row, all inside one transaction so
   a partial failure can't leave the carry-forward "claimed" without the

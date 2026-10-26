@@ -3104,7 +3104,7 @@ components:
         `contribution`/`expense` are client-settable via POST .../ledger.
         `correction` is set by POST .../add-correction. `carry_forward`
         is retained for historical rows only — the cycle-lifecycle job no
-        longer creates new ones as of 002_ledger_integrity_and_carry_forward_debt.sql;
+        longer creates new ones (see apply_cycle_carry_forward_atomic in migrations/001_schema.sql);
         an outstanding balance is now applied to the next cycle's
         ContributorTarget instead.
     LedgerEntryStatus:

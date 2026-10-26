@@ -30,7 +30,8 @@ to achieve it: an obligation was being recorded as a payment.
 This also carried a latent correctness bug: the insert set
 `recorded_by: null` against a column that is `NOT NULL` in the schema
 (`001_schema.sql`), with a code comment anticipating a `002_hardening.sql`
-migration to relax it that was never written. In practice, this meant the
+migration to relax it that was never written (the repo now contains only
+`001_schema.sql`). In practice, this meant the
 insert would throw on every run for any container with
 `carry_forward_unpaid` enabled and at least one outstanding participant —
 and because the exception propagated up through `closeDueCycles`, the
@@ -41,7 +42,7 @@ indefinitely.
 
 Carry-forward no longer touches `ledger_entries` at all. Instead,
 `apply_cycle_carry_forward_atomic` (in
-`002_ledger_integrity_and_carry_forward_debt.sql`) raises the
+`migrations/001_schema.sql`) raises the
 participant's **target** for the next cycle by the outstanding amount:
 
 - It supersedes the participant's current `contributor_targets` row for
@@ -142,7 +143,7 @@ the one place that was wrong.
 
 ## Related Files
 
-- `migrations/002_ledger_integrity_and_carry_forward_debt.sql`
+- `migrations/001_schema.sql`
   (`cycle_carry_forwards` table, `apply_cycle_carry_forward_atomic`)
 - `src/services/cycle_lifecycle.service.js` (`carryForwardUnpaid`,
   `closeDueCycles`)

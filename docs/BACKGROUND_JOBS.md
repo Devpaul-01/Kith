@@ -31,7 +31,7 @@ flowchart LR
     end
 
     subgraph SCHED["Scheduler (queues/scheduler.js)"]
-        CRON["6 cron-registered\nrepeatable jobs"]
+        CRON["7 cron-registered\nrepeatable jobs"]
     end
 
     subgraph REDIS["Redis (config/redis.js)"]
@@ -55,7 +55,7 @@ flowchart LR
 
     subgraph WORKERS["9 BullMQ Workers"]
         W1[notification.worker.js]
-        W2["background.workers.js\n(6 workers)"]
+        W2["background.workers.js\n(7 workers)"]
         W3[data_export.worker.js]
     end
 
@@ -101,7 +101,7 @@ Each worker registers `completed`, `failed`, and `error` listeners (plus `stalle
 
 `setupScheduler()` (`queues/scheduler.js`):
 
-1. Iterates `SCHEDULED_JOBS` (6 entries).
+1. Iterates `SCHEDULED_JOBS` (7 entries).
 2. For each, opens a `Queue` instance on the **target** queue name.
 3. Removes any existing repeatable job with the same `jobName` in that queue (`queue.getRepeatableJobs()` → `removeRepeatableByKey()`), so restarting the process doesn't accumulate duplicate cron registrations.
 4. Adds the repeatable job with `{ repeat: { cron }, jobId: 'scheduled:<jobName>' }`. The stable `jobId` is a second layer of duplicate protection.
@@ -310,7 +310,7 @@ All 9 queues, in the order declared in `queues/index.js`, along with their worke
 
 ### 6.1 Registered cron schedules
 
-All six live in `queues/scheduler.js#SCHEDULED_JOBS`:
+All seven live in `queues/scheduler.js#SCHEDULED_JOBS`:
 
 | Job name | Target queue | Cron | Meaning |
 |---|---|---|---|
@@ -378,7 +378,7 @@ The primary use. Every `Queue` and `Worker` instance shares the single Redis con
 | `notification-queue` deliveries (`notification.service.js`, `notification_outbox.service.js`) | 3 | Exponential, 5000ms base |
 | `data-export-queue` (`auth.service.js#requestDataExport`) | 2 | Exponential, 10000ms base |
 | `cycle-generation-queue` (request-triggered, `container.service.js`) | 3 | BullMQ default (none specified beyond attempts) |
-| All 6 scheduler-registered cron jobs | BullMQ default | BullMQ default |
+| All 7 scheduler-registered cron jobs | BullMQ default | BullMQ default |
 
 Where no `attempts`/`backoff` is explicitly set, BullMQ's defaults apply (a single attempt, no automatic retry) — this is the case for the daily/weekly cron jobs themselves (the *job that runs the scan*, not the notifications the scan sends, which do have explicit retry via `notification.service.js`).
 
@@ -487,7 +487,7 @@ Variables that affect background processing, background-job-adjacent infrastruct
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `REDIS_URL` | Yes (validated at startup in `server.js`, `start-all.js`, `workers/index.js`) | Connection string for the shared `ioredis` client backing BullMQ, rate limiting, membership cache, and the `last_seen_at` debounce |
+| `REDIS_URL` | Yes for `server.js` and `workers/index.js` (both exit if unset). **Optional for `start-all.js`**, which warns and boots the API without workers/scheduler | Connection string for the shared `ioredis` client backing BullMQ, rate limiting, membership cache, and the `last_seen_at` debounce |
 | `SUPABASE_URL` | Yes | Postgres/Supabase endpoint every service (including all job handlers) reads/writes against |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service-role key used by `supabaseAdmin` — the client every background service uses (bypasses RLS) |
 | `FRONTEND_URL` | Yes | Used to build links inside notification/email bodies (e.g. workspace/invite URLs) and OAuth redirects |
@@ -563,6 +563,6 @@ Planned enhancements to the background job system:
 - **Metrics/alerting**: export queue-depth, job-duration, and failure-rate metrics to a time-series system, plus alerting for a scheduled job silently failing to run (e.g. if the scheduler process itself crashes). Planned approach: Prometheus counters/histograms per queue (depth, processing time, failure count) plus an alert on "no successful `X-scan` job completion in the last N expected intervals."
 - **Dead-letter queue / systematic re-drive**: today only notification deliveries have an automated recovery path (the outbox scan). A generic dead-letter pattern — e.g. BullMQ's `removeOnFail` retention plus a scheduled sweep that re-drives failed jobs across *all* queues, not just notifications — would extend the same reliability pattern to cycle generation, cycle lifecycle, and the other cron jobs.
 - **Per-job timeouts**: an explicit lock duration/timeout tuned to expected job runtime, per queue, rather than relying entirely on BullMQ's default lock expiry.
-- ~~**Hardened idempotency for cycle-lifecycle carry-forward inserts**: a DB-level uniqueness constraint...~~ Done as of `002_ledger_integrity_and_carry_forward_debt.sql` — see §5.4's Idempotency row.
+- ~~**Hardened idempotency for cycle-lifecycle carry-forward inserts**: a DB-level uniqueness constraint...~~ Done — `cycle_carry_forwards_unique_source` and `apply_cycle_carry_forward_atomic` are defined in `migrations/001_schema.sql`; see §5.4's Idempotency row.
 - **A shared worker registry**: `start-all.js` and `workers/index.js` both independently construct the same 9-worker array and `workerNames` list. Extracting this into a single shared `workers/registry.js` (analogous to `queues/index.js`) would remove the manual-sync requirement noted in §6.3, step 4.
 - **Structured per-job tracing in Sentry**: wiring `Sentry.setContext`/breadcrumbs into each worker's job handler would add job-aware context (custom transactions/tags per BullMQ job) for faster failed-job triage.

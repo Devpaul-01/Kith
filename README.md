@@ -172,7 +172,7 @@ A recurring pool always has roughly three months of upcoming cycles ready to go 
 | `cycle-gen-maintenance` | `cycle-generation-queue` | Daily 03:00 UTC | Ensures recurring pools always have cycles generated 3 months ahead |
 | `notification-outbox-scan` | `notification-outbox-queue` | Every 5 minutes | Re-enqueues push/email deliveries stuck `pending`/`failed` for 5+ minutes |
 
-`data-export-queue` and `notification-queue` are consumed on-demand (triggered by user action) rather than on a schedule. An admin-only **Bull Board** dashboard (`/admin/queues`, IP-allowlisted + Basic Auth, only mounted if credentials are configured) makes every queue's live job count observable — not just described in a README, but running and inspectable.
+There are seven scheduled jobs and nine queues in total. `data-export-queue` and `notification-queue` are consumed on-demand (triggered by user action) rather than on a schedule. An admin-only **Bull Board** dashboard (`/admin/queues`, IP-allowlisted + Basic Auth, only mounted if credentials are configured) makes every queue's live job count observable — not just described in a README, but running and inspectable.
 
 ![The Bull Board dashboard showing all nine BullMQ queues with their live active, waiting, completed, and failed job counts](media/kith-bull-board-nine-queues-live.png)
 
@@ -207,7 +207,7 @@ Tests are split into three Jest projects: unit, integration, and rate-limit. **N
 |---|---|---|---|
 | Unit | `npm run test:unit` | Isolated service/utility logic, no external dependencies | Yes, on every push/PR to `main`/`develop` |
 | Rate limiting | `npm run test:ratelimit` | Redis-backed request throttling behavior, isolated from the rest of the integration suite | Yes, via a dedicated `rate-limit-tests` job (own Postgres/PostgREST/Redis services) |
-| Integration | `npm run test:integration` | Full request flows against a real Postgres (via PostgREST) and Redis instance | **No — currently disabled in CI**, see below |
+| Integration | `npm run test:integration` | Everything under `backend/tests/integration/` (27 files: `routes/` ×15, `workers/` ×9, `redis/` ×3) against a real Postgres (via PostgREST) and Redis instance | **No — temporarily disabled in CI**, see below |
 
 ```bash
 npm test                # runs all three Jest projects
@@ -228,12 +228,14 @@ npm run test:docker:down    # tears the containers back down
 
 ### Development status: integration-test flakiness in CI
 
-Integration-test reliability in CI is an **acknowledged, ongoing issue** — the `integration-tests` job in `.github/workflows/test.yml` is currently disabled (not deleted) because of intermittent failures that were traced, at least in part, to PostgREST schema-cache visibility and service start-up ordering in the CI environment. This is actively being worked on.
+**The integration test suite is temporarily disabled in CI** because of flakiness in the CI test database's PostgreSQL schema setup (in the workflow, this shows up as PostgREST not reliably seeing the schema/tables after migration, plus service start-up ordering). The `integration-tests` job in `.github/workflows/test.yml` is commented out (not deleted); the comment in the workflow dates the change 2026-08-25. This is a temporary limitation while the underlying issue is being fixed — the integration tests have not been removed, and no resolution date is promised here.
+
+What is disabled: the whole `integration` Jest project, i.e. every `*.test.js` under `backend/tests/integration/` (route, worker and Redis tests). Note that `tests/integration/redis/rate-limiting.test.js` is matched by both the `integration` and `rate-limit` Jest projects.
 
 A few things follow from that:
 
 - A green CI run right now reflects unit tests, frontend tests, and the rate-limit suite — **not** the full integration suite. It is not evidence that every integration-level code path is currently verified in CI.
-- This is a CI-environment reliability problem, not a claim that the application itself is broken. The integration tests still run, and pass, locally against the Docker Compose stack (`npm run test:integration`); the issue is specifically getting them to behave reliably inside GitHub Actions.
+- This is a CI-environment reliability problem, not a claim that the application itself is broken. The suite can still be run locally against the Docker Compose stack (`npm run test:integration`); the problem being fixed is the reliability of the CI test-database setup. Results will vary by environment, so run it yourself rather than assuming a pass.
 - Until this notice is removed, treat `integration-tests` CI status as "not currently enforced," and rely on local runs plus the rate-limit and unit suites in the meantime.
 
 This note will be removed once the integration-test job has been re-enabled in CI and shown to be reliable over multiple runs — not just once it passes a single time.
@@ -257,7 +259,7 @@ Full methodology, baselines, and stated limitations for each: [`backend/scripts/
 
 M1 found a real liveness bug in `set_contributor_target_atomic`: its `SELECT ... FOR UPDATE` locks the existing current-target row, but once the lock holder commits and supersedes that row, a transaction that was blocked on the lock re-checks its `WHERE is_current = true` clause under READ COMMITTED, finds no match, and attempts a fresh `INSERT` that collides with the winner — a raw `duplicate key value violates unique constraint "idx_targets_current_event"` error instead of a clean serialize. At C=50 concurrent requests, only 11 succeeded; the other 39 failed with that error. The underlying data invariant (never more than one current target) never broke, since it's independently enforced by a partial unique index — but most callers shouldn't have to see a hard DB error for a routine re-assignment race.
 
-Fixed in [`migrations/003_fix_contributor_target_race.sql`](migrations/003_fix_contributor_target_race.sql): the function now retries its supersede-then-insert sequence (bounded, up to 5 attempts) on `unique_violation`, re-reading whichever row is current before each retry, so concurrent callers serialize through the lock instead of surfacing the race to the caller.
+Fixed in [`migrations/001_schema.sql`](migrations/001_schema.sql) (the only migration file; the fix is part of `set_contributor_target_atomic` itself): the function now retries its supersede-then-insert sequence (bounded, up to 5 attempts) on `unique_violation`, re-reading whichever row is current before each retry, so concurrent callers serialize through the lock instead of surfacing the race to the caller.
 
 ---
 
@@ -383,19 +385,21 @@ Run from `backend/`:
 |---|---|---|
 | `npm start` | `node src/start-all.js` | Run API + workers + scheduler in one process |
 | `npm run dev` | `nodemon src/start-all.js` | Same, with autoreload |
-| `npm run worker` | `node src/workers/index.js` | Run workers + scheduler only |
-| `npm run scheduler` | `node src/queues/scheduler.js` | Register/refresh cron jobs only |
+| `npm run worker` | `node src/workers/index.js` | Run workers + scheduler only (it registers the cron schedules itself) |
+| `npm run scheduler` | `node src/queues/scheduler.js` | Register/refresh cron jobs only — optional, since `npm run worker` already does this |
 | `npm test` | `jest` | Run all three test suites |
 | `npm run lint` | `eslint src/` | Lint the codebase |
 
 ## Configuration
 
-Required at startup (`server.js` / `start-all.js` exit immediately if any are missing):
+Required at startup (`server.js` exits immediately if any are missing):
 
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `REDIS_URL`
 - `FRONTEND_URL`
+
+`start-all.js` requires only `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and `FRONTEND_URL`. If `REDIS_URL` is unset it logs a warning and starts the API **without** workers or the scheduler. `workers/index.js` (`npm run worker`) requires `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and `REDIS_URL`.
 
 Optional, feature-gating integrations — the app boots without these, but the corresponding feature is disabled or degraded:
 
