@@ -126,13 +126,12 @@ jobs:
       # or the test suite ever ran. 001_schema.sql is the only migration
       # file left in the repo, so that's the only one applied here.
       #
-      # NOTE: 003's fix (retry loop in set_contributor_target_atomic) is
-      # folded into 001_schema.sql, confirmed by diff. 002's ledger_entries
-      # immutability trigger and 004's duplicate-check race fix do NOT
-      # appear anywhere in 001_schema.sql — that logic looks genuinely
-      # lost, not superseded. Worth a follow-up to restore it (as a new
-      # migration or back into 001_schema.sql) rather than leaving the
-      # test DB schema short of two real bug fixes.
+      # NOTE: all of the former 002-004 fixes are now in 001_schema.sql:
+      # the set_contributor_target_atomic retry loop, the ledger_entries
+      # immutability triggers (enforce_ledger_entry_immutability /
+      # prevent_locked_ledger_entry_delete) and the advisory-lock duplicate
+      # check in create_ledger_entry_checked. (An earlier version of this
+      # comment said the latter two were lost; that is no longer true.)
       - name: Run DB migrations
         run: |
           psql -h localhost -p 54322 -U postgres -d kith_test -v ON_ERROR_STOP=1 -f migrations/001_schema.sql
