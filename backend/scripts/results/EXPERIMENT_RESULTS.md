@@ -65,7 +65,7 @@ Across all 5 successful runs (15 concurrency-level trials total), `current_targe
 
 ## M3 — DB-level ledger immutability trigger
 
-**Objective:** Does `enforce_ledger_entry_immutability` (migration `002_ledger_integrity_and_carry_forward_debt.sql`) reject a direct SQL mutation of a confirmed ledger entry's amount, independent of the application layer — while still allowing legitimate status transitions?
+**Objective:** Does `enforce_ledger_entry_immutability` (defined in `migrations/001_schema.sql`) reject a direct SQL mutation of a confirmed ledger entry's amount, independent of the application layer — while still allowing legitimate status transitions?
 
 **Implementation under test:** The trigger itself, attacked via a raw `pg` connection issuing `UPDATE ledger_entries SET original_amount = original_amount + 1 ...` directly — bypassing `ledger.service.js` entirely. Script: `scripts/experiments/m3-immutability-trigger.js`.
 

@@ -31,7 +31,7 @@ closing at the layer the application layer can't bypass by construction.
 
 ## Decision
 
-`002_ledger_integrity_and_carry_forward_debt.sql` adds two triggers on
+`migrations/001_schema.sql` defines two triggers on
 `ledger_entries`:
 
 - `enforce_ledger_entry_immutability()` (`BEFORE UPDATE`): once an
@@ -92,7 +92,7 @@ not a general pattern this project adopts everywhere (see SECURITY.md
 
 - A trigger is one more piece of logic living in SQL rather than
   JavaScript, splitting the "what can happen to a ledger entry" rule
-  across two places (`ledger.service.js` and this migration) that now
+  across two places (`ledger.service.js` and the schema file) that now
   both need to stay in sync if the rule ever changes — e.g. a future
   `reversed` status flow would need the whitelist in *both* places
   updated together.
@@ -111,12 +111,12 @@ not a general pattern this project adopts everywhere (see SECURITY.md
   bypass.
 - `cycle_lifecycle.service.js#carryForwardUnpaid` no longer writes to
   `ledger_entries` at all (ADR-0020), so it was never at risk of tripping
-  this trigger — worth noting only because the two changes landed in the
-  same migration and are easy to conflate.
+  this trigger — worth noting only because the two changes were introduced together
+  and are easy to conflate (both now live in `001_schema.sql`).
 
 ## Related Files
 
-- `migrations/002_ledger_integrity_and_carry_forward_debt.sql`
+- `migrations/001_schema.sql`
   (`enforce_ledger_entry_immutability`, `prevent_locked_ledger_entry_delete`)
 - `src/services/ledger.service.js` (`updateEntry`, `deleteEntry`,
   `confirmProof`, `deleteProof` — the application-layer half of this rule)

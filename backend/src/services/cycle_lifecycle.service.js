@@ -71,7 +71,7 @@ async function openDueCycles(today) {
 // actually pay the larger amount — no other reporting code needed to
 // change.
 //
-// apply_cycle_carry_forward_atomic (002_ledger_integrity_and_carry_forward_debt.sql)
+// apply_cycle_carry_forward_atomic (migrations/001_schema.sql)
 // does the supersede-and-insert atomically and is idempotent per
 // (participant, closed cycle) via a unique constraint, so a lifecycle
 // re-run can't double-apply the same debt.
