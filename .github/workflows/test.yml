@@ -119,18 +119,23 @@ jobs:
             sleep 2
           done
 
-      # NOTE: all four migrations are applied, in order. The previous
-      # (disabled) integration-tests job below only applied
-      # migrations/001_schema.sql, which would have left 002-004 missing
-      # from any test database it stood up — that gap is fixed here so
-      # the rate-limit tests run against the same effective schema as
-      # production.
+      # migrations/002-004 were deleted from the repo (commit 2cd03de,
+      # "remove stale audit docs and superseded migrations") but this
+      # step still referenced them by filename, so `psql -f` failed with
+      # "No such file or directory" and aborted the job before PostgREST
+      # or the test suite ever ran. 001_schema.sql is the only migration
+      # file left in the repo, so that's the only one applied here.
+      #
+      # NOTE: 003's fix (retry loop in set_contributor_target_atomic) is
+      # folded into 001_schema.sql, confirmed by diff. 002's ledger_entries
+      # immutability trigger and 004's duplicate-check race fix do NOT
+      # appear anywhere in 001_schema.sql — that logic looks genuinely
+      # lost, not superseded. Worth a follow-up to restore it (as a new
+      # migration or back into 001_schema.sql) rather than leaving the
+      # test DB schema short of two real bug fixes.
       - name: Run DB migrations
         run: |
-          for f in migrations/001_schema.sql migrations/002_ledger_integrity_and_carry_forward_debt.sql migrations/003_fix_contributor_target_race.sql migrations/004_fix_ledger_entry_duplicate_check_race.sql; do
-            echo "Applying $f"
-            psql -h localhost -p 54322 -U postgres -d kith_test -v ON_ERROR_STOP=1 -f "$f"
-          done
+          psql -h localhost -p 54322 -U postgres -d kith_test -v ON_ERROR_STOP=1 -f migrations/001_schema.sql
         env:
           PGPASSWORD: test
 
