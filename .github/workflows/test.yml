@@ -58,8 +58,13 @@ jobs:
       - name: Run tests
         run: npm test
 
+  # RATE-LIMIT TESTS TEMPORARILY DISABLED (requested by maintainer).
+  # The job definition is kept intact; remove the `if: false` line below to
+  # re-enable it. It depends on the same Postgres/PostgREST setup as the
+  # disabled integration-tests job.
   rate-limit-tests:
     name: Rate-Limit Tests
+    if: false
     runs-on: ubuntu-latest
 
     services:
