@@ -39,7 +39,7 @@ describe('last-seen debounce (middleware/auth.js) against real Redis', () => {
 
   afterAll(async () => {
     for (const id of createdUserIds) {
-      await supabaseAdmin.from('users').delete().eq('id', id).catch(() => {});
+      try { await supabaseAdmin.from('users').delete().eq('id', id); } catch (_) {}
     }
   });
 

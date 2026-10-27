@@ -31,7 +31,6 @@ if ! PGPASSWORD=test psql -h localhost -p 5432 -U postgres -lqt 2>/dev/null | gr
     su - postgres -c "psql -c \"ALTER USER postgres PASSWORD 'test';\" && psql -c \"CREATE DATABASE kith_test;\""
   echo "applying migrations..."
   PGPASSWORD=test psql -h localhost -p 5432 -U postgres -d kith_test -f "$HERE/../../../migrations/001_schema.sql" >/dev/null
-  PGPASSWORD=test psql -h localhost -p 5432 -U postgres -d kith_test -f "$HERE/../../../migrations/002_ledger_integrity_and_carry_forward_debt.sql" >/dev/null
   echo "migrations applied"
 else
   echo "kith_test already exists"

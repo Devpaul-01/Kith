@@ -113,8 +113,13 @@ describe('notification_outbox.service.js — runNotificationOutboxScan', () => {
     const { delivery: delivery2 } = await seedStaleDelivery({ workspace, member: member2, status: 'pending', ageMinutes: 10 });
 
     const queue = getQueue('notification-queue');
+    // The scan is global (not workspace-scoped), so stale deliveries left
+    // behind by other tests in this file can also be picked up. Only
+    // count/fail calls for THIS test's two deliveries.
+    const ours = new Set([delivery1.id, delivery2.id]);
     let callCount = 0;
-    const addSpy = jest.spyOn(queue, 'add').mockImplementation(() => {
+    const addSpy = jest.spyOn(queue, 'add').mockImplementation((name, payload) => {
+      if (!ours.has(payload?.delivery_id)) return Promise.resolve({ id: 'mock-job-id' });
       callCount += 1;
       if (callCount === 1) return Promise.reject(new Error('simulated enqueue failure'));
       return Promise.resolve({ id: 'mock-job-id' });

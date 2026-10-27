@@ -164,7 +164,16 @@ describe('cycle_generation.service.js — generateCycles', () => {
   // ── Concurrency race — Doc 1 Bug Review Finding 9 ──────────────
   describe('concurrency race (Doc 1 Finding 9) — real Queue + real Worker, concurrency: 5', () => {
     it('enqueuing two generate-cycles jobs for the SAME container back-to-back produces no duplicate/skipped cycle_number values', async () => {
-      freezeTime('2026-01-01T00:00:00Z');
+      // Fake ONLY Date. freezeTime() fakes every timer, which stalls this
+      // test's own polling loop and BullMQ's real worker/Redis timers
+      // (the test then times out waiting for jobs that can never run).
+      jest.useFakeTimers({
+        now: new Date('2026-01-01T00:00:00Z'),
+        doNotFake: [
+          'nextTick', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval',
+          'setTimeout', 'clearTimeout', 'hrtime', 'performance', 'queueMicrotask',
+        ],
+      });
       const { container } = await seedRecurringContainer({ recurrence_start: '2026-01-01', recurrence_cadence: 'monthly' });
 
       const worker = createCycleGenerationWorker();
