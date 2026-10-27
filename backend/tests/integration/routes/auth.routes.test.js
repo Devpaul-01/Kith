@@ -35,7 +35,7 @@
 const request = require('supertest');
 const crypto  = require('crypto');
 const { getTestApp } = require('../../helpers/testApp');
-const { supabaseAdmin } = require('../../../src/config/supabase');
+const { supabaseAdmin, supabaseAuth } = require('../../../src/config/supabase');
 const { mockAuthenticatedRequest, installAuthSpy } = require('../../helpers/authHelper');
 const { seedWorkspaceWithAdmin, cleanupWorkspace } = require('../../helpers/dbHelper');
 const { buildUser } = require('../../fixtures/factories');
@@ -50,7 +50,7 @@ describe('auth.routes.js — /v1/auth', () => {
       await cleanupWorkspace(supabaseAdmin, id).catch(() => {});
     }
     for (const id of seededUserIds) {
-      await supabaseAdmin.from('users').delete().eq('id', id).catch(() => {});
+      try { await supabaseAdmin.from('users').delete().eq('id', id); } catch (_) {}
     }
   });
 
@@ -66,7 +66,7 @@ describe('auth.routes.js — /v1/auth', () => {
   describe('POST /v1/auth/signup', () => {
     it('invalid payload (weak password) is rejected with 400 VALIDATION_FAILED before any Supabase Auth call', async () => {
       installAuthSpy(supabaseAdmin);
-      const signUpSpy = jest.spyOn(supabaseAdmin.auth, 'signUp');
+      const signUpSpy = jest.spyOn(supabaseAuth.auth, 'signUp');
 
       const res = await request(app)
         .post('/v1/auth/signup')
@@ -80,7 +80,7 @@ describe('auth.routes.js — /v1/auth', () => {
     it('immediate-session signup (email confirmation disabled) returns 201 with access_token and sets the refresh_token cookie', async () => {
       installAuthSpy(supabaseAdmin);
       const userId = crypto.randomUUID();
-      jest.spyOn(supabaseAdmin.auth, 'signUp').mockResolvedValueOnce({
+      jest.spyOn(supabaseAuth.auth, 'signUp').mockResolvedValueOnce({
         data: {
           user: { id: userId },
           session: { access_token: 'at-123', refresh_token: 'rt-123', expires_in: 3600 },
@@ -102,7 +102,7 @@ describe('auth.routes.js — /v1/auth', () => {
 
     it('duplicate email maps to 409 CONFLICT', async () => {
       installAuthSpy(supabaseAdmin);
-      jest.spyOn(supabaseAdmin.auth, 'signUp').mockResolvedValueOnce({
+      jest.spyOn(supabaseAuth.auth, 'signUp').mockResolvedValueOnce({
         data: {}, error: { code: 'user_already_exists', message: 'User already registered' },
       });
 
@@ -121,7 +121,7 @@ describe('auth.routes.js — /v1/auth', () => {
       const { workspace, user, member } = await seedWorkspaceWithAdmin(supabaseAdmin);
       seededWorkspaceIds.push(workspace.id);
 
-      jest.spyOn(supabaseAdmin.auth, 'signInWithPassword').mockResolvedValueOnce({
+      jest.spyOn(supabaseAuth.auth, 'signInWithPassword').mockResolvedValueOnce({
         data: {
           user: { id: user.id },
           session: { access_token: 'at-login', refresh_token: 'rt-login', expires_in: 3600 },
@@ -146,7 +146,7 @@ describe('auth.routes.js — /v1/auth', () => {
 
     it('wrong password maps to 401 UNAUTHORIZED', async () => {
       installAuthSpy(supabaseAdmin);
-      jest.spyOn(supabaseAdmin.auth, 'signInWithPassword').mockResolvedValueOnce({
+      jest.spyOn(supabaseAuth.auth, 'signInWithPassword').mockResolvedValueOnce({
         data: {}, error: { code: 'invalid_credentials', message: 'Invalid login credentials' },
       });
 
@@ -160,7 +160,7 @@ describe('auth.routes.js — /v1/auth', () => {
     it('valid auth credentials but no matching users row -> 200 with profile_setup_required: true, user: null', async () => {
       installAuthSpy(supabaseAdmin);
       const orphanAuthUserId = crypto.randomUUID();
-      jest.spyOn(supabaseAdmin.auth, 'signInWithPassword').mockResolvedValueOnce({
+      jest.spyOn(supabaseAuth.auth, 'signInWithPassword').mockResolvedValueOnce({
         data: {
           user: { id: orphanAuthUserId },
           session: { access_token: 'at-orphan', refresh_token: 'rt-orphan', expires_in: 3600 },
@@ -180,7 +180,7 @@ describe('auth.routes.js — /v1/auth', () => {
 
     it('malformed body (missing password) is rejected 400 before any Supabase Auth call', async () => {
       installAuthSpy(supabaseAdmin);
-      const signInSpy = jest.spyOn(supabaseAdmin.auth, 'signInWithPassword');
+      const signInSpy = jest.spyOn(supabaseAuth.auth, 'signInWithPassword');
 
       const res = await request(app).post('/v1/auth/login').send({ email: 'a@b.com' });
 
@@ -193,7 +193,7 @@ describe('auth.routes.js — /v1/auth', () => {
   describe('POST /v1/auth/refresh', () => {
     it('valid refresh_token cookie -> 200 with new access_token and a rotated refresh_token cookie', async () => {
       installAuthSpy(supabaseAdmin);
-      jest.spyOn(supabaseAdmin.auth, 'refreshSession').mockResolvedValueOnce({
+      jest.spyOn(supabaseAuth.auth, 'refreshSession').mockResolvedValueOnce({
         data: { session: { access_token: 'at-new', refresh_token: 'rt-new', expires_in: 3600 } },
         error: null,
       });
@@ -215,7 +215,7 @@ describe('auth.routes.js — /v1/auth', () => {
 
     it('invalid/expired refresh_token -> 401', async () => {
       installAuthSpy(supabaseAdmin);
-      jest.spyOn(supabaseAdmin.auth, 'refreshSession').mockResolvedValueOnce({
+      jest.spyOn(supabaseAuth.auth, 'refreshSession').mockResolvedValueOnce({
         data: {}, error: { message: 'Invalid refresh token' },
       });
 
@@ -267,7 +267,7 @@ describe('auth.routes.js — /v1/auth', () => {
   describe('POST /v1/auth/forgot-password', () => {
     it('always returns the same generic 200 message, for both a real and a nonexistent email (anti user-enumeration)', async () => {
       installAuthSpy(supabaseAdmin);
-      const resetSpy = jest.spyOn(supabaseAdmin.auth, 'resetPasswordForEmail').mockResolvedValue({ data: {}, error: null });
+      const resetSpy = jest.spyOn(supabaseAuth.auth, 'resetPasswordForEmail').mockResolvedValue({ data: {}, error: null });
 
       const resReal = await request(app).post('/v1/auth/forgot-password').send({ email: 'real-user@example.test' });
       const resFake = await request(app).post('/v1/auth/forgot-password').send({ email: 'definitely-not-registered@example.test' });
@@ -280,7 +280,7 @@ describe('auth.routes.js — /v1/auth', () => {
 
     it('malformed email -> 400 before any Supabase Auth call', async () => {
       installAuthSpy(supabaseAdmin);
-      const resetSpy = jest.spyOn(supabaseAdmin.auth, 'resetPasswordForEmail');
+      const resetSpy = jest.spyOn(supabaseAuth.auth, 'resetPasswordForEmail');
 
       const res = await request(app).post('/v1/auth/forgot-password').send({ email: 'not-an-email' });
 
@@ -301,7 +301,7 @@ describe('auth.routes.js — /v1/auth', () => {
     it('wrong current_password -> 401 (stolen-access-token protection — the endpoint re-verifies via a real sign-in)', async () => {
       const user = await seedUser();
       const { authHeader } = mockAuthenticatedRequest({ supabaseAdmin, userId: user.id, email: user.email });
-      jest.spyOn(supabaseAdmin.auth, 'signInWithPassword').mockResolvedValueOnce({
+      jest.spyOn(supabaseAuth.auth, 'signInWithPassword').mockResolvedValueOnce({
         data: {}, error: { code: 'invalid_credentials', message: 'Invalid login credentials' },
       });
 
@@ -316,7 +316,7 @@ describe('auth.routes.js — /v1/auth', () => {
     it('correct current_password -> 200', async () => {
       const user = await seedUser();
       const { authHeader } = mockAuthenticatedRequest({ supabaseAdmin, userId: user.id, email: user.email });
-      jest.spyOn(supabaseAdmin.auth, 'signInWithPassword').mockResolvedValueOnce({ data: {}, error: null });
+      jest.spyOn(supabaseAuth.auth, 'signInWithPassword').mockResolvedValueOnce({ data: {}, error: null });
       jest.spyOn(supabaseAdmin.auth.admin, 'updateUserById').mockResolvedValueOnce({ data: {}, error: null });
 
       const res = await request(app)
@@ -330,7 +330,7 @@ describe('auth.routes.js — /v1/auth', () => {
     it('weak new_password is rejected 400 by the validator before any Supabase Auth call', async () => {
       const user = await seedUser();
       const { authHeader } = mockAuthenticatedRequest({ supabaseAdmin, userId: user.id, email: user.email });
-      const signInSpy = jest.spyOn(supabaseAdmin.auth, 'signInWithPassword');
+      const signInSpy = jest.spyOn(supabaseAuth.auth, 'signInWithPassword');
 
       const res = await request(app)
         .post('/v1/auth/change-password')

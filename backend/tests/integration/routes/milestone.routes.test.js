@@ -170,14 +170,35 @@ describe('milestone.routes.js — /v1/workspaces/:workspaceId/{timeline,mileston
       jest.resetModules();
       const freshApp = getTestApp();
 
+      // jest.resetModules() gives the fresh app its OWN supabaseAdmin
+      // instance, so (a) the getUser stub installed on this file's
+      // top-level client is invisible to it (real GoTrue -> 401) and
+      // (b) there is no local Supabase Storage in the test stack
+      // (docker-compose.test.yml is Postgres + PostgREST only). Delegate
+      // getUser to the stubbed client and stub the one Storage call
+      // verifyUploadedFile makes: download() returns non-image bytes.
+      const freshSupabase = require('../../../src/config/supabase').supabaseAdmin;
+      jest.spyOn(freshSupabase.auth, 'getUser')
+        .mockImplementation((...args) => supabaseAdmin.auth.getUser(...args));
+      const removeMock = jest.fn().mockResolvedValue({ data: [], error: null });
+      // supabase-js builds a NEW storage client on every `.storage`
+      // access, so spying on a method of one access is a no-op; override
+      // the getter itself.
+      Object.defineProperty(freshSupabase, 'storage', {
+        configurable: true,
+        get: () => ({
+          from: () => ({
+            download: jest.fn().mockResolvedValue({
+              data: new Blob([Buffer.from('this is not an image')]),
+              error: null,
+            }),
+            remove: removeMock,
+          }),
+        }),
+      });
+
       try {
-        // Upload a real (non-image) text file to the actual test-Storage
-        // bucket at a known path, then attempt to confirm it as an
-        // 'image/png'-declared photo — the magic bytes won't match.
         const filePath = `workspaces/${workspace.id}/milestones/${milestone.id}/fake-photo.png`;
-        await supabaseAdmin.storage
-          .from(process.env.STORAGE_BUCKET_NAME)
-          .upload(filePath, Buffer.from('this is not an image'), { contentType: 'image/png', upsert: true });
 
         const res = await request(freshApp)
           .post(`/v1/workspaces/${workspace.id}/milestones/${milestone.id}/photos/confirm`)
@@ -185,8 +206,7 @@ describe('milestone.routes.js — /v1/workspaces/:workspaceId/{timeline,mileston
           .send({ file_path: filePath, name: 'fake-photo.png', size: 21, mime_type: 'image/png' });
 
         expect(res.status).toBe(422);
-
-        await supabaseAdmin.storage.from(process.env.STORAGE_BUCKET_NAME).remove([filePath]);
+        expect(removeMock).toHaveBeenCalledWith([filePath]); // rejected object is cleaned up
       } finally {
         process.env.FILE_VERIFICATION_ENABLED = original;
         resetTestApp();

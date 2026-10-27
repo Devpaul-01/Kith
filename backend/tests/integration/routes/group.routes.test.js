@@ -94,7 +94,7 @@ describe('group.routes.js + workspace-invites.routes.js', () => {
 
   // ── DELETE /groups/:id/members/:memberId ───────────────────────
   describe('DELETE /v1/workspaces/:workspaceId/groups/:groupId/members/:memberId', () => {
-    it('removing a non-member returns 200 with no audit log call (count === 0)', async () => {
+    it('removing a non-member returns 204 with no audit log call (count === 0)', async () => {
       const { workspace, adminMember, adminAuthHeader } = await seedTenant();
       const { member: neverAdded } = await seedNonAdmin(workspace.id);
 
@@ -109,7 +109,7 @@ describe('group.routes.js + workspace-invites.routes.js', () => {
         .delete(`/v1/workspaces/${workspace.id}/groups/${group.id}/members/${neverAdded.id}`)
         .set('Authorization', adminAuthHeader);
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(204);
 
       const { count: auditCountAfter } = await supabaseAdmin
         .from('audit_log').select('*', { count: 'exact', head: true }).eq('workspace_id', workspace.id).eq('action', 'group.member_removed');

@@ -6,6 +6,17 @@ const cCtrl = require('../controllers/container.controller');
 const pCtrl = require('../controllers/participant.controller');
 const { requireAdmin } = require('../middleware/role');
 const { uploadLimiter } = require('../middleware/rateLimiter');
+const { NotFoundError } = require('../utils/errors');
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// A non-UUID :containerId can never match a row; without this guard it
+// reaches Postgres as an invalid uuid literal (22P02) and surfaces as a
+// 500 instead of a 404 (e.g. GET /containers/x/ledger/export).
+router.param('containerId', (req, res, next, id) => {
+  if (!UUID_RE.test(id)) return next(new NotFoundError('Container not found'));
+  next();
+});
 
 router.get('/',                                    cCtrl.listContainers);
 router.post('/',                                   requireAdmin, cCtrl.createContainer);

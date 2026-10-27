@@ -32,7 +32,16 @@ function setRefreshCookie(res, refreshToken) {
 async function signup(req, res, next) {
   try {
     const data = signupSchema.parse(req.body);
-    const { body } = await authService.signup(data);
+    const { status, body } = await authService.signup(data);
+
+    // Immediate-session signup (email confirmation disabled): deliver the
+    // refresh token via the httpOnly cookie only, never in the JSON body —
+    // same as login/refresh.
+    if (status === 'session' && body.refresh_token) {
+      const { refresh_token, ...responsePayload } = body;
+      setRefreshCookie(res, refresh_token);
+      return success(res, responsePayload, 201);
+    }
     success(res, body, 201);
   } catch (err) { next(err); }
 }
