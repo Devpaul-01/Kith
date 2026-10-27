@@ -246,23 +246,108 @@ async function seedInviteLink(supabaseAdmin, overrides = {}) {
  * in the schema (no ON DELETE clause), so they're cleaned up explicitly
  * first to avoid FK violations on the workspace delete.
  */
+// ledger_entries (no deleting confirmed rows) and audit_log (append-only)
+// are protected by BEFORE DELETE triggers, so PostgREST deletes of them
+// always fail with P0001 and then the workspace delete fails its FK
+// (23503), leaving every seeded workspace behind. Test-only escape hatch:
+// a direct connection with session_replication_role = replica, which
+// skips triggers (and FK enforcement) for that one transaction. The
+// triggers stay in force for the app and for every other test path.
+// Only the protected/non-cascading tables are removed this way; the
+// workspace itself is then deleted normally so ON DELETE CASCADE runs.
+let _pgPool = null;
+function getPgPool() {
+  if (!_pgPool) {
+    const { Pool } = require('pg');
+    _pgPool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL
+        || 'postgres://postgres:test@localhost:54322/kith_test', // docker-compose.test.yml / CI
+      max: 2,
+      idleTimeoutMillis: 1000,
+      allowExitOnIdle: true,
+    });
+  }
+  return _pgPool;
+}
+
+// Tables with no workspace_id column of their own, keyed through a parent
+// that has one. Must be removed BEFORE the parent rows (the subqueries
+// need the parents to still exist). With FK enforcement off in replica
+// mode, order only matters for these subqueries.
+const CHILD_TABLE_PURGES = [
+  ['cycle_carry_forwards',    'container_id', 'containers'],
+  ['contributor_targets',     'container_id', 'containers'],
+  ['container_cycles',        'container_id', 'containers'],
+  ['container_participants',  'container_id', 'containers'],
+  ['container_tasks',         'container_id', 'containers'],
+  ['pool_cycle_overrides',    'container_id', 'containers'],
+  ['group_members',           'group_id',     'groups'],
+  ['member_profile_audit',    'workspace_member_id', 'workspace_members'],
+  ['notification_deliveries', 'notification_id', 'notifications'],
+];
+
+async function purgeProtectedRows(workspaceId) {
+  const client = await getPgPool().connect();
+  try {
+    await client.query('BEGIN');
+    // Skips triggers AND FK enforcement/cascades for this transaction only,
+    // so the whole workspace is removed explicitly here instead of relying
+    // on ON DELETE CASCADE ordering (which also trips on non-cascading
+    // FKs into workspace_members, e.g. container_participants).
+    await client.query("SET LOCAL session_replication_role = 'replica'");
+
+    for (const [table, col, parent] of CHILD_TABLE_PURGES) {
+      await client.query(
+        `DELETE FROM public.${table} WHERE ${col} IN (SELECT id FROM public.${parent} WHERE workspace_id = $1)`,
+        [workspaceId]
+      );
+    }
+
+    const { rows } = await client.query(
+      `SELECT table_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND column_name = 'workspace_id'
+          AND table_name <> 'workspaces'
+          AND table_name IN (SELECT table_name FROM information_schema.tables
+                              WHERE table_schema = 'public' AND table_type = 'BASE TABLE')`
+    );
+    for (const { table_name } of rows) {
+      await client.query(`DELETE FROM public."${table_name}" WHERE workspace_id = $1`, [workspaceId]);
+    }
+
+    await client.query('DELETE FROM public.workspaces WHERE id = $1', [workspaceId]);
+    await client.query('COMMIT');
+    return true;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (!purgeProtectedRows.warned) {
+      purgeProtectedRows.warned = true;
+      console.warn(`cleanupWorkspace: direct purge unavailable (${err.message}); set TEST_DATABASE_URL. Falling back to PostgREST deletes.`);
+    }
+    return false;
+  } finally {
+    client.release();
+  }
+}
+
 async function cleanupWorkspace(supabaseAdmin, workspaceId) {
-  // Delete in FK-safe order: child tables first, then parent
-  const { error: e1 } = await supabaseAdmin.from('ledger_entries').delete().eq('workspace_id', workspaceId);
-  if (e1) console.error('cleanupWorkspace: ledger_entries error:', e1);
-  
-  const { error: e2 } = await supabaseAdmin.from('disputes').delete().eq('workspace_id', workspaceId);
-  if (e2) console.error('cleanupWorkspace: disputes error:', e2);
-  
+  const purged = await purgeProtectedRows(workspaceId);
+
+  if (!purged) {
+    // Fallback (no direct DB access): best effort via PostgREST.
+    const { error: e1 } = await supabaseAdmin.from('ledger_entries').delete().eq('workspace_id', workspaceId);
+    if (e1) console.error('cleanupWorkspace: ledger_entries error:', e1);
+    const { error: e2 } = await supabaseAdmin.from('disputes').delete().eq('workspace_id', workspaceId);
+    if (e2) console.error('cleanupWorkspace: disputes error:', e2);
+    const { error: e4 } = await supabaseAdmin.from('audit_log').delete().eq('workspace_id', workspaceId);
+    if (e4) console.error('cleanupWorkspace: audit_log error:', e4);
+  }
+
   const { error: e3 } = await supabaseAdmin.from('notifications').delete().eq('workspace_id', workspaceId);
   if (e3) console.error('cleanupWorkspace: notifications error:', e3);
-  
-  const { error: e4 } = await supabaseAdmin.from('audit_log').delete().eq('workspace_id', workspaceId);
-  if (e4) console.error('cleanupWorkspace: audit_log error:', e4);
-  
+
   const { error: e5 } = await supabaseAdmin.from('workspace_settings').delete().eq('workspace_id', workspaceId);
   if (e5) console.error('cleanupWorkspace: workspace_settings error:', e5);
-  
+
   const { error: e6 } = await supabaseAdmin.from('workspaces').delete().eq('id', workspaceId);
   if (e6) console.error('cleanupWorkspace: workspaces error:', e6);
 }
