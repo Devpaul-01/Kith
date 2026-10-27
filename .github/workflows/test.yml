@@ -91,6 +91,9 @@ jobs:
 
     env:
       PGPASSWORD: test
+      # Direct DB access for test cleanup: ledger_entries / audit_log are
+      # protected by delete-blocking triggers that PostgREST can't bypass.
+      TEST_DATABASE_URL: postgres://postgres:test@localhost:54322/kith_test
 
     steps:
       - uses: actions/checkout@v4

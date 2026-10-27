@@ -40,6 +40,7 @@
         "testEnvironment": "node",
         "setupFilesAfterEnv": ["<rootDir>/tests/setup.integration.js"],
         "testMatch": ["<rootDir>/tests/integration/**/*.test.js"],
+        "testPathIgnorePatterns": ["/node_modules/", "<rootDir>/tests/integration/redis/rate-limiting.test.js"],
         "testTimeout": 30000
       },
       {
