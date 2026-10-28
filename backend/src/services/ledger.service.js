@@ -119,6 +119,23 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
     }
   }
 
+  // A non-admin always records for themselves, but if they explicitly
+  // target a proxy member, reject that up front — otherwise the request
+  // silently falls through to "caller is not a participant" (422) and the
+  // proxy-admin-only rule is never enforced.
+  if (!isAdmin && data.contributor_id && data.contributor_id !== callerId) {
+    const { data: target, error: tErr } = await supabaseAdmin
+      .from('workspace_members')
+      .select('is_proxy')
+      .eq('id', data.contributor_id)
+      .eq('workspace_id', workspaceId)
+      .maybeSingle();
+    if (tErr) throw new Error(tErr.message);
+    if (target?.is_proxy) {
+      throw new ForbiddenError('Only admins can record contributions for proxy members');
+    }
+  }
+
   const contributorId = isAdmin ? data.contributor_id : callerId;
 
   if (isAdmin && !contributorId) {

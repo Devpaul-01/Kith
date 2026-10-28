@@ -34,22 +34,14 @@ async function createContainer(req, res, next) {
     const result = createContainerSchema.safeParse(req.body);
 
     if (!result.success) {
-      logger.error('createContainerSchema validation failed', {
+      logger.warn('createContainerSchema validation failed', {
         workspaceId: req.params.workspaceId,
-        body: req.body,
         issues: result.error.issues,
       });
-
-      return res.status(400).json({
-        error: {
-          message: 'Validation failed',
-          issues: result.error.issues.map(i => ({
-            path: i.path.join('.'),
-            message: i.message,
-            code: i.code,
-          })),
-        },
-      });
+      // Hand off to errorHandler so the response uses the same
+      // VALIDATION_FAILED shape (code/message/field/details) as every
+      // other validated route.
+      return next(result.error);
     }
 
     const { workspaceId } = req.params;

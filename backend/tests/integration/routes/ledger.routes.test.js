@@ -300,6 +300,15 @@ describe('ledger.routes.js — .../containers/:containerId/ledger', () => {
       jest.resetModules();
       const freshApp = getFreshApp();
 
+      // jest.resetModules() gave the fresh app its OWN supabaseAdmin
+      // instance, so the getUser stub seedTenant installs on this file's
+      // top-level (pre-reset) client is invisible to it and requireAuth
+      // would hit real GoTrue (-> 401). Delegate the fresh client's
+      // getUser to the stubbed one at call time.
+      const freshSupabase = require('../../../src/config/supabase').supabaseAdmin;
+      jest.spyOn(freshSupabase.auth, 'getUser')
+        .mockImplementation((...args) => supabaseAdmin.auth.getUser(...args));
+
       try {
         const { workspace, adminMember, adminAuthHeader } = await seedTenant();
         const container = await seedContainerWithParticipant(workspace.id, adminMember.id, adminMember.id);

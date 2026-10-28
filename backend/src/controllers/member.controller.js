@@ -2,6 +2,7 @@
 //
 // Member CRUD/profile/engagement logic lives in services/member.service.js.
 
+const { getFilter } = require('../utils/queryFilter');
 const { success } = require('../utils/response');
 const { createMemberSchema, updateMemberSchema } = require('../validators/workspace.validator');
 const audit = require('../services/audit.service');
@@ -12,8 +13,8 @@ async function listMembers(req, res, next) {
     const { workspaceId }     = req.params;
     const isAdmin             = req.member.role === 'admin';
     const { search }          = req.query;
-    const filterRole          = req.query['filter[role]'];
-    const filterProxy         = req.query['filter[is_proxy]'];
+    const filterRole          = getFilter(req.query, 'role');
+    const filterProxy         = getFilter(req.query, 'is_proxy');
 
     const result = await memberService.listMembers({
       workspaceId, isAdmin, search, filterRole, filterProxy, sortQuery: req.query,
