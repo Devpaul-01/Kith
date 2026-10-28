@@ -27,8 +27,14 @@ process.env.NODE_ENV = 'production'; // deliberately NOT 'test' — see header c
 // FIX (see docker-compose.test.yml's header comment): SUPABASE_URL must
 // point at PostgREST, not at Postgres's own wire-protocol port.
 process.env.SUPABASE_URL = process.env.TEST_SUPABASE_URL || 'http://localhost:3001';
-process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
-process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY || 'test-anon-key';
+// The keys must be real signed JWTs (PostgREST reads the `role` claim from
+// the bearer token); plain placeholder strings fail with
+// "JWSError ... Expected 3 parts; got 1". Same secret/claims as
+// setup.integration.js and docker-compose.test.yml's PGRST_JWT_SECRET.
+const jwt = require('jsonwebtoken');
+const JWT_SECRET = process.env.TEST_JWT_SECRET || 'test-jwt-secret-at-least-32-characters-long';
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY || jwt.sign({ role: 'postgres' }, JWT_SECRET);
+process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY || jwt.sign({ role: 'anon' }, JWT_SECRET);
 
 process.env.REDIS_URL = process.env.TEST_REDIS_URL || 'redis://localhost:63790/2'; // separate DB index from setup.integration.js's /1
 

@@ -54,7 +54,7 @@ describe('invite_cleanup.service.js — runInviteCleanup', () => {
   it('non-expired invites are untouched regardless of used status', async () => {
     const { workspace, member } = await seedTenant();
     const activeUnused = buildInviteLink({ workspace_id: workspace.id, created_by: member.id });
-    const activeUsed = buildUsedInviteLink({ workspace_id: workspace.id, created_by: member.id });
+    const activeUsed = buildUsedInviteLink({ workspace_id: workspace.id, created_by: member.id, used_by_user_id: member.user_id });
     await supabaseAdmin.from('invite_links').insert([activeUnused, activeUsed]);
 
     await runInviteCleanup();

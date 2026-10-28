@@ -49,16 +49,26 @@ async function getTimeline({ workspaceId, limit, before, beforeContainer, before
     .sort((a, b) => new Date(b.date) - new Date(a.date))
     .slice(0, safeLimit);
 
-  const lastContainer = (containers  || [])[containers?.length  - 1];
-  const lastMilestone = (milestones  || [])[milestones?.length  - 1];
+  // Cursors advance only past items actually RETURNED on this page.
+  // Basing them on the last row *fetched* from each source skips the
+  // fetched-but-trimmed rows, and a source with nothing on this page must
+  // keep the incoming cursor (resetting it to null restarts that source
+  // from the top and duplicates items on the next page).
+  const returnedContainers = items.filter((i) => i.reference_type === 'container');
+  const returnedMilestones = items.filter((i) => i.reference_type === 'milestone');
+  const lastContainer = returnedContainers[returnedContainers.length - 1];
+  const lastMilestone = returnedMilestones[returnedMilestones.length - 1];
+
+  const fetchedCount = (containers?.length || 0) + (milestones?.length || 0);
 
   return {
     items,
     next_cursor: {
-      before_container: lastContainer?.completed_at    || null,
-      before_milestone: lastMilestone?.milestone_date  || null,
+      before_container: lastContainer?.date || resolvedBeforeContainer || null,
+      before_milestone: lastMilestone?.date || resolvedBeforeMilestone || null,
     },
-    has_more: (containers?.length === safeLimit) || (milestones?.length === safeLimit),
+    has_more: fetchedCount > items.length
+      || (containers?.length === safeLimit) || (milestones?.length === safeLimit),
   };
 }
 

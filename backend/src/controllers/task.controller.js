@@ -2,6 +2,7 @@
 //
 // Task CRUD/proof/export logic lives in services/task.service.js.
 
+const { getFilter } = require('../utils/queryFilter');
 const { noContent, success } = require('../utils/response');
 const {
   createTaskSchema,
@@ -24,8 +25,8 @@ async function listTasks(req, res, next) {
       containerId,
       isAdmin,
       callerId: req.member.id,
-      assignedFilter: req.query['filter[assigned_to]'],
-      statusFilter: req.query['filter[status]'],
+      assignedFilter: getFilter(req.query, 'assigned_to'),
+      statusFilter: getFilter(req.query, 'status'),
       sortQuery: req.query,
     });
 
