@@ -80,7 +80,7 @@ flowchart TB
     W1 --> PG
 ```
 
-![Full system architecture: the React client, the Express perimeter and auth chain, the application and domain layers, atomic financial operations, the nine-queue async processing pipeline, and every external service](../media/kith-architecture-system-overview-diagram.png)
+![Full system architecture: the React client, the Express perimeter and auth chain, the application and domain layers, atomic financial operations, the nine-queue async processing pipeline, and every external service](./media/kith-architecture-system-overview-diagram.png)
 *A single-page reference for the whole system: request perimeter and auth chain at the top, the domain/financial core in the middle, async job processing below it, and every external service (Supabase, Redis, Resend, FCM, Sentry, Bull Board) on the right. Each numbered box in this diagram corresponds to a section elsewhere in this document — it's meant as an orientation map, not a replacement for the detailed sections that follow.*
 
 ---
@@ -551,7 +551,7 @@ Deduplication (`dedup_key`, built from type + participant/container/due-date/cyc
 
 The `notification-outbox-queue` (§11.3) is the final backstop: anything stuck `pending`/`failed` for 5+ minutes gets re-enqueued, independent of whether the original failure was a queue-enqueue failure or a delivery failure.
 
-![Notification fan-out per recipient and channel: the dedup check, in-app immediate delivery, push/email queuing, enqueue-failure handling, and the 5-minute outbox recovery scan feeding back into the worker path](../media/kith-architecture-notification-outbox-diagram.png)
+![Notification fan-out per recipient and channel: the dedup check, in-app immediate delivery, push/email queuing, enqueue-failure handling, and the 5-minute outbox recovery scan feeding back into the worker path](./media/kith-architecture-notification-outbox-diagram.png)
 *The same fan-out as the flowchart above, annotated with the specific failure mode the outbox queue exists to close: a `queue.add()` call that throws before a job is ever created. The dashed line shows a recovered delivery rejoining the normal worker path, still protected by the same delivered-status idempotency check.*
 
 ### 14.4 Recipient inbox vs. sender — a deliberate file split
@@ -718,7 +718,7 @@ sequenceDiagram
     API-->>Admin: 200 {entry}
 ```
 
-![Ledger entry submission, admin confirmation, and the resulting confirmed-immutable entry branching into dispute and correction flows](../media/kith-architecture-ledger-lifecycle-diagram.png)
+![Ledger entry submission, admin confirmation, and the resulting confirmed-immutable entry branching into dispute and correction flows](./media/kith-architecture-ledger-lifecycle-diagram.png)
 *The same submission→confirmation flow as the sequence diagram above, redrawn to emphasize what happens *after* confirmation — the entry becomes immutable (enforced both in `ledger.service.js` and, by a DB trigger defined in `migrations/001_schema.sql` — see SECURITY.md §7), and a dispute or a correction are the only two ways its effective state can subsequently change, each going through its own atomic Postgres RPC (§9.3).*
 
 ### 21.2 Recurring pool cycle lifecycle

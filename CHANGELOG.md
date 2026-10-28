@@ -68,6 +68,12 @@ does not follow a dated release cadence.
   `requireMembership` query**, since it has no consumer anywhere in the
   codebase — avoiding fetching a sensitive column into every single
   workspace-scoped request for no benefit.
+- **Signup no longer leaks the refresh token in the JSON body.** When
+  email confirmation is off, `POST /v1/auth/signup` returned the
+  `refresh_token` in the response body and never set the httpOnly cookie.
+  It now behaves like login and refresh: the token is delivered only via
+  the `refresh_token` cookie and stripped from the body, as the API
+  reference already documented.
 
 ## Reliability & Correctness
 
@@ -144,6 +150,29 @@ does not follow a dated release cadence.
   whole cycle for retry.** It's caught, logged, and skipped per
   participant — consistent with how per-participant notification
   failures are already handled in the same job.
+
+- **`filter[...]` query parameters now actually filter.** Express's
+  default query parser nests `?filter[role]=admin` as
+  `req.query.filter.role`, but the member and task list controllers read
+  the literal flat key, so `filter[role]`, `filter[is_proxy]`,
+  `filter[status]` and `filter[assigned_to]` were silently ignored. A
+  small `getFilter()` helper (`utils/queryFilter.js`) reads both shapes.
+- **A non-admin targeting a proxy member in `POST .../ledger` now gets
+  403**, not a misleading 422 "caller is not a participant". The
+  admin-only rule for proxy members was previously never reached for
+  non-admin callers.
+- **Container creation validation errors use the shared
+  `VALIDATION_FAILED` error shape** (via the central error handler)
+  instead of an ad-hoc `{ error: { message, issues } }` body.
+- **A malformed (non-UUID) `:containerId` returns 404** instead of a 500
+  from Postgres rejecting an invalid `uuid` literal.
+- **Milestone/container timeline pagination no longer duplicates or
+  skips items.** `next_cursor` was derived from the last row *fetched*
+  from each source rather than the last item *returned*, and reset a
+  source's cursor to `null` once it had nothing on the page, restarting it
+  from the top on the next request. Cursors now advance only past
+  returned items and keep the incoming cursor for a source with nothing
+  on the page.
 
 ## Architecture
 
@@ -237,3 +266,14 @@ does not follow a dated release cadence.
   `queue.add()` failure at send time would otherwise silently drop a
   notification with no retry path (`notification_outbox.service.js`,
   scheduled every 5 minutes via `queues/scheduler.js`).
+- **Integration and rate-limit tests run in CI.** Both suites were
+  previously disabled; the workflow now has one *Integration &
+  Rate-Limit Tests* job (plain `postgres:16`, `redis:7`, PostgREST behind
+  a small `/rest/v1`-stripping proxy). The `integration` Jest project
+  ignores `rate-limiting.test.js`, which needs `NODE_ENV=production` and
+  runs in its own project. See the *Testing & CI* section of the README.
+- **Test cleanup can remove append-only data.** `cleanupWorkspace()`
+  purges a workspace (including confirmed `ledger_entries`, `audit_log`
+  and non-cascading children) over a direct connection with
+  `session_replication_role = 'replica'`, test-only, so seeded data no
+  longer accumulates and the database triggers stay untouched for the app.
