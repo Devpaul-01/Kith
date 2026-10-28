@@ -382,7 +382,7 @@ A membership can be marked `is_proxy = true` and optionally linked to a `proxy_m
 - Never receive push or email notifications (there's no device or inbox to reach) — only in-app/administrative visibility applies to them.
 - Are excluded from engagement scoring (there's no "activity" to measure for someone who never uses the app).
 
-![Recording a contribution on behalf of a proxy member: the "Recording for" field set to "Grandma Adaeze (Proxy · managed by Dad)," with amount, currency, payment method, and a note documenting the handover](../media/kith-record-contribution-proxy-multicurrency.png)
+![Recording a contribution on behalf of a proxy member: the "Recording for" field set to "Grandma Adaeze (Proxy · managed by Dad)," with amount, currency, payment method, and a note documenting the handover](./media/kith-record-contribution-proxy-multicurrency.png)
 *What it actually looks like when an admin exercises the proxy-recording rule described above — Dad recording ₵15,000 (GHS) in cash on Grandma Adaeze's behalf, with the note documenting who handed the money over. This is the concrete mechanism behind "proxy members can never self-submit."*
 
 ### Adding a member
@@ -408,7 +408,7 @@ Each non-proxy member is scored `active` (activity within 30 days), `quiet` (31�
 ### Contribution summary
 Per-member, per-workspace: total containers they've participated in, total confirmed contributions (count and amount), last contribution date, and a per-container paid-vs-target breakdown. This is the "how has this person actually shown up financially" view — used both for admin oversight and for a member checking their own standing.
 
-![Members list showing 9 members with roles, an admin's engagement status, and two members explicitly tagged Proxy with a "managed by" admin](../media/kith-members-list-proxy-roles.png)
+![Members list showing 9 members with roles, an admin's engagement status, and two members explicitly tagged Proxy with a "managed by" admin](./media/kith-members-list-proxy-roles.png)
 *A workspace's full member list: two admins, regular members with per-member engagement status (`success`/`warning`/`archived`), and — at the bottom — two Proxy members, "Baby Kayode" and "Grandma Adaeze," each tagged with the admin who manages them. This is the concrete shape of the proxy-membership model described above.*
 
 ### Permissions summary
@@ -436,7 +436,7 @@ A named, optionally described, admin-managed collection of workspace members —
 ### Creating and managing groups
 Admins create a group with an initial member list (optional — can start empty). Adding members later validates every proposed member ID against the workspace's actual active members before inserting, silently skipping invalid IDs and reporting how many were skipped versus how many were newly added versus how many were already present — so a bulk operation never partially fails opaquely.
 
-![Groups list showing four named groups — Immediate Household, Extended Family, Rent Pool Contributors, and Event Planning Crew — each with a member count and avatar rollup](../media/kith-groups-bulk-member-sets.png)
+![Groups list showing four named groups — Immediate Household, Extended Family, Rent Pool Contributors, and Event Planning Crew — each with a member count and avatar rollup](./media/kith-groups-bulk-member-sets.png)
 *Four groups covering different overlapping subsets of the same nine-member workspace — the "Rent Pool Contributors" group is a strict subset of "Immediate Household," while "Extended Family" and "Event Planning Crew" pull in different combinations of aunts, uncles, and cousins. This is what makes "add the usual eight people to this year's Christmas fund" a single action.*
 
 ### Using a group
@@ -463,7 +463,7 @@ An admin generates a workspace invite link: a cryptographically random 24-byte t
 ### Invite preview (public, no login)
 Before committing to sign up, a prospective member can view an invite's landing page — workspace name, who invited them, and a preview of up to three active containers — without authenticating. This is deliberately designed to answer "what am I joining?" for a family member who's never heard of Kith before. For security, **every** failure mode (not found, expired, already used) returns the same generic "invalid invite" shape rather than distinct error codes, specifically to prevent invite-token enumeration attacks that could otherwise distinguish "this token doesn't exist" from "this token existed but expired."
 
-![Invite preview page reading "You're invited! Mom invited you to join The Adeyemi Family," listing the workspace's active containers with funding progress, and Sign in / Create account buttons](../media/kith-invite-preview-unauthenticated.png)
+![Invite preview page reading "You're invited! Mom invited you to join The Adeyemi Family," listing the workspace's active containers with funding progress, and Sign in / Create account buttons](./media/kith-invite-preview-unauthenticated.png)
 *What a prospective member sees before ever creating an account — the inviting workspace's name, who sent the invite, and a preview of active containers with live funding progress. Nothing here requires authentication.*
 
 ### Accepting an invite
@@ -499,7 +499,7 @@ A one-off thing with a specific date: a wedding, a funeral, a graduation, a birt
 ### Recurring pool containers
 An ongoing thing with a cadence: a monthly family support fund, a rotating susu, an ongoing medical care pool. Has a recurrence cadence (weekly/monthly/quarterly/yearly/custom-days), a start date, an optional end date, and a `carry_forward_unpaid` flag determining whether an unpaid balance rolls into the next cycle or is simply left behind when a cycle closes.
 
-![A recurring pool's Overview tab: "Monthly Family Support Fund," monthly cadence, an NGN200,000 budget target, 6 participants, and the public-page/show-names toggles enabled](../media/kith-recurring-pool-overview-detail.png)
+![A recurring pool's Overview tab: "Monthly Family Support Fund," monthly cadence, an NGN200,000 budget target, 6 participants, and the public-page/show-names toggles enabled](./media/kith-recurring-pool-overview-detail.png)
 *A recurring pool's own detail page — the tabbed Overview/Ledger/Participants/Cycles/Summary view every container shares, showing the pool's cadence, currency, budget target, and public-sharing settings at a glance.*
 
 ### Enabling money and/or tasks
@@ -558,7 +558,7 @@ Blocked if the participant has any confirmed ledger entries — the same "can't 
 ### Cycle-specific targets (recurring pools)
 For a recurring container, a participant can have a *different* target per cycle (e.g., an admin override adjusts one person's contribution for one specific month without changing their standing target going forward). The per-participant "cycle targets" view shows, cycle by cycle, what was expected, what was confirmed, and a computed status (paid/partial/pending/overdue/skipped).
 
-![Cycles list for a recurring pool showing a closed cycle, an open cycle with a per-participant paid/pending/overdue breakdown and a carried-forward balance, and an upcoming cycle](../media/kith-recurring-pool-cycles-carry-forward.png)
+![Cycles list for a recurring pool showing a closed cycle, an open cycle with a per-participant paid/pending/overdue breakdown and a carried-forward balance, and an upcoming cycle](./media/kith-recurring-pool-cycles-carry-forward.png)
 *Three consecutive cycles of the same recurring pool: Cycle 9 closed at 95% funded, Cycle 10 is open with a live participant breakdown — note Uncle Bayo's ₦10,000 carried forward from the prior cycle, shown inline — and Cycle 11 sits upcoming with zero collected. This is the automatically-generated 3-month horizon described in [Background Jobs & Scheduling](#25-background-jobs--scheduling).*
 
 ### Admin cycle overrides
@@ -567,7 +567,7 @@ Three override types an admin can apply to a specific upcoming or open cycle:
 - **Skip one member** for that cycle (everyone else still owes their normal target).
 - **Adjust one member's target** for that cycle only (doesn't change their default going-forward target).
 
-![Override Cycle 10 modal with Skip Member, Adjust Target, and Pause Pool options, a member selector, and an optional reason field](../media/kith-cycle-override-modal.png)
+![Override Cycle 10 modal with Skip Member, Adjust Target, and Pause Pool options, a member selector, and an optional reason field](./media/kith-cycle-override-modal.png)
 *The override dialog an admin sees when applying one of the three exception types to a specific cycle — the same three options described above, applied directly against the cycle shown in the screenshot before it.*
 
 ### Permissions
@@ -587,7 +587,7 @@ A member records their own contribution; an admin can record on behalf of *any* 
 
 **Duplicate detection.** Independent of idempotency keys, if a contributor submits the *same amount* to the *same container* within a 10-minute window, the second attempt is blocked with a clear "possible duplicate" error (pointing at the existing entry) unless explicitly overridden with `?force=true`. This catches the human error of literally re-submitting a payment because someone forgot they already logged it, which idempotency keys alone wouldn't catch (a fresh submission has a fresh key).
 
-![Possible Duplicate modal warning that a similar ₦30,000 contribution from Chidi was recorded 4 minutes earlier, with Cancel and Submit anyway options](../media/kith-duplicate-contribution-detection.png)
+![Possible Duplicate modal warning that a similar ₦30,000 contribution from Chidi was recorded 4 minutes earlier, with Cancel and Submit anyway options](./media/kith-duplicate-contribution-detection.png)
 *The 10-minute duplicate-detection heuristic surfacing in the UI — it names the existing entry it's comparing against and explains the likely cause (a slow connection or a double-tap) rather than just rejecting outright, while still leaving a genuine second contribution ("Submit anyway") unblocked.*
 
 **Status lifecycle.** A member's own submission starts `pending`. An admin's own direct entry is auto-`confirmed` (an admin recording something is treated as already-verified). A pending entry can move to `proof_uploaded` once a proof file is attached, and then to `confirmed` once an admin reviews and confirms it — or directly from `pending` to `confirmed` if an admin confirms without requiring a proof upload step.
@@ -595,13 +595,13 @@ A member records their own contribution; an admin can record on behalf of *any* 
 ### Proof of payment
 A contributor (or an admin on their behalf) can upload a photo or PDF as evidence of payment. Crucially, the system doesn't just trust the client's declared file type — see [Section 23](#23-file--media-management) for the real byte-signature verification step that runs before a "confirmed" proof is trusted.
 
-![Proof of Contribution modal showing a status stepper (Pending, Proof Uploaded, Confirmed), an uploaded receipt file marked Verified, and a Confirm contribution button](../media/kith-proof-of-contribution-verification.png)
+![Proof of Contribution modal showing a status stepper (Pending, Proof Uploaded, Confirmed), an uploaded receipt file marked Verified, and a Confirm contribution button](./media/kith-proof-of-contribution-verification.png)
 *The proof-of-payment modal an admin sees when reviewing a pending entry: the three-stage status stepper described above, the uploaded file with its post-upload verification result ("Verified" — the magic-byte check from [§23](#23-file--media-management) already ran and passed), and the confirm action.*
 
 ### Confirming an entry
 Admin-only action moving a `pending`/`proof_uploaded` entry to `confirmed`, notifying the contributor that their payment was acknowledged.
 
-![Diagram of the ledger entry lifecycle: submission with idempotency and duplicate checks, admin confirmation, then a confirmed-immutable entry branching into dispute and correction paths](../media/kith-architecture-ledger-lifecycle-diagram.png)
+![Diagram of the ledger entry lifecycle: submission with idempotency and duplicate checks, admin confirmation, then a confirmed-immutable entry branching into dispute and correction paths](./media/kith-architecture-ledger-lifecycle-diagram.png)
 *The full lifecycle in one diagram — submission through confirmation to an immutable confirmed entry, with dispute and correction modeled as the only two branches off it. A fuller architectural treatment is in [ARCHITECTURE.md §21.1](ARCHITECTURE.md#211-recording-and-confirming-a-contribution-ledger-entry).*
 
 ### Editing and deleting
@@ -610,7 +610,7 @@ Only entries still in `pending` status can be edited or deleted, and only by the
 ### Ledger summaries and export
 Per-container and per-workspace summaries roll up confirmed/pending/disputed counts and totals. A full CSV export (workspace-wide, optionally filtered to one container and/or a date range) is available to admins for reconciliation, tax records, or sharing with family members who want the raw numbers.
 
-![The full ledger view for a recurring pool: a proof-uploaded entry awaiting confirmation, a directly-confirmed entry handed over in person, a currency-converted entry, and a system-attributed carry-forward entry at the bottom](../media/kith-ledger-multi-currency-mixed-status.png)
+![The full ledger view for a recurring pool: a proof-uploaded entry awaiting confirmation, a directly-confirmed entry handed over in person, a currency-converted entry, and a system-attributed carry-forward entry at the bottom](./media/kith-ledger-multi-currency-mixed-status.png)
 
 > **Doc/screenshot TODO:** the "system-attributed carry-forward entry" at the bottom of this screenshot reflects the earlier ledger-entry-based carry-forward behavior. New carry-forward amounts no longer appear as ledger entries at all (see "Carry-forward logic" above) — a re-capture would show that row simply absent, with the balance folded into the open cycle's target instead.
 *Six entries spanning nearly every status and provenance the ledger supports in one container — proof-uploaded, member-submitted and admin-confirmed, a same-admin direct entry, a converted-currency contribution, and the carried-forward balance confirmed by "System" rather than a person.*
@@ -640,7 +640,7 @@ Either the person who raised the dispute or an admin can append notes to an open
 ### Resolving a dispute
 Admin-only, requires a resolution note of at least 10 characters (preventing a bare "resolved" with no explanation). Like raising, resolution is atomic — the dispute's status and the underlying ledger entry's status update together. The person who originally raised the dispute is notified of the resolution.
 
-![Disputes list showing one open dispute (a currency-conversion question) and one resolved dispute (a carry-forward balance query), each with the raiser's summary and current status](../media/kith-disputes-list-open-and-resolved.png)
+![Disputes list showing one open dispute (a currency-conversion question) and one resolved dispute (a carry-forward balance query), each with the raiser's summary and current status](./media/kith-disputes-list-open-and-resolved.png)
 
 > **Doc/screenshot TODO:** the resolved dispute shown here was raised against a carry-forward *entry* under the old implementation. Carry-forward no longer creates a ledger entry (see "Carry-forward logic" above), so this specific example no longer occurs — a re-capture would show a dispute against an ordinary contribution instead. The dispute flow itself is unaffected; this is purely about what example happens to be pictured.
 *The workspace-level dispute list an admin sees — an open dispute awaiting review and a resolved one for reference, both showing who raised them and why. This is the entry point into the single-dispute detail view below.*
@@ -661,7 +661,7 @@ A **correction** is the mechanism for adjusting a *confirmed* ledger entry's rec
 ### Related features
 Disputes are surfaced in the [Audit Log](#21-audit-log--activity-feed) and trigger [Notifications](#20-notifications). A disputed entry's amounts are excluded from "confirmed" totals wherever aggregates are computed until resolved.
 
-![Resolved dispute detail page showing the disputed carry-forward entry, the raiser's reason, a resolution note from an admin, and a two-message notes thread](../media/kith-dispute-resolution-detail.png)
+![Resolved dispute detail page showing the disputed carry-forward entry, the raiser's reason, a resolution note from an admin, and a two-message notes thread](./media/kith-dispute-resolution-detail.png)
 *A resolved dispute end to end: Uncle Bayo disputes a ₦10,000 carried-forward balance he believes was already paid, Mom investigates via the notes thread — asking for specifics, getting a correction from Uncle Bayo himself — and the resolution note documents the outcome. A permanent record of both the disagreement and how it was actually settled, exactly as described above.*
 
 This single flow touches the ledger's immutability guarantee, the RBAC model, the notification system, and the audit trail all at once, which is why it's referenced again from [ARCHITECTURE.md §21.1](ARCHITECTURE.md#211-recording-and-confirming-a-contribution-ledger-entry) rather than duplicated here.
@@ -679,7 +679,7 @@ Admins create individual tasks (title, description, optional assignee, optional 
 ### Status lifecycle
 `pending → in_progress → completed`, with an automatic `overdue` state applied by a nightly background sweep to any still-pending task past its due date. The assignee can move their own task between `in_progress` and `completed` — that's the *only* status transition a non-admin is allowed to make directly; every other field (title, description, reassignment, due date, sort order) is admin-only. This split exists so an assignee can honestly report their own progress without being able to quietly reassign work away from themselves or rewrite the task's requirements.
 
-![Tasks list showing a completed and admin-confirmed task with an attached proof and completion note, a completed task still awaiting confirmation, an in-progress task, and two pending tasks](../media/kith-tasks-list-mixed-status.png)
+![Tasks list showing a completed and admin-confirmed task with an attached proof and completion note, a completed task still awaiting confirmation, an in-progress task, and two pending tasks](./media/kith-tasks-list-mixed-status.png)
 *A container's full task list spanning the whole lifecycle at once — confirmed, awaiting confirmation, in progress, and pending — with a completion note and a proof attachment visible on the finished items. The "1 task awaiting your confirmation" banner at the top is the same signal that feeds the dashboard's pending-confirmations queue.*
 
 ### Reassignment
@@ -758,7 +758,7 @@ The dashboard assembles its payload from a single batched set of parallel querie
 ### Permissions
 Every active member sees the dashboard; the pending-confirmations widget and the overdue-summary endpoint are admin-only (they expose workspace-wide financial detail beyond what a regular member should see about others' contributions).
 
-![Kith dashboard showing overdue contributions, open disputes, member engagement, pending confirmations, active events, recurring pools, tasks, milestones, and recent activity](../media/kith-dashboard-full-workspace-overview.png)
+![Kith dashboard showing overdue contributions, open disputes, member engagement, pending confirmations, active events, recurring pools, tasks, milestones, and recent activity](./media/kith-dashboard-full-workspace-overview.png)
 *The dashboard in a real workspace ("JANS"), assembled from nearly every subsystem described in this document: overdue balances, an open dispute, pending confirmations awaiting admin action, active events with budget progress, a recurring pool's current cycle, personal tasks, recent milestones, and a human-readable activity feed — all on one screen.*
 
 ---
@@ -810,7 +810,7 @@ Every notification type in the product is a named template with a title, a body 
 ### Delivery mechanics
 Sending a notification always writes an `in_app` record immediately (satisfied instantly — there's nothing to "deliver," it's just visible in the recipient's inbox). External channels (push, email) are enqueued as background jobs rather than sent synchronously during the request that triggered them, so a slow or failing push provider never slows down the API response for the action that caused the notification. Proxy members are automatically excluded from every channel except `in_app`, since they have no device or inbox of their own.
 
-![Notification inbox showing six notifications with mixed read/unread state — three unread (contribution confirmed, new task assigned, dispute raised) and three read older ones — plus a Mark all read action](../media/kith-notification-inbox-mixed-types.png)
+![Notification inbox showing six notifications with mixed read/unread state — three unread (contribution confirmed, new task assigned, dispute raised) and three read older ones — plus a Mark all read action](./media/kith-notification-inbox-mixed-types.png)
 *A recipient's own inbox: unread notifications flagged with a dot, spanning several of the sixteen template types (contribution confirmation, task assignment, a dispute alert, a payment reminder, a task confirmation, and a pool-completion notice), oldest at the bottom.*
 
 ### Deduplication
@@ -847,7 +847,7 @@ Raw action codes (`container.settings_changed`) are rendered into readable sente
 ### Viewing and exporting
 Admins get a paginated, filterable (by action type, by actor, by date range) view of the full audit log, plus a CSV export using the identical filter logic — implemented as one shared filter-building function specifically so the paginated view and the CSV export can never silently drift out of sync and show different results for what should be the same query.
 
-![Full activity/audit log with filters by action, actor, and date range, showing fifteen distinct logged action types from a contribution confirmation down to a container being archived a month earlier](../media/kith-activities-audit-log-full-history.png)
+![Full activity/audit log with filters by action, actor, and date range, showing fifteen distinct logged action types from a contribution confirmation down to a container being archived a month earlier](./media/kith-activities-audit-log-full-history.png)
 *The complete, filterable audit trail behind the dashboard's recent-activity widget — every consequential action in the workspace, human-readable, timestamped, and attributed to a specific member, with an expandable "Details" row per entry for the full metadata payload.*
 
 ### Permissions
@@ -923,7 +923,7 @@ Both are protected by a dedicated, tighter rate limiter (30 requests/minute per 
 
 There is no public workspace page, no public member directory, and no public search — everything else in the product requires an authenticated session and active workspace membership.
 
-![Public share page for "Mom's 60th Birthday" showing the event date, ₦1,740,000 of ₦2,000,000 collected at 87%, and a per-contributor Paid/Pending list](../media/kith-public-share-page-fundraiser.png)
+![Public share page for "Mom's 60th Birthday" showing the event date, ₦1,740,000 of ₦2,000,000 collected at 87%, and a per-contributor Paid/Pending list](./media/kith-public-share-page-fundraiser.png)
 *A container's public share page as seen by someone outside the workspace entirely — no login, no membership. Budget progress and, because this container has `public_show_names` enabled, individual contributors' paid/pending status are visible; the underlying amounts each person gave are not.*
 
 ---
