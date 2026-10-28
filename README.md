@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/Devpaul-01/Kith/actions/workflows/test.yml/badge.svg)
 
-**Live demo:** https://kith-self.vercel.app · [Architecture](docs/ARCHITECTURE.md) · [Product Overview](docs/PRODUCT_OVERVIEW.md)
+**Live demo:** https://kith-self.vercel.app · [Architecture](ARCHITECTURE.md) · [Product Overview](PRODUCT_OVERVIEW.md)
 
 Kith is a family coordination platform for managing shared money, responsibilities, and recurring obligations in one place. It replaces the group chat, the spreadsheet, and the person who has to remember to open this month's rent pool with structured family **workspaces**, a trustworthy financial **ledger**, automated **recurring pools**, **tasks**, a **dispute workflow**, and an **audit trail**.
 
@@ -81,7 +81,7 @@ I used this project to go deep on problems that don't show up in typical CRUD ap
 
 ![Diagram of the ledger entry lifecycle: submission with idempotency and duplicate checks, admin confirmation, and — once confirmed — the only two paths an entry can take next, a dispute resolved through an atomic RPC or a correction recorded as a new linked row](media/kith-architecture-ledger-lifecycle-diagram.png)
 
-Once a contribution is confirmed, the record itself is never edited again. A dispute or a correction are the only two ways its effective state can subsequently change — and both are atomic at the database level, so the dispute record and the ledger entry's status can never disagree, even under concurrent access. Full reasoning in [ARCHITECTURE.md §21.1](docs/ARCHITECTURE.md#211-recording-and-confirming-a-contribution-ledger-entry).
+Once a contribution is confirmed, the record itself is never edited again. A dispute or a correction are the only two ways its effective state can subsequently change — and both are atomic at the database level, so the dispute record and the ledger entry's status can never disagree, even under concurrent access. Full reasoning in [ARCHITECTURE.md §21.1](ARCHITECTURE.md#211-recording-and-confirming-a-contribution-ledger-entry).
 
 ---
 
@@ -152,7 +152,7 @@ Workspace (a household)
 
 Supporting cross-cutting entities: **notifications** (+ deliveries), **audit log**, and **contributor targets** (per-participant, optionally per-cycle, money goals).
 
-Full request-lifecycle diagrams, the database schema, and the reasoning behind every atomic RPC are in [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Full request-lifecycle diagrams, the database schema, and the reasoning behind every atomic RPC are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -195,50 +195,48 @@ There are seven scheduled jobs and nine queues in total. `data-export-queue` and
 - The Bull Board admin queue dashboard is gated behind an IP allowlist (exact match or CIDR) and constant-time-compared Basic Auth credentials, and is only mounted at all if its credentials are configured.
 - Helmet is configured with HSTS, deny-framing, and a `no-referrer` policy; CORS is locked to a single configured origin with credentials enabled (no wildcard fallback).
 
-One honest architectural note: because the backend uses Supabase's **service-role** client (which bypasses Row-Level Security) for nearly all operations, RLS is not the enforcement boundary for this app — the middleware chain above is. That's a deliberate trade-off, not an oversight, and it's why the middleware ordering and consistent application described above carries real weight. Full reasoning in [SECURITY.md](docs/SECURITY.md).
+One honest architectural note: because the backend uses Supabase's **service-role** client (which bypasses Row-Level Security) for nearly all operations, RLS is not the enforcement boundary for this app — the middleware chain above is. That's a deliberate trade-off, not an oversight, and it's why the middleware ordering and consistent application described above carries real weight. Full reasoning in [SECURITY.md](SECURITY.md).
 
 ---
 
 ## Testing & CI
 
-Tests are split into three Jest projects: unit, integration, and rate-limit. **Currently only the unit tests (and the frontend tests) run in CI** — see the per-suite table and the development-status note below before trusting a green check mark as "everything passed."
+Tests are split into three Jest projects: unit, integration, and rate-limit. **All three run in CI** on every push and pull request to `main` / `develop`, alongside the frontend tests, so a green check covers the unit, integration and rate-limit suites.
 
-| Suite | Command | What it covers | Runs in CI? |
+| Suite | Command | What it covers | CI job |
 |---|---|---|---|
-| Unit | `npm run test:unit` | Isolated service/utility logic, no external dependencies | Yes, on every push/PR to `main`/`develop` |
-| Rate limiting | `npm run test:ratelimit` | Redis-backed request throttling behavior, isolated from the rest of the integration suite **No — temporarily disabled in CI** (the `rate-limit-tests` job is kept in the workflow with `if: false`) |
-| Integration | `npm run test:integration` | Everything under `backend/tests/integration/` (27 files: `routes/` ×15, `workers/` ×9, `redis/` ×3) against a real Postgres (via PostgREST) and Redis instance | **No — temporarily disabled in CI**, see below |
+| Unit | `npm run test:unit` | Isolated service/utility logic, no external dependencies | Unit Tests |
+| Integration | `npm run test:integration` | Everything under `backend/tests/integration/` except the rate-limit file (23 files: `routes/` ×12, `workers/` ×9, `redis/` ×2) against a real Postgres (via PostgREST) and Redis instance | Integration & Rate-Limit Tests |
+| Rate limiting | `npm run test:ratelimit` | Redis-backed request throttling (`tests/integration/redis/rate-limiting.test.js`), run with `NODE_ENV=production` so the limiters actually engage | Integration & Rate-Limit Tests |
 
 ```bash
 npm test                # runs all three Jest projects
 npm run test:unit       # unit tests only — no external services needed
 ```
 
-Integration and rate-limit tests need a real Postgres and Redis instance, stood up via Docker Compose:
+Integration and rate-limit tests need a real Postgres, PostgREST and Redis instance, stood up via Docker Compose:
 
 ```bash
-npm run test:docker:up      # starts Postgres + Redis via docker-compose.test.yml
+npm run test:docker:up      # starts Postgres + PostgREST + Redis via docker-compose.test.yml
 npm run test:docker:seed    # applies migrations/001_schema.sql to the test DB
 npm run test:integration
 npm run test:ratelimit
 npm run test:docker:down    # tears the containers back down
 ```
 
-**In CI (when the rate-limit job is enabled)**, it goes a step further than local Docker Compose: it also spins up [PostgREST](https://postgrest.org/) in front of the test Postgres instance, since the app talks to Supabase through a PostgREST-compatible client — this makes the CI environment a much closer match to the real Supabase-backed production setup than hitting Postgres directly would be. Unit and frontend tests run in separate, lighter jobs with no PostgREST/Postgres service containers. See [`.github/workflows/test.yml`](.github/workflows/test.yml) for the full configuration, including the disabled `integration-tests` job (kept commented out) and the `rate-limit-tests` job (kept, set to `if: false`).
+**In CI**, the *Integration & Rate-Limit Tests* job in [`.github/workflows/test.yml`](.github/workflows/test.yml) runs the two suites back to back (integration first, then rate-limit) against:
 
-### Development status: integration-test flakiness in CI
+- a `postgres:16` service container, seeded from `migrations/001_schema.sql`;
+- a `redis:7` service container (integration uses Redis DB 1, rate-limit uses DB 2);
+- [PostgREST](https://postgrest.org/) on port 3002, since the app talks to Supabase through a PostgREST-compatible client. supabase-js requests `<url>/rest/v1/...`, which bare PostgREST does not serve, so `backend/scripts/local-test-stack/pgrst-proxy.js` listens on port 3001 and strips the `/rest/v1` prefix.
 
-**The integration test suite is temporarily disabled in CI** because of flakiness in the CI test database's PostgreSQL schema setup (in the workflow, this shows up as PostgREST not reliably seeing the schema/tables after migration, plus service start-up ordering). The `integration-tests` job in `.github/workflows/test.yml` is commented out (not deleted); the comment in the workflow dates the change 2026-08-25. This is a temporary limitation while the underlying issue is being fixed — the integration tests have not been removed, and no resolution date is promised here.
+Unit and frontend tests run in separate, lighter jobs with no service containers.
 
-What is disabled: the whole `integration` Jest project, i.e. every `*.test.js` under `backend/tests/integration/` (route, worker and Redis tests). Note that `tests/integration/redis/rate-limiting.test.js` is matched by both the `integration` and `rate-limit` Jest projects.
+### Test database notes
 
-A few things follow from that:
-
-- A green CI run right now reflects unit tests and frontend tests only — **not** the integration suite or the rate-limit suite (both are temporarily disabled). It is not evidence that every integration-level code path is currently verified in CI.
-- This is a CI-environment reliability problem, not a claim that the application itself is broken. The suite can still be run locally against the Docker Compose stack (`npm run test:integration`); the problem being fixed is the reliability of the CI test-database setup. Results will vary by environment, so run it yourself rather than assuming a pass.
-- Until this notice is removed, treat `integration-tests` CI status as "not currently enforced," and rely on local runs of `npm run test:integration` / `npm run test:ratelimit` plus the unit suite in the meantime.
-
-This note will be removed once the integration-test job has been re-enabled in CI and shown to be reliable over multiple runs — not just once it passes a single time.
+- **Append-only tables and test cleanup.** `ledger_entries` (confirmed rows can't be deleted) and `audit_log` (append-only) are protected by database triggers, so PostgREST can never delete them. `cleanupWorkspace()` in `backend/tests/helpers/dbHelper.js` therefore removes a seeded workspace over a direct Postgres connection, in one transaction with `session_replication_role = 'replica'`. This is test-only: the triggers stay in force for the application and for every other code path. Set `TEST_DATABASE_URL` to point at the test database (default `postgres://postgres:test@localhost:54322/kith_test`, which matches `docker-compose.test.yml`; CI sets it explicitly). Without direct access the helper falls back to PostgREST deletes, logs a warning, and leaves rows behind.
+- **Resetting the local test database.** Some worker tests scan tables globally, so a long-lived local test database that has accumulated leftover rows can make them fail. If a worker suite fails locally but passes in CI, recreate the database (`npm run test:docker:down && npm run test:docker:up && npm run test:docker:seed`) and re-run (PostgREST may need a few seconds to pick up the freshly seeded schema). CI always starts from an empty database.
+- **Why the rate-limit file is excluded from the `integration` project.** `rate-limiting.test.js` needs `NODE_ENV=production`; under the integration project's `NODE_ENV=test` the limiters are skipped and its assertions fail. The `integration` project therefore ignores it, and the dedicated `rate-limit` project runs it.
 
 ---
 
@@ -300,7 +298,7 @@ Major resource groups:
 - **Tasks** — CRUD, bulk create, reassign, status override, admin confirm, CSV export
 - **Timeline, milestones, notifications** — merged activity feed, user-scoped notification inbox
 
-Every response follows a consistent envelope (`{ data, meta? }` for success, `{ error: { code, message, ... } }` for failures), and list endpoints share a common pagination shape and `?sort=field` / `?sort=-field` convention. Full route-by-route detail is in [ARCHITECTURE.md §7](docs/ARCHITECTURE.md#7-api-architecture) and [PRODUCT_OVERVIEW.md](docs/PRODUCT_OVERVIEW.md). The full machine-readable spec is in [`docs/openapi.yaml`](docs/openapi.yaml).
+Every response follows a consistent envelope (`{ data, meta? }` for success, `{ error: { code, message, ... } }` for failures), and list endpoints share a common pagination shape and `?sort=field` / `?sort=-field` convention. Full route-by-route detail is in [ARCHITECTURE.md §7](ARCHITECTURE.md#7-api-architecture) and [PRODUCT_OVERVIEW.md](PRODUCT_OVERVIEW.md). The full machine-readable spec is in [`openapi.yaml`](openapi.yaml).
 
 ---
 
@@ -409,7 +407,7 @@ Optional, feature-gating integrations — the app boots without these, but the c
 - `SENTRY_DSN` — error tracking
 - `BULL_BOARD_USERNAME` / `BULL_BOARD_PASSWORD` — the `/admin/queues` dashboard, unmounted unless both are set
 
-See the [full environment variable reference](docs/ARCHITECTURE.md#25-configuration--environment-variables) in ARCHITECTURE.md for the complete list, including defaults and every feature-gated toggle (`IDEMPOTENCY_ENABLED`, `FILE_VERIFICATION_ENABLED`, `ALLOWED_DEEPLINK_SCHEMES`, `ADMIN_IP_WHITELIST`, and more).
+See the [full environment variable reference](ARCHITECTURE.md#25-configuration--environment-variables) in ARCHITECTURE.md for the complete list, including defaults and every feature-gated toggle (`IDEMPOTENCY_ENABLED`, `FILE_VERIFICATION_ENABLED`, `ALLOWED_DEEPLINK_SCHEMES`, `ADMIN_IP_WHITELIST`, and more).
 
 ---
 
@@ -426,7 +424,7 @@ The `frontend/` app is a Vite + React 18 + TypeScript single-page app that talks
 | HTTP client | Axios, wrapped in a single instance that injects the bearer token, unwraps the response envelope, and handles 401s with an automatic refresh-and-retry |
 | Forms & validation | React Hook Form + Zod, with schemas written to mirror the backend's own validators |
 
-Route access is layered through composed guards (`ProtectedRoute` → `ProfileGuard` → `WorkspaceGuard` → `AdminRoute`) that mirror the backend's own `requireAuth` → `requireMembership` → `requireAdmin` chain conceptually — though the frontend guard is a UX convenience, not a security boundary; the backend middleware remains the actual enforcement point. The frontend consumes the versioned backend API rather than embedding domain logic in the UI; see [ARCHITECTURE.md §24](docs/ARCHITECTURE.md#24-frontend-architecture) for the full stack-level breakdown, including the project structure and boot-sequence details.
+Route access is layered through composed guards (`ProtectedRoute` → `ProfileGuard` → `WorkspaceGuard` → `AdminRoute`) that mirror the backend's own `requireAuth` → `requireMembership` → `requireAdmin` chain conceptually — though the frontend guard is a UX convenience, not a security boundary; the backend middleware remains the actual enforcement point. The frontend consumes the versioned backend API rather than embedding domain logic in the UI; see [ARCHITECTURE.md §24](ARCHITECTURE.md#24-frontend-architecture) for the full stack-level breakdown, including the project structure and boot-sequence details.
 
 ---
 
@@ -439,6 +437,6 @@ Route access is layered through composed guards (`ProtectedRoute` → `ProfileGu
 - **Concurrency correctness experiments are single-process.** M1/M2 in [Measured, Not Assumed](#measured-not-assumed) fire concurrent requests from one Node process against a local stack — an appropriate scope for DB-transaction-level correctness questions, but not a substitute for a true multi-process/distributed load test.
 - **Service-role Postgres access, not RLS, is the enforcement boundary** (see [Security Highlights](#security-highlights)) — correct as long as the service-role key stays server-side and the middleware chain is never bypassed, but there's no independent database-layer backstop today.
 
-Further reading: [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system design and every documented trade-off, and [PRODUCT_OVERVIEW.md](docs/PRODUCT_OVERVIEW.md) for the complete feature and product-decision reference.
+Further reading: [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design and every documented trade-off, and [PRODUCT_OVERVIEW.md](PRODUCT_OVERVIEW.md) for the complete feature and product-decision reference.
 
 ## License
