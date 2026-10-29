@@ -8,6 +8,7 @@
 // keyed by member id.
 
 const { supabaseAdmin } = require('../config/supabase');
+const { PAID_STATUSES } = require('../constants/ledger-status');
 
 async function fetchEngagementData(memberIds) {
   if (!memberIds.length) return { ledgerByMember: new Map(), tasksByMember: new Map() };
@@ -51,7 +52,11 @@ async function computeEngagement(members) {
 
   return members.map((m) => {
     const ledger           = ledgerByMember.get(m.id) || [];
-    const confirmedLedger  = ledger.filter((le) => le.status === 'confirmed');
+    // A resolved dispute is still a real, settled contribution (and
+    // confirmed_at was already set when it was first confirmed) — it
+    // should count toward "last activity" and the confirmed count same
+    // as any other paid entry.
+    const confirmedLedger  = ledger.filter((le) => PAID_STATUSES.includes(le.status));
     const pendingLedger    = ledger.filter((le) => le.status === 'pending');
     const tasks            = tasksByMember.get(m.id) || [];
 

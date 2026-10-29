@@ -9,6 +9,7 @@ const { generateToken }  = require('../utils/crypto');
 const notification       = require('./notification.service');
 const audit              = require('./audit.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
+const { PAID_STATUSES } = require('../constants/ledger-status');
 
 async function createInvite({ workspaceId, actorMemberId, actorCtx }) {
   const token     = generateToken(24);
@@ -55,7 +56,7 @@ async function previewInvite({ token }) {
   const containerPreview = (containers || []).map((c) => ({
     id: c.id, name: c.name, container_type: c.container_type, enable_money: c.enable_money,
     budget_target: c.budget_target, budget_currency: c.budget_currency,
-    total_confirmed_base: (c.ledger_entries || []).filter((le) => le.status === 'confirmed').reduce((s, le) => s + parseFloat(le.base_amount || 0), 0),
+    total_confirmed_base: (c.ledger_entries || []).filter((le) => PAID_STATUSES.includes(le.status)).reduce((s, le) => s + parseFloat(le.base_amount || 0), 0),
   }));
 
   return {

@@ -59,11 +59,11 @@ async function createEntry(req, res, next) {
 
 async function updateEntry(req, res, next) {
   try {
-    const data                     = updateLedgerEntrySchema.parse(req.body);
-    const { containerId, entryId } = req.params;
+    const data                                   = updateLedgerEntrySchema.parse(req.body);
+    const { workspaceId, containerId, entryId }  = req.params;
 
     const entry = await ledgerService.updateEntry({
-      containerId, entryId, data,
+      workspaceId, containerId, entryId, data,
       isAdmin: req.member.role === 'admin',
       callerId: req.member.id,
     });

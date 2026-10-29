@@ -14,6 +14,46 @@ const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { containsPattern } = require('../utils/ilike');
 const { invalidateMembership } = require('./membership-cache.service');
 const { getSort } = require('../utils/sorting');
+const { PAID_STATUSES } = require('../constants/ledger-status');
+
+// Single source of truth for "would this change leave the workspace with
+// zero active admins?" — used by every path that can remove an admin's
+// ability to act as one: role -> 'member' demotion, is_active -> false
+// deactivation, and self-removal via deleteMember.
+//
+// Bug this fixes: the role-demotion branch in updateMember already
+// guarded against this, but is_active (also admin-only, also sufficient
+// on its own to strip someone's admin powers — requireMembership filters
+// on is_active = true) had no equivalent check anywhere. An admin could
+// deactivate the only other admin, or the sole admin could deactivate
+// themself, leaving a workspace with zero active admins and no code path
+// to recover it (every admin-gated route, including this one, requires
+// an active admin to pass requireAdmin). deleteMember's self-removal
+// check is folded in here too so all three paths share one definition of
+// "the last admin" instead of three independently-maintained queries.
+//
+// Counts OTHER active admins (excludes the member being changed), so it
+// correctly allows an admin to demote/deactivate/remove themself when a
+// different active admin still exists, and correctly blocks it when they
+// don't — regardless of whether the acting admin is the target or not.
+async function assertNotLastActiveAdmin({ workspaceId, memberId, actionLabel }) {
+  const { data: otherAdmins, error } = await supabaseAdmin
+    .from('workspace_members')
+    .select('id')
+    .eq('workspace_id', workspaceId)
+    .eq('role', 'admin')
+    .eq('is_active', true)
+    .is('deleted_at', null)
+    .neq('id', memberId);
+
+  if (error) throw new Error(error.message);
+
+  if ((otherAdmins || []).length === 0) {
+    throw new BusinessRuleError(
+      `Cannot ${actionLabel} the last active admin. Promote another member to admin first.`
+    );
+  }
+}
 
 async function listMembers({ workspaceId, isAdmin, search, filterRole, filterProxy, sortQuery }) {
   let query = supabaseAdmin
@@ -128,9 +168,15 @@ async function updateMember({ workspaceId, memberId, data, isAdmin, actorMemberI
   }
 
   if (isAdmin && data.role === 'member' && current.role === 'admin') {
-    const { data: admins } = await supabaseAdmin
-      .from('workspace_members').select('id').eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).is('deleted_at', null);
-    if ((admins || []).length <= 1) throw new BusinessRuleError('Cannot demote the last admin. Promote another member first.');
+    await assertNotLastActiveAdmin({ workspaceId, memberId, actionLabel: 'demote' });
+  }
+
+  // Deactivating an admin is functionally equivalent to removing their
+  // admin powers (requireMembership requires is_active = true), so it
+  // needs the same guard as the role demotion above — this was
+  // previously unguarded entirely.
+  if (isAdmin && data.is_active === false && current.role === 'admin' && current.is_active) {
+    await assertNotLastActiveAdmin({ workspaceId, memberId, actionLabel: 'deactivate' });
   }
 
   if (data.proxy_managed_by) {
@@ -189,21 +235,19 @@ async function deleteMember({ workspaceId, memberId, callerMemberId, force, work
   if (fetchErr) throw new Error(fetchErr.message);
   if (!target) throw new NotFoundError('Member not found');
 
-  if (target.role === 'admin' && callerMemberId === memberId) {
-    const { data: admins } = await supabaseAdmin
-      .from('workspace_members').select('id').eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).is('deleted_at', null);
-    if ((admins || []).length <= 1) throw new BusinessRuleError('Cannot remove the last admin');
+  if (target.role === 'admin' && target.is_active) {
+    await assertNotLastActiveAdmin({ workspaceId, memberId, actionLabel: 'remove' });
   }
 
   const { count, error: countErr } = await supabaseAdmin
-    .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('contributor_id', memberId).eq('status', 'confirmed');
+    .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('contributor_id', memberId).in('status', PAID_STATUSES);
   if (countErr) throw new Error(countErr.message);
   const hasEntries = count > 0;
 
   let hardDeleted = false;
 
   if (hasEntries && force === 'true') {
-    throw new BusinessRuleError('Cannot hard-delete a member with confirmed ledger entries');
+    throw new BusinessRuleError('Cannot hard-delete a member with confirmed (or resolved) ledger entries');
   } else if (!hasEntries && force === 'true') {
     await supabaseAdmin.from('workspace_members').delete().eq('id', memberId);
     hardDeleted = true;
@@ -255,7 +299,7 @@ async function getContributionSummary({ workspaceId, memberId }) {
     .select('id, container_id, base_amount, status, confirmed_at')
     .eq('contributor_id', memberId);
 
-  const confirmed       = (ledger || []).filter((le) => le.status === 'confirmed');
+  const confirmed       = (ledger || []).filter((le) => PAID_STATUSES.includes(le.status));
   const containerIds    = [...new Set((ledger || []).map((le) => le.container_id))];
   const lastContribDate = confirmed.length ? confirmed.map((le) => le.confirmed_at).sort().pop()?.split('T')[0] : null;
 
@@ -266,7 +310,7 @@ async function getContributionSummary({ workspaceId, memberId }) {
     .eq('containers.workspace_id', workspaceId);
 
   const containers = (participations || []).map((p) => {
-    const paidBase = (ledger || []).filter((le) => le.container_id === p.container_id && le.status === 'confirmed').reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
+    const paidBase = (ledger || []).filter((le) => le.container_id === p.container_id && PAID_STATUSES.includes(le.status)).reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
     const t        = (p.contributor_targets || []).find((ct) => ct.is_current && ct.cycle_id === null);
     const target   = parseFloat(t?.target_amount || 0);
     return { container_name: p.containers?.name, paid_base_amount: paidBase, target_amount: t?.target_amount, target_currency: t?.target_currency, status: paidBase >= target ? 'paid' : 'pending' };
