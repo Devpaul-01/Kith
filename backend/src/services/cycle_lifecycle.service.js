@@ -7,6 +7,7 @@ const { supabaseAdmin } = require('../config/supabase');
 const { getQueue }      = require('../queues');
 const notification      = require('./notification.service');
 const logger             = require('../utils/logger');
+const { PAID_STATUSES }  = require('../constants/ledger-status');
 
 async function openDueCycles(today) {
   const { data: toOpen } = await supabaseAdmin
@@ -61,15 +62,23 @@ async function openDueCycles(today) {
 // Carry-forward is a DEBT, not a payment: it raises the participant's
 // target for the next cycle by whatever they still owed on the closed
 // one. It does NOT insert a ledger_entries row. Every summary/report in
-// this app treats a confirmed ledger entry as money actually received
-// (getLedgerSummary, dashboard/container/participant/invite previews),
-// so a 'confirmed' carry_forward entry for the outstanding amount used
-// to make an unpaid participant look like they'd already paid it in the
-// new cycle. Raising contributor_targets.target_amount instead means
-// their existing paid-vs-target comparison (participant.service.js
-// #getCycleTargets) now naturally shows "partial"/"overdue" until they
-// actually pay the larger amount — no other reporting code needed to
-// change.
+// this app treats a PAID_STATUSES ledger entry (confirmed, or disputed-
+// then-resolved — see constants/ledger-status.js) as money actually
+// received (getLedgerSummary, dashboard/container/participant/invite
+// previews), so a PAID_STATUSES carry_forward entry for the outstanding
+// amount used to make an unpaid participant look like they'd already
+// paid it in the new cycle. Raising contributor_targets.target_amount
+// instead means their existing paid-vs-target comparison
+// (participant.service.js#getCycleTargets) now naturally shows
+// "partial"/"overdue" until they actually pay the larger amount — no
+// other reporting code needed to change.
+//
+// This filter MUST match PAID_STATUSES exactly, not just 'confirmed':
+// an entry that was confirmed, disputed, and then resolved in the
+// contributor's favor is still money they actually paid. Filtering on
+// 'confirmed' alone used to make this function treat that money as
+// still outstanding and add it a second time as carry-forward debt on
+// the next cycle — a real double-charge, not just a reporting gap.
 //
 // apply_cycle_carry_forward_atomic (migrations/001_schema.sql)
 // does the supersede-and-insert atomically and is idempotent per
@@ -86,7 +95,7 @@ async function carryForwardUnpaid(cycle) {
     .from('ledger_entries')
     .select('contributor_id, base_amount, status, cycle_id')
     .eq('cycle_id', cycle.id)
-    .eq('status', 'confirmed');
+    .in('status', PAID_STATUSES);
 
   const { data: nextCycle } = await supabaseAdmin
     .from('container_cycles')

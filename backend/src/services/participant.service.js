@@ -8,6 +8,7 @@ const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/er
 const audit = require('./audit.service');
 const logger = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
+const { PAID_STATUSES } = require('../constants/ledger-status');
 
 async function listParticipants({ containerId }) {
   const { data, error } = await supabaseAdmin
@@ -204,10 +205,10 @@ async function updateParticipant({ containerId, participantId, data }) {
         .select('*', { count: 'exact', head: true })
         .eq('container_id', containerId)
         .eq('contributor_id', participantRow.workspace_member_id)
-        .eq('status', 'confirmed');
+        .in('status', PAID_STATUSES);
 
       if (countErr) throw new Error(countErr.message);
-      if (count > 0) throw new BusinessRuleError('Cannot disable money tracking for a participant with confirmed ledger entries');
+      if (count > 0) throw new BusinessRuleError('Cannot disable money tracking for a participant with confirmed (or resolved) ledger entries');
     }
   }
 
@@ -225,9 +226,9 @@ async function removeParticipant({ containerId, participantId }) {
   if (!participant) throw new NotFoundError('Participant not found');
 
   const { count, error: countErr } = await supabaseAdmin
-    .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId).eq('contributor_id', participant.workspace_member_id).eq('status', 'confirmed');
+    .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId).eq('contributor_id', participant.workspace_member_id).in('status', PAID_STATUSES);
   if (countErr) throw new Error(countErr.message);
-  if (count > 0) throw new BusinessRuleError('Cannot remove participant with confirmed ledger entries');
+  if (count > 0) throw new BusinessRuleError('Cannot remove participant with confirmed (or resolved) ledger entries');
 
   await supabaseAdmin.from('container_participants').delete().eq('id', participantId);
 }
@@ -292,7 +293,7 @@ async function getCycleTargets({ containerId, participantId }) {
     .from('contributor_targets').select('*').eq('container_participant_id', participantId).eq('is_current', true).not('cycle_id', 'is', null);
 
   const { data: ledger } = await supabaseAdmin
-    .from('ledger_entries').select('cycle_id, base_amount, status').eq('contributor_id', participant.workspace_member_id).eq('container_id', containerId).eq('status', 'confirmed');
+    .from('ledger_entries').select('cycle_id, base_amount, status').eq('contributor_id', participant.workspace_member_id).eq('container_id', containerId).in('status', PAID_STATUSES);
 
   const result = (cycles || []).map((c) => {
     const target    = (cycleTargets || []).find((ct) => ct.cycle_id === c.id);
