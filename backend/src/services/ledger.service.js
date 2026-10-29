@@ -13,6 +13,7 @@ const { exportLedgerCSV } = require('./export.service');
 const logger = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { getSort } = require('../utils/sorting');
+const { PAID_STATUSES, PENDING_STATUSES } = require('../constants/ledger-status');
 
 // Defaults to enabled now that the schema confirms the idempotency_key
 // column + unique constraint already exist in production.
@@ -100,6 +101,56 @@ async function getEntry({ containerId, entryId, isAdmin, callerId }) {
   };
 }
 
+// Validates that `contributorId` is a money-enabled participant in this
+// container, and that a non-admin caller isn't recording/reassigning an
+// entry to a proxy member. Returns the participant row (so callers that
+// also need participant.money_enabled etc. don't have to re-fetch it).
+//
+// Factored out of createEntry so updateEntry can run the identical check
+// when an admin reassigns contributor_id on a pending entry — previously
+// updateEntry only validated contributor_id as a well-formed UUID (via
+// Zod), so an admin could reassign a pending entry to someone who wasn't
+// even a participant in the container, had money tracking disabled, or
+// was a proxy member (bypassing the proxy-admin-only rule that createEntry
+// enforces up front).
+async function validateContributorForContainer({ workspaceId, containerId, contributorId, isAdmin }) {
+  if (!contributorId) {
+    throw new BusinessRuleError('Contributor ID is required');
+  }
+
+  const { data: participant, error: pErr } = await supabaseAdmin
+    .from('container_participants')
+    .select('*, workspace_member_id')
+    .eq('container_id', containerId)
+    .eq('workspace_member_id', contributorId)
+    .maybeSingle();
+
+  if (pErr) throw new Error(pErr.message);
+  if (!participant) throw new BusinessRuleError('Contributor is not a participant in this container');
+
+  const { data: member, error: mErr } = await supabaseAdmin
+    .from('workspace_members')
+    .select('is_proxy')
+    .eq('id', participant.workspace_member_id)
+    .eq('workspace_id', workspaceId)
+    .maybeSingle();
+
+  if (mErr) throw new Error(mErr.message);
+
+  if (member?.is_proxy && !isAdmin) {
+    throw new ForbiddenError('Only admins can record contributions for proxy members');
+  }
+
+  if (!participant.money_enabled) {
+    throw new BusinessRuleError(
+      'Money tracking is not enabled for this participant. ' +
+      'Enable it from the Participants tab before recording a ledger entry.'
+    );
+  }
+
+  return { participant, isProxy: !!member?.is_proxy };
+}
+
 async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, force, idempotencyKey, actorDisplayName, actorCtx }) {
   if (idempotencyKey && IDEMPOTENCY_ENABLED) {
     const { data: existing, error: idempErr } = await supabaseAdmin
@@ -138,38 +189,7 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
 
   const contributorId = isAdmin ? data.contributor_id : callerId;
 
-  if (isAdmin && !contributorId) {
-    throw new BusinessRuleError('Contributor ID is required');
-  }
-
-  const { data: participant, error: pErr } = await supabaseAdmin
-    .from('container_participants')
-    .select('*, workspace_member_id')
-    .eq('container_id', containerId)
-    .eq('workspace_member_id', contributorId)
-    .maybeSingle();
-
-  if (pErr) throw new Error(pErr.message);
-  if (!participant) throw new BusinessRuleError('Contributor is not a participant in this container');
-
-  const { data: member, error: mErr } = await supabaseAdmin
-    .from('workspace_members')
-    .select('is_proxy')
-    .eq('id', participant.workspace_member_id)
-    .maybeSingle();
-
-  if (mErr) throw new Error(mErr.message);
-
-  if (member?.is_proxy && !isAdmin) {
-    throw new ForbiddenError('Only admins can record contributions for proxy members');
-  }
-
-  if (!participant.money_enabled) {
-    throw new BusinessRuleError(
-      'Money tracking is not enabled for this participant. ' +
-      'Enable it from the Participants tab before recording a ledger entry.'
-    );
-  }
+  const { participant, isProxy } = await validateContributorForContainer({ workspaceId, containerId, contributorId, isAdmin });
 
   if (data.cycle_id) {
     const { data: cycle } = await supabaseAdmin
@@ -267,7 +287,7 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
     entry = rpcResult.entry;
   }
 
-  if (member?.is_proxy) {
+  if (isProxy) {
     await supabaseAdmin.from('proxy_actions').insert({
       workspace_id:    workspaceId,
       proxy_member_id: contributorId,
@@ -310,7 +330,7 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
   return { entry, idempotent: false };
 }
 
-async function updateEntry({ containerId, entryId, data, isAdmin, callerId }) {
+async function updateEntry({ workspaceId, containerId, entryId, data, isAdmin, callerId }) {
   const { data: entry, error: fetchErr } = await supabaseAdmin
     .from('ledger_entries').select('*').eq('id', entryId).eq('container_id', containerId).maybeSingle();
 
@@ -319,6 +339,18 @@ async function updateEntry({ containerId, entryId, data, isAdmin, callerId }) {
   if (entry.status !== 'pending') throw new BusinessRuleError('Only pending entries can be edited');
   if (!isAdmin && entry.contributor_id !== callerId) throw new ForbiddenError('You can only edit your own entries');
   if (!isAdmin && data.contributor_id !== undefined) throw new ForbiddenError('Only admins can change the contributor');
+
+  // Reassigning contributor_id used to skip validation entirely (Zod only
+  // checked it was a UUID) — an admin could move a pending entry onto a
+  // workspace member who isn't even a participant in this container, has
+  // money tracking disabled, or is a proxy member. createEntry already
+  // runs this exact check when an entry is first recorded; a reassignment
+  // is no different and needs the same guarantee to hold.
+  if (isAdmin && data.contributor_id !== undefined && data.contributor_id !== entry.contributor_id) {
+    await validateContributorForContainer({
+      workspaceId, containerId, contributorId: data.contributor_id, isAdmin,
+    });
+  }
 
   const allowedFields = isAdmin
     ? ['original_amount','original_currency','base_amount','payment_method','note','contributor_id']
@@ -386,7 +418,10 @@ async function getLedgerSummary({ workspaceId, containerId, isAdmin, callerId })
 
   const entries = data || [];
 
-  const confirmed     = entries.filter((e) => e.status === 'confirmed');
+  // "confirmed" here means PAID_STATUSES (confirmed + resolved), not just
+  // status === 'confirmed' — a resolved dispute is still money the
+  // contributor has credit for. See constants/ledger-status.js.
+  const confirmed     = entries.filter((e) => PAID_STATUSES.includes(e.status));
   const pending       = entries.filter((e) => e.status === 'pending');
   const proofUploaded = entries.filter((e) => e.status === 'proof_uploaded');
   const disputed      = entries.filter((e) => e.status === 'disputed');
@@ -535,8 +570,14 @@ async function deleteProof({ containerId, entryId, proofIndex, isAdmin, callerId
   if (!entry) throw new NotFoundError('Ledger entry not found');
   if (!isAdmin && entry.contributor_id !== callerId) throw new ForbiddenError('Access denied');
 
-  if (!isAdmin && entry.status === 'confirmed') {
-    throw new ForbiddenError('Confirmed entry proofs can only be removed by an admin');
+  // Only pending/proof_uploaded entries are freely editable by their
+  // owner. Previously this only blocked 'confirmed' — a non-admin could
+  // still delete proofs on a 'disputed' or 'resolved' entry (the
+  // immutability trigger exempts `proofs` from its lock), which is just
+  // as settled/evidentiary as 'confirmed' and should get the same
+  // protection.
+  if (!isAdmin && !PENDING_STATUSES.includes(entry.status)) {
+    throw new ForbiddenError('Only pending entry proofs can be removed by their owner; an admin is required once an entry is confirmed, disputed, or resolved');
   }
 
   const proofs = Array.isArray(entry.proofs) ? entry.proofs : [];
