@@ -147,6 +147,34 @@ describe('services/cycle_lifecycle.service — runCycleLifecycle', () => {
       }));
     });
 
+    it('REGRESSION: a resolved (disputed-then-resolved) entry counts as paid — no double-charge carry-forward', async () => {
+      // A contribution that was confirmed, disputed, and resolved in the
+      // contributor's favor is still money they paid. Filtering only on
+      // status === 'confirmed' here used to make this function treat
+      // that amount as still outstanding and tack it on again as a NEW
+      // debt on the next cycle's target — an actual double-charge.
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null }); // openDueCycles: toOpen
+      mockSupabaseInstance.mockNextResponse({
+        data: [{ id: 'cycle-1', container_id: 'c1', cycle_end: '2026-07-01', containers: { workspace_id: 'ws-1', carry_forward_unpaid: true, created_by: 'admin-1' } }],
+        error: null,
+      }); // closeDueCycles: toClose
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'cycle-1' }, error: null }); // claim (conditional update)
+      mockSupabaseInstance.mockNextResponse({
+        data: [{ id: 'p1', workspace_member_id: 'm1', contributor_targets: [{ target_amount: 100, target_currency: 'USD', cycle_id: 'cycle-1', is_current: true }] }],
+        error: null,
+      }); // carryForwardUnpaid: participants
+      // Fully paid via a resolved dispute, not a plain confirmed entry.
+      mockSupabaseInstance.mockNextResponse({ data: [{ contributor_id: 'm1', base_amount: 100, status: 'resolved', cycle_id: 'cycle-1' }], error: null }); // ledger
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'next-cycle-1', cycle_end: '2026-08-31' }, error: null }); // nextCycle
+
+      await runCycleLifecycle();
+
+      // outstanding = 100 (target) - 100 (resolved, paid) = 0 -> no RPC call at all
+      const rpcCall = mockSupabaseInstance.getRpcCalls().find((c) => c.fnName === 'apply_cycle_carry_forward_atomic');
+      expect(rpcCall).toBeUndefined();
+      expect(notification.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'carry_forward_applied' }));
+    });
+
     it('RPC reports already applied (prior run) -> no notification sent', async () => {
       mockSupabaseInstance.mockNextResponse({ data: [], error: null });
       mockSupabaseInstance.mockNextResponse({

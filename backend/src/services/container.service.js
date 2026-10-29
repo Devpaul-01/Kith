@@ -14,6 +14,7 @@ const { getQueue } = require('../queues');
 const logger       = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { getSort } = require('../utils/sorting');
+const { PAID_STATUSES } = require('../constants/ledger-status');
 
 async function listContainers({ workspaceId, typeFilter, statusFilter, sortQuery, includeDeleted }) {
   let query = supabaseAdmin
@@ -39,7 +40,7 @@ async function listContainers({ workspaceId, typeFilter, statusFilter, sortQuery
     const participants       = c.container_participants || [];
     const ledger             = c.ledger_entries        || [];
     const totalConfirmedBase = ledger
-      .filter((le) => le.status === 'confirmed')
+      .filter((le) => PAID_STATUSES.includes(le.status))
       .reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
     return {
       ...c,
@@ -332,10 +333,10 @@ async function deleteContainer({ workspaceId, containerId, actorCtx }) {
   // `error` checked explicitly on the guard that prevents deleting a
   // container with confirmed money movements.
   const { count, error: countErr } = await supabaseAdmin
-    .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId).eq('status', 'confirmed');
+    .from('ledger_entries').select('*', { count: 'exact', head: true }).eq('container_id', containerId).in('status', PAID_STATUSES);
 
   if (countErr) throw new Error(countErr.message);
-  if (count > 0) throw new BusinessRuleError('Cannot delete a container with confirmed ledger entries');
+  if (count > 0) throw new BusinessRuleError('Cannot delete a container with confirmed (or resolved) ledger entries');
 
   const { error: deleteErr } = await supabaseAdmin
     .from('containers').update({ deleted_at: new Date().toISOString() }).eq('id', containerId).eq('workspace_id', workspaceId);
@@ -401,7 +402,7 @@ async function getSummary({ workspaceId, containerId, isAdmin, callerId }) {
     const member        = p.workspace_members;
     const currentTarget = (p.contributor_targets || []).find((t) => t.is_current && t.cycle_id === null);
     const entries       = (ledger || []).filter((le) => le.contributor_id === p.workspace_member_id);
-    const confirmed     = entries.filter((le) => le.status === 'confirmed').reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
+    const confirmed     = entries.filter((le) => PAID_STATUSES.includes(le.status)).reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
     const pending       = entries.filter((le) => ['pending', 'proof_uploaded'].includes(le.status)).reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
     const target        = parseFloat(currentTarget?.target_amount || 0);
     const outstanding   = Math.max(0, target - confirmed);
@@ -477,7 +478,7 @@ async function getPublicContainer({ publicToken }) {
   if (!container) throw new NotFoundError('Public page not found');
 
   const { data: ledger } = await supabaseAdmin
-    .from('ledger_entries').select('base_amount').eq('container_id', container.id).eq('status', 'confirmed');
+    .from('ledger_entries').select('base_amount').eq('container_id', container.id).in('status', PAID_STATUSES);
 
   const total       = (ledger || []).reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
   const progressPct = container.budget_target ? Math.round((total / container.budget_target) * 100) : null;

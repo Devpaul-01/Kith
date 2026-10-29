@@ -391,8 +391,62 @@ describe('services/ledger.service', () => {
       mockSupabaseInstance.mockNextResponse({ data: null, error: null });
 
       await expect(
-        ledgerService.updateEntry({ containerId: CONTAINER_ID, entryId: 'missing', data: {}, isAdmin: true, callerId: CALLER_ID })
+        ledgerService.updateEntry({ workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'missing', data: {}, isAdmin: true, callerId: CALLER_ID })
       ).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it('REGRESSION: admin reassigning contributor_id to a non-participant -> BusinessRuleError, not silently accepted', async () => {
+      // Previously updateEntry only validated contributor_id as a
+      // well-formed UUID (via Zod) — this reassignment ran NO
+      // participant/money_enabled/proxy check at all, unlike createEntry.
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'e1', status: 'pending', contributor_id: CALLER_ID }, error: null }); // entry fetch
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // container_participants lookup: not a participant
+
+      await expect(
+        ledgerService.updateEntry({
+          workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'e1',
+          data: { contributor_id: 'not-a-participant' }, isAdmin: true, callerId: 'admin-1',
+        })
+      ).rejects.toBeInstanceOf(BusinessRuleError);
+    });
+
+    it('REGRESSION: admin reassigning contributor_id to a participant with money_enabled: false -> BusinessRuleError', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'e1', status: 'pending', contributor_id: CALLER_ID }, error: null }); // entry fetch
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'p2', workspace_member_id: 'member-2', money_enabled: false }, error: null }); // participant lookup
+      mockSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null }); // member lookup
+
+      await expect(
+        ledgerService.updateEntry({
+          workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'e1',
+          data: { contributor_id: 'member-2' }, isAdmin: true, callerId: 'admin-1',
+        })
+      ).rejects.toBeInstanceOf(BusinessRuleError);
+    });
+
+    it('admin reassigning contributor_id to a different, valid money-enabled participant -> succeeds', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'e1', status: 'pending', contributor_id: CALLER_ID }, error: null }); // entry fetch (original contributor: CALLER_ID)
+      mockSupabaseInstance.mockNextResponse({ data: validParticipant, error: null }); // participant lookup for the NEW contributor
+      mockSupabaseInstance.mockNextResponse({ data: nonProxyMember, error: null }); // member lookup
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'e1', contributor_id: 'member-2' }, error: null }); // update
+
+      await expect(
+        ledgerService.updateEntry({
+          workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'e1',
+          data: { contributor_id: 'member-2' }, isAdmin: true, callerId: 'admin-1',
+        })
+      ).resolves.toEqual({ id: 'e1', contributor_id: 'member-2' });
+    });
+
+    it('reassigning contributor_id to the SAME contributor does not re-run the participant validation query', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'e1', status: 'pending', contributor_id: CALLER_ID }, error: null }); // entry fetch
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'e1', note: 'x' }, error: null }); // update (no participant lookup in between)
+
+      await expect(
+        ledgerService.updateEntry({
+          workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'e1',
+          data: { contributor_id: CALLER_ID, note: 'x' }, isAdmin: true, callerId: 'admin-1',
+        })
+      ).resolves.toEqual({ id: 'e1', note: 'x' });
     });
   });
 
@@ -457,6 +511,31 @@ describe('services/ledger.service', () => {
 
       expect(result.total_count).toBe(0);
       expect(result.total_base_amount).toBe(0);
+    });
+
+    it('REGRESSION: a resolved (disputed-then-resolved) entry counts toward confirmed_count/confirmed_base_total, not just status === confirmed', async () => {
+      // A dispute that is raised and then resolved moves the entry to a
+      // third terminal status, 'resolved' — distinct from 'confirmed'.
+      // It is still money the contributor has credit for and must be
+      // included in the confirmed bucket, or it silently disappears from
+      // every "money received" total in the app.
+      mockSupabaseInstance.mockNextResponse({
+        data: [
+          { status: 'confirmed', base_amount: 100 },
+          { status: 'resolved',  base_amount: 40 },
+          { status: 'disputed',  base_amount: 5 },
+        ],
+        error: null,
+      });
+
+      const result = await ledgerService.getLedgerSummary({ workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, isAdmin: true, callerId: CALLER_ID });
+
+      expect(result.confirmed_count).toBe(2);
+      expect(result.confirmed_base_total).toBe(140);
+      // 'resolved' is a paid status, not a disputed one, even though it
+      // originated from a dispute — only the still-open dispute counts here.
+      expect(result.disputed_count).toBe(1);
+      expect(result.disputed_base_total).toBe(5);
     });
   });
 

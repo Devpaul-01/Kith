@@ -237,6 +237,34 @@ describe('member.routes.js — /v1/workspaces/:workspaceId/members', () => {
       expect(res.status).toBe(422);
     });
 
+    it('REGRESSION: deactivating the last admin (is_active: false) is rejected, same as demotion', async () => {
+      // is_active is just as sufficient as role to strip an admin's
+      // powers (requireMembership requires is_active = true), but this
+      // path previously had no last-admin guard at all — only the role
+      // demotion above was checked.
+      const { workspace, adminMember, adminAuthHeader } = await seedTenant();
+
+      const res = await request(app)
+        .patch(`/v1/workspaces/${workspace.id}/members/${adminMember.id}`)
+        .set('Authorization', adminAuthHeader)
+        .send({ is_active: false });
+
+      expect(res.status).toBe(422);
+    });
+
+    it('deactivating an admin when another active admin exists succeeds', async () => {
+      const { workspace, adminAuthHeader } = await seedTenant();
+      const { member: secondAdmin } = await seedNonAdmin(workspace.id, { role: 'admin' });
+
+      const res = await request(app)
+        .patch(`/v1/workspaces/${workspace.id}/members/${secondAdmin.id}`)
+        .set('Authorization', adminAuthHeader)
+        .send({ is_active: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.member.is_active).toBe(false);
+    });
+
     it('optimistic lock: mismatched version returns BusinessRuleError', async () => {
       const { workspace, adminMember, adminAuthHeader } = await seedTenant();
 

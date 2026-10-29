@@ -2,6 +2,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const notification      = require('./notification.service');
 const logger            = require('../utils/logger');
+const { PAID_STATUSES } = require('../constants/ledger-status');
 
 async function sendUpcomingPaymentReminders(scanDate, soonStr) {
   const { data: upcomingTargets } = await supabaseAdmin
@@ -135,11 +136,14 @@ async function sendCycleClosingSoonReminders(scanDate, closingSoonStr) {
           .select('workspace_member_id, contributor_targets(target_amount, target_currency, cycle_id, is_current)')
           .eq('container_id', cycle.container_id)
           .eq('money_enabled', true),
+        // PAID_STATUSES (not just 'confirmed') — a resolved dispute is
+        // still money the participant paid, and should not trigger a
+        // "you still owe" reminder for an amount they've already settled.
         supabaseAdmin
           .from('ledger_entries')
           .select('contributor_id, base_amount')
           .eq('cycle_id', cycle.id)
-          .eq('status', 'confirmed'),
+          .in('status', PAID_STATUSES),
       ]);
 
       for (const p of (participants || [])) {

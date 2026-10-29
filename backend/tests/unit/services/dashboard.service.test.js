@@ -200,7 +200,7 @@ describe('services/dashboard.service', () => {
       expect(result.recent_activity[0].actor_name).toBe('System');
     });
 
-    it('active_events computes total_confirmed_base only from confirmed ledger entries', async () => {
+    it('active_events computes total_confirmed_base only from paid-status (confirmed/resolved) ledger entries, excluding pending/disputed', async () => {
       queueDashboardResponses({
         events: {
           data: [{
@@ -216,6 +216,28 @@ describe('services/dashboard.service', () => {
 
       expect(result.active_events[0].total_confirmed_base).toBe(50);
       expect(result.active_events[0].progress_pct).toBe(50);
+    });
+
+    it('REGRESSION: a resolved (disputed-then-resolved) entry counts toward total_confirmed_base', async () => {
+      queueDashboardResponses({
+        events: {
+          data: [{
+            id: 'c1', name: 'Party', budget_target: 100,
+            container_participants: [{ id: 'p1' }],
+            ledger_entries: [
+              { base_amount: 50, status: 'confirmed' },
+              { base_amount: 30, status: 'resolved' },
+              { base_amount: 999, status: 'disputed' },
+            ],
+          }],
+          error: null,
+        },
+      });
+
+      const result = await dashboardService.getDashboardData({ workspaceId: WORKSPACE_ID, isAdmin: true, memberId: 'm1' });
+
+      expect(result.active_events[0].total_confirmed_base).toBe(80);
+      expect(result.active_events[0].progress_pct).toBe(80);
     });
 
     it('recurring_pools picks the first open/upcoming cycle as current_cycle', async () => {

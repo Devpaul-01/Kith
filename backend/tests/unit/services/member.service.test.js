@@ -176,7 +176,10 @@ describe('services/member.service', () => {
 
     it('demoting the last admin -> BusinessRuleError', async () => {
       mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, role: 'admin', updated_at: 'x', users: {} }, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: [{ id: MEMBER_ID }], error: null }); // only 1 active admin
+      // assertNotLastActiveAdmin's query excludes the target member
+      // (.neq('id', memberId)) and counts OTHER active admins — with no
+      // other admin, that query returns an empty list.
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null }); // no OTHER active admins
 
       await expect(
         memberService.updateMember({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, data: { role: 'member' }, isAdmin: true, actorMemberId: 'admin-1' })
@@ -185,12 +188,42 @@ describe('services/member.service', () => {
 
     it('demoting an admin when other admins exist -> succeeds', async () => {
       mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, role: 'admin', updated_at: 'x', users: {} }, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: [{ id: MEMBER_ID }, { id: 'admin-2' }], error: null }); // 2 admins
+      mockSupabaseInstance.mockNextResponse({ data: [{ id: 'admin-2' }], error: null }); // 1 other active admin
       mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, role: 'member' }, error: null }); // update
 
       await expect(
         memberService.updateMember({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, data: { role: 'member' }, isAdmin: true, actorMemberId: 'admin-1' })
       ).resolves.toEqual({ id: MEMBER_ID, role: 'member' });
+    });
+
+    it('deactivating the last active admin -> BusinessRuleError', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, role: 'admin', is_active: true, updated_at: 'x', users: {} }, error: null });
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null }); // no OTHER active admins
+
+      await expect(
+        memberService.updateMember({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, data: { is_active: false }, isAdmin: true, actorMemberId: 'admin-1' })
+      ).rejects.toBeInstanceOf(BusinessRuleError);
+    });
+
+    it('deactivating an admin when other active admins exist -> succeeds', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, role: 'admin', is_active: true, updated_at: 'x', users: { id: 'user-1' } }, error: null });
+      mockSupabaseInstance.mockNextResponse({ data: [{ id: 'admin-2' }], error: null }); // 1 other active admin
+      mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, is_active: false }, error: null }); // update
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // member_profile_audit insert
+
+      await expect(
+        memberService.updateMember({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, data: { is_active: false }, isAdmin: true, actorMemberId: 'admin-1' })
+      ).resolves.toEqual({ id: MEMBER_ID, is_active: false });
+    });
+
+    it('deactivating a non-admin member -> no last-admin check run, succeeds', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, role: 'member', is_active: true, updated_at: 'x', users: { id: 'user-1' } }, error: null });
+      mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, is_active: false }, error: null }); // update
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null }); // member_profile_audit insert
+
+      await expect(
+        memberService.updateMember({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, data: { is_active: false }, isAdmin: true, actorMemberId: 'admin-1' })
+      ).resolves.toEqual({ id: MEMBER_ID, is_active: false });
     });
 
     it('proxy_managed_by must reference an active admin', async () => {
@@ -245,11 +278,24 @@ describe('services/member.service', () => {
 
   describe('deleteMember', () => {
     it('last-admin self-removal -> BusinessRuleError', async () => {
-      mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, role: 'admin', users: {} }, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: [{ id: MEMBER_ID }], error: null }); // only 1 admin
+      mockSupabaseInstance.mockNextResponse({ data: { id: MEMBER_ID, role: 'admin', is_active: true, users: {} }, error: null });
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null }); // no OTHER active admins
 
       await expect(
         memberService.deleteMember({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, callerMemberId: MEMBER_ID, force: 'false', actorCtx: ACTOR_CTX })
+      ).rejects.toBeInstanceOf(BusinessRuleError);
+    });
+
+    it('removing a different admin when no other active admin exists -> BusinessRuleError', async () => {
+      // Previously only self-removal was guarded; an admin removing a
+      // DIFFERENT admin was never checked against the last-admin
+      // invariant at all. Covers that the guard now applies regardless
+      // of who is acting on whom.
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'other-admin', role: 'admin', is_active: true, users: {} }, error: null });
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null }); // no OTHER active admins besides the target
+
+      await expect(
+        memberService.deleteMember({ workspaceId: WORKSPACE_ID, memberId: 'other-admin', callerMemberId: MEMBER_ID, force: 'false', actorCtx: ACTOR_CTX })
       ).rejects.toBeInstanceOf(BusinessRuleError);
     });
 

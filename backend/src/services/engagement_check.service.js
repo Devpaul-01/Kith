@@ -6,6 +6,7 @@
 
 const { supabaseAdmin } = require('../config/supabase');
 const { fetchEngagementData } = require('./engagement.service');
+const { PAID_STATUSES } = require('../constants/ledger-status');
 const logger = require('../utils/logger');
 
 async function runEngagementCheck() {
@@ -29,7 +30,9 @@ async function runEngagementCheck() {
   const updates = [];
 
   for (const m of members) {
-    const ledger = (ledgerByMember.get(m.id) || []).filter((le) => le.status === 'confirmed');
+    // A resolved dispute still had a real confirmed_at — see
+    // engagement.service.js#computeEngagement for the same reasoning.
+    const ledger = (ledgerByMember.get(m.id) || []).filter((le) => PAID_STATUSES.includes(le.status));
     const tasks  = tasksByMember.get(m.id) || [];
 
     const candidates = [

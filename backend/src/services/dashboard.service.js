@@ -14,6 +14,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 const { describeAuditAction } = require('../constants/audit-actions');
+const { PAID_STATUSES } = require('../constants/ledger-status');
 const { computeEngagement } = require('./engagement.service');
 const {
   getCachedDashboard, setCachedDashboard,
@@ -180,7 +181,7 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
   };
 
   const activeEvents = (rawContainers || []).map((c) => {
-    const confirmedEntries   = (c.ledger_entries || []).filter((le) => le.status === 'confirmed');
+    const confirmedEntries   = (c.ledger_entries || []).filter((le) => PAID_STATUSES.includes(le.status));
     const totalConfirmedBase = confirmedEntries.reduce((sum, le) => sum + parseFloat(le.base_amount || 0), 0);
     const participantCount   = (c.container_participants || []).length;
     const daysUntil          = c.event_date ? Math.ceil((new Date(c.event_date) - new Date()) / 86400000) : null;
@@ -413,7 +414,7 @@ async function getOverdueSummaryData({ workspaceId }) {
     .from('ledger_entries')
     .select('contributor_id, container_id, base_amount')
     .eq('workspace_id', workspaceId)
-    .eq('status', 'confirmed');
+    .in('status', PAID_STATUSES);
 
   if (lErr) throw new Error(lErr.message);
 
