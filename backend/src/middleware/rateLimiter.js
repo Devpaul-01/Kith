@@ -22,7 +22,9 @@
 //                       that actually delivers per-user throttling.
 
 const rateLimit = require('express-rate-limit');
-const RedisStore = require('rate-limit-redis');
+// rate-limit-redis v4's CJS export is { RedisStore, default }, not a bare
+// constructor — `require('rate-limit-redis')` alone is not `new`-able.
+const { RedisStore } = require('rate-limit-redis');
 const { getRedis } = require('../config/redis');
 const logger = require('../utils/logger');
 
