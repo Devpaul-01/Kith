@@ -121,7 +121,7 @@ async function sendAdminOverdueSummaries(overdueTargets, scanDate) {
 async function sendCycleClosingSoonReminders(scanDate, closingSoonStr) {
   const { data: closingSoonCycles } = await supabaseAdmin
     .from('container_cycles')
-    .select('id, cycle_end, container_id, containers!inner(id, name, workspace_id, status)')
+    .select('id, cycle_end, container_id, containers!container_cycles_container_id_fkey(id, name, workspace_id, status)')
     .eq('status', 'open')
     .gte('cycle_end', scanDate)
     .lte('cycle_end', closingSoonStr);

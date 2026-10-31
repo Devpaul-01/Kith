@@ -35,7 +35,7 @@ async function createInvite({ workspaceId, actorMemberId, actorCtx }) {
 async function previewInvite({ token }) {
   const { data: invite, error } = await supabaseAdmin
     .from('invite_links')
-    .select('*, workspaces!inner(id, name), created_by_member:workspace_members!created_by(display_name)')
+    .select('*, workspaces!invite_links_workspace_id_fkey(id, name), created_by_member:workspace_members!created_by(display_name)')
     .eq('token', token)
     .maybeSingle();
 
@@ -73,7 +73,7 @@ async function previewInvite({ token }) {
 async function acceptInvite({ token, userId, actorCtx }) {
   const { data: invite, error: invErr } = await supabaseAdmin
     .from('invite_links')
-    .select('*, workspaces!inner(*)')
+    .select('*, workspaces!invite_links_workspace_id_fkey(*)')
     .eq('token', token)
     .maybeSingle();
 
