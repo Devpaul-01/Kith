@@ -170,7 +170,7 @@ async function login({ data, requestId, clientIp, userAgent }) {
       .maybeSingle(),
     supabaseAdmin
       .from('workspace_members')
-      .select('id, role, workspace_id, display_name, workspaces!inner(name, base_currency)')
+      .select('id, role, workspace_id, display_name, workspaces!workspace_members_workspace_id_fkey(name, base_currency)')
       .eq('user_id', userId)
       .eq('is_active', true)
       .is('deleted_at', null),
@@ -451,7 +451,7 @@ async function register({ userId, email, bodyRaw, parseRegisterSchema }) {
 async function getMe({ userId, dbUser }) {
   const { data: membershipsData, error: mErr } = await supabaseAdmin
     .from('workspace_members')
-    .select('id, role, workspace_id, display_name, workspaces!inner(name, base_currency)')
+    .select('id, role, workspace_id, display_name, workspaces!workspace_members_workspace_id_fkey(name, base_currency)')
     .eq('user_id', userId)
     .eq('is_active', true)
     .is('deleted_at', null);
