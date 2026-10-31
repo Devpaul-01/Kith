@@ -305,7 +305,7 @@ async function getContributionSummary({ workspaceId, memberId }) {
 
   const { data: participations } = await supabaseAdmin
     .from('container_participants')
-    .select('id, container_id, containers!inner(name, workspace_id), contributor_targets(target_amount, target_currency, is_current, cycle_id)')
+    .select('id, container_id, containers!container_participants_container_id_fkey(name, workspace_id), contributor_targets(target_amount, target_currency, is_current, cycle_id)')
     .eq('workspace_member_id', memberId)
     .eq('containers.workspace_id', workspaceId);
 

@@ -469,7 +469,7 @@ async function generateCoverPhotoUploadUrl({ workspaceId, containerId, filename,
 async function getPublicContainer({ publicToken }) {
   const { data: container, error } = await supabaseAdmin
     .from('containers')
-    .select('*, workspaces!inner(name)')
+    .select('*, workspaces!containers_workspace_id_fkey(name)')
     .eq('public_token', publicToken)
     .is('deleted_at', null)
     .maybeSingle();

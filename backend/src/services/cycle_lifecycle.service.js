@@ -157,7 +157,7 @@ async function carryForwardUnpaid(cycle) {
 async function closeDueCycles(today) {
   const { data: toClose } = await supabaseAdmin
     .from('container_cycles')
-    .select('*, containers!inner(workspace_id, carry_forward_unpaid, created_by)')
+    .select('*, containers!container_cycles_container_id_fkey(workspace_id, carry_forward_unpaid, created_by)')
     .eq('status', 'open')
     .lt('cycle_end', today);
 

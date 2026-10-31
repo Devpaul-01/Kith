@@ -154,7 +154,7 @@ async function addParticipantsFromGroup({ workspaceId, containerId, groupId, mon
 
   const { data: groupMembers } = await supabaseAdmin
     .from('group_members')
-    .select('workspace_member_id, workspace_members!inner(deleted_at)')
+    .select('workspace_member_id, workspace_members!group_members_workspace_member_id_fkey(deleted_at)')
     .eq('group_id', groupId)
     .is('workspace_members.deleted_at', null);
 
@@ -236,7 +236,7 @@ async function removeParticipant({ containerId, participantId }) {
 async function setTarget({ containerId, participantId, amount, currency, due_date, actorMemberId }) {
   const { data: participant } = await supabaseAdmin
     .from('container_participants')
-    .select('*, containers!inner(enable_money)')
+    .select('*, containers!container_participants_container_id_fkey(enable_money)')
     .eq('id', participantId)
     .eq('container_id', containerId)
     .maybeSingle();
@@ -280,7 +280,7 @@ async function getTargetHistory({ participantId }) {
 async function getCycleTargets({ containerId, participantId }) {
   const { data: participant } = await supabaseAdmin
     .from('container_participants')
-    .select('*, workspace_members!inner(display_name)')
+    .select('*, workspace_members!container_participants_workspace_member_id_fkey(display_name)')
     .eq('id', participantId)
     .eq('container_id', containerId)
     .maybeSingle();

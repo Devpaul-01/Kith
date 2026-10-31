@@ -143,7 +143,7 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
     if (participantIds.length > 0) {
       const { data: participants } = await supabaseAdmin
         .from('container_participants')
-        .select('id, workspace_member_id, workspace_members!inner(display_name)')
+        .select('id, workspace_member_id, workspace_members!container_participants_workspace_member_id_fkey(display_name)')
         .in('id', participantIds);
 
       const participantMap = {};
@@ -400,7 +400,7 @@ async function getOverdueSummaryData({ workspaceId }) {
     .from('container_participants')
     .select(`
       workspace_member_id, container_id, money_enabled,
-      containers!inner(name, status, workspace_id, enable_money),
+      containers!container_participants_container_id_fkey(name, status, workspace_id, enable_money),
       contributor_targets(target_amount, target_currency, due_date, is_current, cycle_id)
     `)
     .eq('containers.workspace_id', workspaceId)
