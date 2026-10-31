@@ -171,10 +171,11 @@ export default function SignupPage() {
 
         {/* Country dropdown */}
         <div className="space-y-1">
-          <label className="block text-sm font-medium text-text-primary">
+          <label htmlFor="country_of_residence" className="block text-sm font-medium text-text-primary">
             Country of residence
           </label>
           <select
+            id="country_of_residence"
             className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
             defaultValue=""
             {...register('country_of_residence')}
