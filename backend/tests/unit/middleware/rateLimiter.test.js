@@ -32,8 +32,23 @@ describe('middleware/rateLimiter', () => {
 
   describe('module load — Redis client healthy', () => {
     it('loads without throwing and exports all 6 limiters as valid Express middleware functions', () => {
+      // RedisStore's constructor eagerly fires `SCRIPT LOAD` for its two
+      // Lua scripts and awaits the reply (unawaited at the call site —
+      // see rate-limit-redis's RedisStore constructor). A bare jest.fn()
+      // resolves `undefined`, which fails RedisStore's own `typeof result
+      // !== 'string'` check and throws as an unhandled rejection,
+      // crashing the whole Jest process rather than failing the test.
+      // Resolve a fake SHA1-shaped string for SCRIPT LOAD so construction
+      // completes the way it would against a real, healthy Redis.
       jest.doMock('../../../src/config/redis', () => ({
-        getRedis: () => ({ call: jest.fn() }),
+        getRedis: () => ({
+          call: jest.fn((...args) => {
+            if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
+              return Promise.resolve('0'.repeat(40));
+            }
+            return Promise.resolve(undefined);
+          }),
+        }),
       }));
 
       let limiters;
@@ -88,7 +103,19 @@ describe('middleware/rateLimiter', () => {
   describe('skip bypass under NODE_ENV=test (behavioral proof belongs in the integration rate-limit suite)', () => {
     it('module loads successfully under NODE_ENV=test without throwing at construction time', () => {
       process.env.NODE_ENV = 'test';
-      jest.doMock('../../../src/config/redis', () => ({ getRedis: () => ({ call: jest.fn() }) }));
+      // See the "Redis client healthy" block above — RedisStore's
+      // constructor needs a SCRIPT LOAD-shaped reply to avoid an
+      // unhandled rejection during construction.
+      jest.doMock('../../../src/config/redis', () => ({
+        getRedis: () => ({
+          call: jest.fn((...args) => {
+            if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
+              return Promise.resolve('0'.repeat(40));
+            }
+            return Promise.resolve(undefined);
+          }),
+        }),
+      }));
 
       expect(() => require('../../../src/middleware/rateLimiter')).not.toThrow();
     });
