@@ -226,7 +226,10 @@ jobs:
 
           nohup npx lite start > /tmp/lite.log 2>&1 &
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:54321/rest/v1/ -H "apikey: $(grep SUPABASE_PUBLISHABLE_KEY .env | cut -d= -f2)" > /dev/null; then
+            # /rest/v1/ with no table name returns 403 even when the
+            # server is healthy, so probe a real table from the schema
+            # we just migrated instead.
+            if curl -sf "http://127.0.0.1:54321/rest/v1/users?limit=1" -H "apikey: $(grep SUPABASE_PUBLISHABLE_KEY .env | cut -d= -f2)" > /dev/null; then
               echo "lite is up."
               exit 0
             fi
