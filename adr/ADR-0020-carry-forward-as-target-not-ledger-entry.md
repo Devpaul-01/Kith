@@ -132,6 +132,17 @@ the one place that was wrong.
 - Every existing summary/report that sums confirmed ledger entries needed
   zero changes — the bug and the fix were both fully contained to the
   carry-forward write path, not spread across readers.
+  **Update:** this held only until a ledger entry could reach a second
+  "paid" terminal status. Once `disputed` → `resolved` existed, every
+  `status === 'confirmed'` filter this ADR relied on (including
+  `carryForwardUnpaid`'s own read of the closing cycle's entries) silently
+  excluded resolved-in-the-contributor's-favor entries — which is exactly
+  the "paid, but not counted as paid" failure mode this ADR exists to
+  avoid, just reached via a different status value than the one it was
+  written about. Fixed by introducing `PAID_STATUSES = ['confirmed',
+  'resolved']` (`src/constants/ledger-status.js`) and auditing every
+  "money received" filter in the codebase to use it; see the Reliability
+  & Correctness section of `CHANGELOG.md`.
 - The `recorded_by: null` crash is resolved as a direct consequence of no
   longer writing to `ledger_entries` from this path at all, not via a
   schema change making the column nullable.

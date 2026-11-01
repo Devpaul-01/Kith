@@ -201,13 +201,14 @@ One honest architectural note: because the backend uses Supabase's **service-rol
 
 ## Testing & CI
 
-Tests are split into three Jest projects: unit, integration, and rate-limit. **All three run in CI** on every push and pull request to `main` / `develop`, alongside the frontend tests, so a green check covers the unit, integration and rate-limit suites.
+Tests are split into three Jest projects: unit, integration, and rate-limit. **All three run in CI** on every push and pull request to `main` / `develop`, alongside the frontend tests and a Playwright E2E suite, so a green check covers the unit, integration, rate-limit, frontend, and E2E suites.
 
 | Suite | Command | What it covers | CI job |
 |---|---|---|---|
 | Unit | `npm run test:unit` | Isolated service/utility logic, no external dependencies | Unit Tests |
 | Integration | `npm run test:integration` | Everything under `backend/tests/integration/` except the rate-limit file (23 files: `routes/` ×12, `workers/` ×9, `redis/` ×2) against a real Postgres (via PostgREST) and Redis instance | Integration & Rate-Limit Tests |
 | Rate limiting | `npm run test:ratelimit` | Redis-backed request throttling (`tests/integration/redis/rate-limiting.test.js`), run with `NODE_ENV=production` so the limiters actually engage | Integration & Rate-Limit Tests |
+| E2E (Playwright) | `npx playwright test` (from `frontend/`) | Real signup/login through the actual UI, against a real running backend and a local Supabase-compatible stack (`@supabase/lite`) — no mocks, no seeded-JWT auth bypass | E2E Tests (Playwright) |
 
 ```bash
 npm test                # runs all three Jest projects
@@ -231,6 +232,8 @@ npm run test:docker:down    # tears the containers back down
 - [PostgREST](https://postgrest.org/) on port 3002, since the app talks to Supabase through a PostgREST-compatible client. supabase-js requests `<url>/rest/v1/...`, which bare PostgREST does not serve, so `backend/scripts/local-test-stack/pgrst-proxy.js` listens on port 3001 and strips the `/rest/v1` prefix.
 
 Unit and frontend tests run in separate, lighter jobs with no service containers.
+
+The *E2E Tests (Playwright)* job stands up the full stack by hand (backend, Postgres/Redis, a local Supabase-compatible auth+REST layer, and the Vite dev server) rather than using Playwright's `webServer` option, since that stack isn't something Playwright can launch as a single process — see [`docs/e2e-local-setup.md`](./docs/e2e-local-setup.md) for the equivalent local setup.
 
 ### Test database notes
 

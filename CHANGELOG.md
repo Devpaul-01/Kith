@@ -77,6 +77,33 @@ does not follow a dated release cadence.
 
 ## Reliability & Correctness
 
+- **Every signup or login was broken in production.** `auth.service.js`'s
+  `login()` and `getMe()` both embedded `workspaces!inner(...)` with no
+  explicit foreign key; `workspace_id` is one of several paths PostgREST
+  can resolve between `workspace_members` and `workspaces` (a direct FK
+  plus indirect many-to-many paths through other tables), so the embed
+  was genuinely ambiguous and PostgREST returned `PGRST201` instead of
+  data. Every signup/login fetched a session and then immediately called
+  `getMe()` to hydrate it, which threw — the frontend's catch silently
+  redirected the user to `/login`. Fixed by naming the exact constraint
+  (`workspace_members_workspace_id_fkey`), which PostgREST's own error
+  response recommends as the disambiguation mechanism. The same root
+  cause (an unqualified `*!inner(...)` embed made ambiguous by a junction
+  table — `contributor_targets`, `cycle_carry_forwards`, or
+  `ledger_entries` — creating an indirect many-to-many path) was then
+  individually verified and fixed across invite preview/accept, public
+  container pages, cycle closing, dashboard summaries, contribution
+  summaries, group-based participant assignment, target setting, and
+  closing-soon reminders; several looked safe on paper (a single direct
+  FK) but were still ambiguous via an indirect path, so each fix was
+  confirmed against the live schema rather than assumed.
+- **Rate limiting silently fell back to an in-memory store in every
+  environment**, never actually sharing limits via Redis across
+  instances despite the code's own design intent. `rate-limit-redis` v4's
+  CJS export is `{ RedisStore, default }`, not a bare constructor; the
+  existing `const RedisStore = require('rate-limit-redis')` /
+  `new RedisStore(...)` threw on every boot, and `buildStore`'s
+  try/catch silently swallowed it.
 - **Rate limiting is split into a per-IP baseline and a genuinely per-user
   limiter.** `generalLimiter` is IP-keyed and mounted pre-auth as a
   baseline for all traffic; `userGeneralLimiter` is user-keyed and mounted
@@ -173,6 +200,36 @@ does not follow a dated release cadence.
   from the top on the next request. Cursors now advance only past
   returned items and keep the incoming cursor for a source with nothing
   on the page.
+- **A contribution that was disputed and then resolved in the
+  contributor's favor is money actually received, and now counts as
+  such everywhere.** Every "money received" filter across the codebase
+  (ledger/dashboard/container/participant/invite totals, engagement
+  last-activity) checked `status === 'confirmed'` only, so a resolved
+  dispute silently vanished from all of them. Worse,
+  `cycle_lifecycle.service.js#carryForwardUnpaid` used the same filter,
+  so a resolved entry was treated as still unpaid at cycle close and
+  re-added as a **new** debt on the next cycle — an actual double-charge.
+  Fixed with a single `PAID_STATUSES = ['confirmed', 'resolved']`
+  constant (`src/constants/ledger-status.js`), swapped in at every
+  "money actually received" call site instead of repeating the ad-hoc
+  check that caused the drift. The admin-only non-owner proof-deletion
+  guard and the disable-money/remove-participant/hard-delete guards were
+  tightened the same way, to treat `resolved` as settled, not just
+  `confirmed`.
+- **An admin could deactivate (`is_active: false`) the workspace's last
+  active admin with no check**, even though the equivalent
+  role → `member` demotion was correctly guarded — leaving a workspace
+  with zero admins and no path to recover it, since `requireMembership`
+  filters on `is_active = true`. `assertNotLastActiveAdmin()` is now the
+  single source of truth for "would this leave zero active admins" and
+  is wired into both the role-demotion and `is_active` branches of
+  `updateMember`, and into `deleteMember`'s guard (previously
+  self-removal only).
+- **Reassigning `contributor_id` on a pending ledger entry now runs the
+  same participant/money-enabled/proxy validation `createEntry` already
+  does**, via an extracted `validateContributorForContainer()`.
+  Previously `updateEntry` only checked that the new value was a UUID,
+  letting an admin reassign a pending entry to an invalid contributor.
 
 ## Architecture
 
