@@ -64,11 +64,13 @@ Tier 0/1 reads; chat does not execute writes or approve proposals.
 The dedicated `agentLimiter` allows 10 requests per minute per authenticated
 user across all workspaces, using the shared Redis store with prefix
 `rl:agent:`. Existing general limits also apply. A blocked request returns
-429 `RATE_LIMITED` with `Retry-After` before invoking Groq. As with the existing
-limiters, a missing Redis client or synchronous store-construction failure
-falls back to an in-memory store with a warning; those counters are local to
-each process. Request limits and per-completion token caps do not enforce a
-per-user or workspace spending budget.
+429 `RATE_LIMITED` with `Retry-After` before invoking Groq. The agent and both
+general limiters keep local counters for fallback if Redis commands fail or
+exceed their one-second deadline. Those fallback counts are per process, not
+shared across instances. Missing clients also use memory stores. Membership
+and dashboard cache reads have the same bounded wait and fall back to database
+reads; authentication and membership checks still apply during an outage.
+The shared workspace token budget below is separate from request throttling.
 
 Validation failures return 400; malformed JSON also returns 400 without echoing
 the body, and the application's 1 MiB body limit returns 413. Missing/invalid
@@ -76,6 +78,9 @@ authentication or an unavailable user profile returns 401. An unavailable
 workspace or membership returns the existing non-enumerating 404. Provider
 configuration/unavailability/rate limits return 503, timeouts return 504,
 invalid or truncated completions return 502, and loop/size limits return 422.
+Workspace token exhaustion returns 429 `AGENT_BUDGET_EXHAUSTED` with
+`Retry-After`; a request exceeding the whole allowance returns 422
+`AGENT_BUDGET_REQUEST_TOO_LARGE`. Invalid budget configuration returns 503.
 Errors use the existing `{ error: { code, message, ... } }` API envelope.
 
 Provider construction happens per accepted request, so missing Groq settings
@@ -146,13 +151,67 @@ reported usage from failed completions and calls followed by tool failures.
 When usage is incomplete, the known totals are only a partial count. The loop
 rejects aggregate totals that cannot be represented safely instead of rounding.
 
-These are per-turn structured logs and internal provider metadata, not a
-durable quota ledger. The agreed budget scope is **one shared allowance per
-workspace**. The allowance amount, reset schedule, reservation/reconciliation
-policy, and durable enforcement remain for the budget milestone.
+The chat service applies **one shared allowance per workspace**, defaulting to
+**100,000 input plus output tokens per UTC day**. Server configuration:
 
-Workspace token budgets, streaming, and server-owned conversation memory are
-subsequent increments.
+| Setting | Default | Range |
+| --- | --- | --- |
+| `AGENT_WORKSPACE_TOKEN_LIMIT` | `100000` | 1–1,000,000,000 tokens |
+| `AGENT_BUDGET_PERIOD` | `day` | `day` or `month` (UTC calendar windows) |
+| `AGENT_BUDGET_TIMEOUT_MS` | `3000` | 1–10,000 milliseconds |
+
+Before every Groq call, the adapter reserves the UTF-8 byte size of the entire
+serialized request plus its maximum completion tokens. This conservative
+estimate includes messages and tool definitions; it is not an exact tokenizer
+or dollar billing cap. Actual provider usage replaces the reservation after
+successful or rejected completions. Missing usage keeps the reservation.
+Redis outages allow calls without budget accounting. Traces retain reported
+usage, but there is no automatic replay of missed accounting after recovery.
+Budget denials occur before transport and do not count as model calls.
+
+### Internal workspace budget service
+
+`createWorkspaceBudget({ context, limit, period, timeoutMs? })` in
+`services/budget.service.js` provides an internal reservation/reconciliation
+primitive used by the chat service. `period` supports `day` or `month` with UTC
+calendar resets; `limit` is a positive token count. Identity comes from
+authenticated server context. Budget settings cannot come from chat input.
+
+`reserve({ tokens })` atomically reserves against one Redis hash per workspace
+and window and returns an immutable reservation. `settle({ reservation, usage })`
+replaces that reservation with validated provider token usage exactly once.
+Usage above the reservation is fully charged; unknown usage retains the
+reservation. Later known usage can reconcile a held reservation. Pending and
+settled records expire one hour after the window resets, allowing in-flight
+calls to settle against their original window. The active window uses the
+lowest configured allowance seen during rolling deployments; increases take
+effect in the next window.
+
+Redis outages **do not block the caller**: missing/not-ready clients, command
+errors, and the bounded command timeout (default 3 seconds) return `null` from
+`reserve`. Passing that null reservation to `settle` returns
+`{ state: 'unavailable' }`; a settlement outage returns the same state. These
+outcomes are logged without upstream error details. There is no local quota
+balance, no automatic retry, and no claim that skipped calls were charged.
+A command already sent to Redis may finish after the deadline, leaving a
+conservative reservation. A settlement outage retains any stored reservation.
+
+A confirmed exhausted allowance returns `AGENT_BUDGET_EXHAUSTED` (429) with an
+internal reset timestamp, converted to `Retry-After` by the controller; a
+reservation above the entire allowance returns
+`AGENT_BUDGET_REQUEST_TOO_LARGE` (422). Invalid configuration or corrupt/missing
+accounting state returns a typed 503 rather than resetting balances. Once the
+provider has run, settlement failures are logged without discarding its reply
+or masking its original error. Stored reservations remain charged.
+
+`tests/unit/agent/budget.test.js` exercises the Lua scripts using ioredis-mock,
+including workspace isolation, duplicate settlement, unknown usage, UTC
+windows, and unavailable Redis. Real Redis atomicity, expiry, and network
+failure behavior still need integration coverage. `chat-outage.test.js` runs
+real request middleware with mocked stalled/reconnecting Redis transports,
+checking successful chat and continued membership denial during outages.
+
+Streaming and server-owned conversation memory remain subsequent increments.
 
 ## Groq adapter
 
@@ -165,6 +224,9 @@ const { runReadTurn } = require('./services/read-loop.service');
 const provider = createGroqProvider();
 const reply = await runReadTurn({ data: { message }, context, provider });
 ```
+
+This low-level example omits budgeting. Production HTTP chat uses
+`runChatTurn`, which supplies the authenticated workspace budget to the adapter.
 
 Set `GROQ_API_KEY` and `GROQ_MODEL` on the server; both are required. Choose a
 standard model that supports function calling. Compound model IDs are rejected
@@ -187,8 +249,7 @@ Successful responses normalize to `{ text, toolCalls, usage }`.
 Truncated, malformed, or inconsistent completions terminate the turn. Timeout
 and rate-limit codes survive the loop boundary, but upstream messages, bodies,
 reasoning fields, and credentials are not exposed to callers or logs. Provider
-token usage, model, HTTP status, latency, and server trace IDs are logged; this
-does not yet enforce a per-user or per-workspace spending budget.
+token usage, model, HTTP status, latency, and server trace IDs are logged.
 
 Unit tests use synthetic Groq responses, Web Streams, and the real read loop.
 They do not make live model calls or verify a deployed model's behavior.
