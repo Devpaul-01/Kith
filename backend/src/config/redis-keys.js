@@ -10,6 +10,7 @@ const TTL = {
   MEMBERSHIP_CACHE_SECONDS:      30,     // requireMembership cache (see middleware/workspace.js)
   DASHBOARD_CACHE_SECONDS:       30,     // workspace dashboard aggregation (see services/dashboard.service.js)
   OVERDUE_SUMMARY_CACHE_SECONDS: 60,     // overdue-contributions aggregation (admin only, changes less often)
+  AGENT_BUDGET_RETENTION_SECONDS: 60 * 60, // retain the previous window for in-flight reconciliation
 };
 
 const lastSeenKey   = (userId) => `kith:lastseen:${userId}`;
@@ -24,5 +25,6 @@ const membershipKey = (workspaceId, userId) => `kith:membership:${workspaceId}:$
 // was enforced. Old keys expire normally without being served again.
 const dashboardKey      = (workspaceId, isAdmin) => `kith:dashboard:v2:${workspaceId}:${isAdmin ? 'admin' : 'member'}`;
 const overdueSummaryKey = (workspaceId) => `kith:overdue-summary:v2:${workspaceId}`;
+const agentBudgetKey = (workspaceId, period, windowStartMs) => `kith:agent-budget:v1:${workspaceId}:${period}:${windowStartMs}`;
 
-module.exports = { TTL, lastSeenKey, membershipKey, dashboardKey, overdueSummaryKey };
+module.exports = { TTL, lastSeenKey, membershipKey, dashboardKey, overdueSummaryKey, agentBudgetKey };

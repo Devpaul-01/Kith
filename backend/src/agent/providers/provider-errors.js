@@ -9,9 +9,13 @@ const ERRORS = Object.freeze({
   AGENT_INVALID_RESPONSE: [502, 'The agent provider returned an invalid response.'],
   AGENT_RESPONSE_TRUNCATED: [502, 'The agent response was incomplete. Please narrow the request.'],
   AGENT_CONTEXT_LIMIT: [422, 'This request contains too much information. Please narrow it down.'],
+  AGENT_BUDGET_CONFIGURATION: [503, 'The workspace agent allowance is not configured correctly.'],
+  AGENT_BUDGET_UNAVAILABLE: [503, 'The workspace agent allowance could not be checked. Please try again.'],
+  AGENT_BUDGET_EXHAUSTED: [429, 'This workspace has reached its agent token allowance. Try again after it resets.'],
+  AGENT_BUDGET_REQUEST_TOO_LARGE: [422, 'This request needs more tokens than the workspace allowance permits. Please narrow it down.'],
 });
 
-function providerError(code = 'AGENT_PROVIDER_UNAVAILABLE', usage) {
+function providerError(code = 'AGENT_PROVIDER_UNAVAILABLE', usage, resetAtMs) {
   const known = Object.hasOwn(ERRORS, code) ? code : 'AGENT_PROVIDER_UNAVAILABLE';
   const [status, message] = ERRORS[known];
   const error = new AppError(message, status, known);
@@ -19,6 +23,10 @@ function providerError(code = 'AGENT_PROVIDER_UNAVAILABLE', usage) {
   if (parsed.success) {
     // Internal metadata, separate from client-facing error details.
     Object.defineProperty(error, 'usage', { value: Object.freeze(parsed.data) });
+  }
+  if (known === 'AGENT_BUDGET_EXHAUSTED' && Number.isSafeInteger(resetAtMs)
+      && resetAtMs > 0 && resetAtMs <= 8640000000000000) {
+    Object.defineProperty(error, 'resetAtMs', { value: resetAtMs });
   }
   return error;
 }
@@ -29,6 +37,7 @@ function normalizeProviderError(error) {
   return providerError(
     error instanceof AppError ? error.code : undefined,
     error instanceof AppError ? error.usage : undefined,
+    error instanceof AppError ? error.resetAtMs : undefined,
   );
 }
 
