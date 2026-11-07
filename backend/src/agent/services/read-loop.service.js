@@ -152,7 +152,9 @@ async function runReadTurn({ data, context, provider } = {}) {
         });
       } catch (err) {
         const error = normalizeProviderError(err);
-        recordUsage(error.usage);
+        // Budget denials happen before transport and consumed no model call.
+        if (error.code.startsWith('AGENT_BUDGET_')) trace.modelCalls -= 1;
+        else recordUsage(error.usage);
         throw error;
       }
       // Usage may be valid even when the completion or subsequent tool fails.

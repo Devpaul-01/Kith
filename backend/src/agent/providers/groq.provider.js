@@ -61,9 +61,13 @@ function createGroqProvider({
   timeoutMs = process.env.GROQ_TIMEOUT_MS ?? 20000,
   maxCompletionTokens = process.env.GROQ_MAX_COMPLETION_TOKENS ?? 1024,
   fetchImpl = globalThis.fetch,
+  budget,
 } = {}) {
   const parsed = groqConfigSchema.safeParse({ apiKey, model, timeoutMs, maxCompletionTokens });
   if (!parsed.success || typeof fetchImpl !== 'function') throw providerError('AGENT_PROVIDER_CONFIGURATION');
+  if (budget !== undefined && (typeof budget?.reserve !== 'function' || typeof budget?.settle !== 'function')) {
+    throw providerError('AGENT_BUDGET_CONFIGURATION');
+  }
   const config = parsed.data;
 
   return Object.freeze({
@@ -86,6 +90,10 @@ function createGroqProvider({
       const startedAt = Date.now();
       const controller = new AbortController();
       const trace = { ...input.data.trace, provider: 'groq', model: config.model };
+      // A byte-based allowance is conservative, not a model-specific tokenizer.
+      // Include all serialized messages/tool definitions and the output cap.
+      const reservation = budget ? await budget.reserve({ tokens: Buffer.byteLength(body, 'utf8') + config.maxCompletionTokens }) : null;
+      if (budget) logger.info('Agent budget reservation checked', { ...trace, reservationId: reservation?.id, accountingAvailable: reservation !== null });
       let response;
       let usage = null;
       let timer;
@@ -128,6 +136,15 @@ function createGroqProvider({
         throw error;
       } finally {
         clearTimeout(timer);
+        if (budget) {
+          try {
+            await budget.settle({ reservation, usage });
+          } catch {
+            // An accounting failure must not discard a completed answer or mask
+            // the original provider error. The stored reservation remains held.
+            logger.warn('Agent budget reconciliation failed', { ...trace, reservationId: reservation?.id });
+          }
+        }
       }
     },
   });

@@ -61,6 +61,35 @@ function context() {
 describe('Groq provider', () => {
   afterEach(() => jest.useRealTimers());
 
+  it('settles reported usage from a failed completion without masking the provider error', async () => {
+    const payload = completion();
+    payload.choices[0].finish_reason = 'length';
+    const reservation = { id: 'server-reservation' };
+    const budget = { reserve: jest.fn().mockResolvedValue(reservation), settle: jest.fn().mockRejectedValue(new Error('PRIVATE_REDIS_ERROR')) };
+    await expect(provider(jest.fn().mockResolvedValue(response(payload)), { budget }).chat(request)).rejects.toMatchObject({ code: 'AGENT_RESPONSE_TRUNCATED', usage: USAGE });
+    expect(budget.settle).toHaveBeenCalledWith({ reservation, usage: USAGE });
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('PRIVATE_REDIS_ERROR');
+  });
+
+  it('retains a successful answer if reconciliation fails', async () => {
+    const budget = { reserve: jest.fn().mockResolvedValue({ id: 'reservation' }), settle: jest.fn().mockRejectedValue(new Error('offline')) };
+    await expect(provider(jest.fn().mockResolvedValue(response()), { budget }).chat(request)).resolves.toMatchObject({ text: 'Here is your dashboard.' });
+    expect(budget.settle).toHaveBeenCalledWith({ reservation: { id: 'reservation' }, usage: USAGE });
+  });
+
+  it('keeps usage unknown after a transport failure', async () => {
+    const budget = { reserve: jest.fn().mockResolvedValue({ id: 'reservation' }), settle: jest.fn().mockResolvedValue({ state: 'held' }) };
+    await expect(provider(jest.fn().mockRejectedValue(new Error('offline')), { budget }).chat(request)).rejects.toMatchObject({ code: 'AGENT_PROVIDER_UNAVAILABLE' });
+    expect(budget.settle).toHaveBeenCalledWith({ reservation: { id: 'reservation' }, usage: null });
+  });
+
+  it('does not reserve tokens for an invalid provider request', async () => {
+    const budget = { reserve: jest.fn(), settle: jest.fn() };
+    await expect(provider(jest.fn(), { budget }).chat({ messages: [] })).rejects.toBeInstanceOf(ValidationError);
+    expect(budget.reserve).not.toHaveBeenCalled();
+    expect(budget.settle).not.toHaveBeenCalled();
+  });
+
   it('sends one bounded non-streaming request with JSON schemas and server credentials', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(response());
     await expect(provider(fetchImpl).chat(request)).resolves.toEqual({ text: 'Here is your dashboard.', toolCalls: [], usage: USAGE });

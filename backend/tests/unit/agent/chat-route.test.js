@@ -6,7 +6,7 @@ jest.mock('../../../src/config/supabase', () => {
 });
 jest.mock('../../../src/config/redis', () => ({
   // No .call(): use the existing limiter fallback and skip last_seen writes.
-  getRedis: () => ({ set: jest.fn().mockResolvedValue(null) }),
+  getRedis: jest.fn(() => ({ set: jest.fn().mockResolvedValue(null) })),
 }));
 jest.mock('../../../src/services/membership-cache.service', () => ({
   getCachedMembership: jest.fn(), setCachedMembership: jest.fn(),
@@ -26,6 +26,7 @@ const db = require('../../../src/config/supabase').__mockInstance;
 const membershipCache = require('../../../src/services/membership-cache.service');
 const dashboard = require('../../../src/services/dashboard.service');
 const logger = require('../../../src/utils/logger');
+const { getRedis } = require('../../../src/config/redis');
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const MEMBER_ID = '22222222-2222-4222-8222-222222222222';
@@ -66,7 +67,8 @@ function response(payload, status = 200) {
 }
 
 describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
-  const envKeys = ['NODE_ENV', 'GROQ_API_KEY', 'GROQ_MODEL', 'GROQ_TIMEOUT_MS', 'GROQ_MAX_COMPLETION_TOKENS'];
+  const envKeys = ['NODE_ENV', 'GROQ_API_KEY', 'GROQ_MODEL', 'GROQ_TIMEOUT_MS', 'GROQ_MAX_COMPLETION_TOKENS',
+    'AGENT_WORKSPACE_TOKEN_LIMIT', 'AGENT_BUDGET_PERIOD', 'AGENT_BUDGET_TIMEOUT_MS'];
   const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
   let fetchSpy;
 
@@ -78,6 +80,10 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     process.env.GROQ_MODEL = MODEL;
     process.env.GROQ_TIMEOUT_MS = '5000';
     process.env.GROQ_MAX_COMPLETION_TOKENS = '512';
+    delete process.env.AGENT_WORKSPACE_TOKEN_LIMIT;
+    delete process.env.AGENT_BUDGET_PERIOD;
+    delete process.env.AGENT_BUDGET_TIMEOUT_MS;
+    getRedis.mockImplementation(() => ({ set: jest.fn().mockResolvedValue(null) }));
     membershipCache.getCachedMembership.mockResolvedValue(null);
     membershipCache.setCachedMembership.mockResolvedValue();
     dashboard.getDashboardData.mockResolvedValue({ workspace_summary: { member_count: 2 } });
@@ -303,5 +309,64 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     const unauthenticated = await request(app).post(CHAT_PATH).send({ message: 'Hello' });
     expect(unauthenticated.status).toBe(401);
     expect(fetchSpy).toHaveBeenCalledTimes(11);
+  });
+
+  it('reserves the default shared daily allowance before every model call and settles actual usage', async () => {
+    const evalCommand = jest.fn()
+      .mockResolvedValueOnce(['reserved', '10000', '100000']).mockResolvedValueOnce(['settled', '58', '58'])
+      .mockResolvedValueOnce(['reserved', '10000', '100000']).mockResolvedValueOnce(['settled', '116', '58']);
+    getRedis.mockReturnValue({ status: 'ready', eval: evalCommand, set: jest.fn().mockResolvedValue(null) });
+    const payload = (value) => ({ ...value, usage: { prompt_tokens: 50, completion_tokens: 8, total_tokens: 58 } });
+    fetchSpy.mockResolvedValueOnce(response(payload(toolCompletion('get_dashboard'))))
+      .mockResolvedValueOnce(response(payload(completion())));
+    const res = await postChat();
+    expect(res.status).toBe(200);
+    expect(evalCommand).toHaveBeenCalledTimes(4);
+    const first = evalCommand.mock.calls[0];
+    expect(first[2]).toMatch(new RegExp(`^kith:agent-budget:v1:${WORKSPACE_ID}:day:`));
+    expect(first[5]).toBe(100000);
+    expect(first[6]).toBe(Buffer.byteLength(fetchSpy.mock.calls[0][1].body, 'utf8') + 512);
+    expect(evalCommand.mock.calls[1].slice(3)).toEqual([first[7], '58']);
+    expect(evalCommand.mock.calls[2][7]).not.toBe(first[7]);
+    expect(evalCommand.mock.invocationCallOrder[0]).toBeLessThan(fetchSpy.mock.invocationCallOrder[0]);
+  });
+
+  it('returns 429 and Retry-After for an exhausted workspace without calling Groq', async () => {
+    getRedis.mockReturnValue({ status: 'ready', eval: jest.fn().mockResolvedValue(['exhausted']), set: jest.fn().mockResolvedValue(null) });
+    const res = await postChat();
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe('AGENT_BUDGET_EXHAUSTED');
+    expect(Number(res.headers['retry-after'])).toBeGreaterThan(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith('Agent read turn failed', expect.objectContaining({ modelCalls: 0, usage: expect.objectContaining({ unreportedModelCalls: 0 }) }));
+  });
+
+  it('honors server budget settings and rejects an oversized reservation before Groq', async () => {
+    process.env.AGENT_WORKSPACE_TOKEN_LIMIT = '500';
+    process.env.AGENT_BUDGET_PERIOD = 'month';
+    const evalCommand = jest.fn().mockResolvedValue(['too_large']);
+    getRedis.mockReturnValue({ status: 'ready', eval: evalCommand, set: jest.fn().mockResolvedValue(null) });
+    const res = await postChat();
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('AGENT_BUDGET_REQUEST_TOO_LARGE');
+    expect(evalCommand.mock.calls[0][2]).toContain(':month:');
+    expect(evalCommand.mock.calls[0][5]).toBe(500);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('continues chat when a ready Redis connection stops responding', async () => {
+    process.env.AGENT_BUDGET_TIMEOUT_MS = '10';
+    getRedis.mockReturnValue({ status: 'ready', eval: () => new Promise(() => {}), set: jest.fn().mockResolvedValue(null) });
+    const res = await postChat();
+    expect(res.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects invalid server budget configuration without contacting Groq', async () => {
+    process.env.AGENT_BUDGET_PERIOD = 'week';
+    const res = await postChat();
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('AGENT_BUDGET_CONFIGURATION');
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

@@ -11,7 +11,12 @@ async function chat(req, res, next) {
     });
     res.set('Cache-Control', 'no-store');
     success(res, result);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.code === 'AGENT_BUDGET_EXHAUSTED' && Number.isSafeInteger(err.resetAtMs)) {
+      res.set('Retry-After', String(Math.max(1, Math.ceil((err.resetAtMs - Date.now()) / 1000))));
+    }
+    next(err);
+  }
 }
 
 module.exports = { chat };
