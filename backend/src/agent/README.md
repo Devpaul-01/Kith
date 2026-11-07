@@ -27,6 +27,45 @@ must enforce the user's entity selection separately from action approval.
 `has_more` means further candidates were omitted; refine the query or increase
 the limit. User-supplied names remain untrusted data.
 
+## Internal read loop
+
+`runReadTurn({ data: { message }, context, provider })` in
+`services/read-loop.service.js` runs one fresh read-only turn. Server code
+supplies the authenticated context and the provider. Client data accepts only
+a text message; conversation history, roles, tool results, and workspace IDs
+are rejected. Each invocation starts with `get_my_context` and keeps its
+messages and authenticated identity local to that invocation.
+
+The injected provider implements:
+
+```js
+provider.chat({ messages, tools })
+// -> { text: string | null, toolCalls: [{ id, name, arguments: string }] }
+```
+
+Messages use chat-completion roles and correlated `tool_call_id` values.
+Tool definitions contain `name`, `description`, and the Zod `parameterSchema`;
+the provider adapter owns converting schemas to its wire format. Only the
+caller's permitted Tier 0/1 definitions are supplied. Every execution still
+passes through `executeReadTool` and the handler's permission checks.
+
+Tool messages wrap results in `{ kind: 'untrusted_tool_result', data }`, and
+the fixed system instruction treats their contents as data and forbids
+arithmetic. This preserves the instruction/data boundary; live-model prompt
+injection and numerical-fidelity evaluations are still required.
+
+The loop permits at most 6 model calls and 12 tool calls (including context),
+8,000 input characters, 16,000 reply characters, 64 KiB per tool result, and
+128 KiB of conversation messages. It rejects unavailable tools, reused call
+IDs, malformed responses/arguments, and oversized results. Errors terminate
+the turn; transport and unexpected service details are not returned to callers.
+Success returns `{ text, modelCalls, toolCalls }`. Turn and tool traces share
+a server-generated `turnId`; rejected batches identify their requested tools.
+
+This is an internal service tested with a scripted provider. Groq transport,
+provider timeouts/token accounting, the authenticated HTTP endpoint and rate
+limiting, and server-owned conversation memory are subsequent increments.
+
 ## Database and verification
 
 The source of truth is `migrations/001_schema.sql`: it adds `pg_trgm`, two GIN
