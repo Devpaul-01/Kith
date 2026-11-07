@@ -3,6 +3,7 @@ const { AppError, ForbiddenError, ValidationError } = require('../../utils/error
 const logger = require('../../utils/logger');
 const { assertAgentContext } = require('./context.service');
 const { getAvailableTools, executeReadTool } = require('./tool-registry.service');
+const { normalizeProviderError } = require('../providers/provider-errors');
 const {
   READ_TURN_LIMITS, readTurnInputSchema, readProviderReplySchema,
 } = require('../validators/read-turn.validator');
@@ -59,7 +60,7 @@ function toolResultMessage(call, result) {
  * Server-owned provider contract:
  * chat({ messages, tools }) -> { text, toolCalls: [{ id, name, arguments }] }
  * messages use chat-completion roles; tools retain their Zod parameterSchema
- * for the future provider adapter to serialize. No handlers/context are sent.
+ * for the provider adapter to serialize. No handlers/context are sent.
  */
 async function runReadTurn({ data, context, provider } = {}) {
   const startedAt = Date.now();
@@ -119,8 +120,8 @@ async function runReadTurn({ data, context, provider } = {}) {
           messages: structuredClone(messages),
           tools: available.map(({ name, description, parameterSchema }) => ({ name, description, parameterSchema })),
         });
-      } catch {
-        throw new AppError('The agent provider is unavailable. Please try again.', 503, 'AGENT_PROVIDER_UNAVAILABLE');
+      } catch (err) {
+        throw normalizeProviderError(err);
       }
       const parsed = readProviderReplySchema.safeParse(rawReply);
       if (!parsed.success) {

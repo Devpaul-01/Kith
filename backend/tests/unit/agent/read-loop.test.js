@@ -11,7 +11,7 @@ const dashboardService = require('../../../src/services/dashboard.service');
 const searchService = require('../../../src/services/search.service');
 const { runReadTurn } = require('../../../src/agent/services/read-loop.service');
 const { READ_TURN_LIMITS } = require('../../../src/agent/validators/read-turn.validator');
-const { ForbiddenError, ValidationError } = require('../../../src/utils/errors');
+const { AppError, ForbiddenError, ValidationError } = require('../../../src/utils/errors');
 const logger = require('../../../src/utils/logger');
 
 function makeContext(role = 'member', workspaceId = '33333333-3333-4333-8333-333333333333') {
@@ -296,6 +296,19 @@ describe('agent read loop', () => {
     expect(error).toMatchObject({ code: 'AGENT_TOOL_FAILED', statusCode: 503 });
     expect(error.message).not.toContain('internal database detail');
     expect(provider.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['AGENT_PROVIDER_TIMEOUT', 504], ['AGENT_PROVIDER_RATE_LIMITED', 503],
+    ['AGENT_RESPONSE_TRUNCATED', 502], ['AGENT_INVALID_RESPONSE', 502],
+    ['AGENT_CONTEXT_LIMIT', 422],
+  ])('preserves safe provider error %s without trusting its message or details', async (code, statusCode) => {
+    const provider = scriptedProvider();
+    provider.chat.mockRejectedValue(new AppError('PRIVATE_PROVIDER_DETAIL', 500, code, { key: 'PRIVATE_KEY' }));
+    const error = await run(provider).catch((err) => err);
+    expect(error).toMatchObject({ code, statusCode, details: null });
+    expect(error.message).not.toContain('PRIVATE_PROVIDER_DETAIL');
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toMatch(/PRIVATE_PROVIDER_DETAIL|PRIVATE_KEY/);
   });
 
   it.each([undefined, 'circular'])('rejects a missing or unserializable service result: %s', async (value) => {
