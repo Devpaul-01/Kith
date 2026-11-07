@@ -62,9 +62,49 @@ the turn; transport and unexpected service details are not returned to callers.
 Success returns `{ text, modelCalls, toolCalls }`. Turn and tool traces share
 a server-generated `turnId`; rejected batches identify their requested tools.
 
-This is an internal service tested with a scripted provider. Groq transport,
-provider timeouts/token accounting, the authenticated HTTP endpoint and rate
-limiting, and server-owned conversation memory are subsequent increments.
+The authenticated HTTP endpoint, rate limiting, workspace token budgets, and
+server-owned conversation memory are subsequent increments.
+
+## Groq adapter
+
+`providers/groq.provider.js` exports `createGroqProvider()`, which implements
+the loop's provider interface using Node's built-in `fetch`:
+
+```js
+const { createGroqProvider } = require('./providers/groq.provider');
+const { runReadTurn } = require('./services/read-loop.service');
+const provider = createGroqProvider();
+const reply = await runReadTurn({ data: { message }, context, provider });
+```
+
+Set `GROQ_API_KEY` and `GROQ_MODEL` on the server; both are required. Choose a
+standard model that supports function calling. Compound model IDs are rejected
+because those systems can execute provider-hosted tools outside Kith. Only
+function definitions already selected by the loop are sent to Groq, and
+responses that contain provider-executed or undeclared tools are rejected.
+
+The adapter converts Zod input schemas using `zod-to-json-schema`. This gives
+the model structural constraints; the registry remains responsible for full
+Zod validation, including refinements and transformations. Handler functions,
+server context objects, and credentials are not serialized into tool definitions.
+
+`GROQ_TIMEOUT_MS` defaults to 20000 (maximum 60000) and covers both the request
+and response-body read. `GROQ_MAX_COMPLETION_TOKENS` defaults to 1024 (maximum
+4096). Requests and streamed response bodies are capped at 256 KiB. The
+endpoint is fixed to Groq's HTTPS chat-completions API, redirects are rejected,
+and requests are non-streaming with one completion and no automatic retries.
+
+Successful responses normalize to the existing `{ text, toolCalls }` contract.
+Truncated, malformed, or inconsistent completions terminate the turn. Timeout
+and rate-limit codes survive the loop boundary, but upstream messages, bodies,
+reasoning fields, and credentials are not exposed to callers or logs. Provider
+token usage, model, HTTP status, and latency are logged when available; this
+does not yet enforce a per-user or per-workspace spending budget.
+
+Unit tests use synthetic Groq responses, Web Streams, and the real read loop.
+They do not make live model calls or verify a deployed model's behavior.
+Reference: [Groq chat API](https://console.groq.com/docs/api-reference#chat-create)
+and [tool use](https://console.groq.com/docs/tool-use).
 
 ## Database and verification
 
