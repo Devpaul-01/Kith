@@ -16,6 +16,7 @@ const logger = require('../../../src/utils/logger');
 
 const API_KEY = 'FAKE_GROQ_KEY_FOR_TESTS';
 const MODEL = 'llama-3.3-70b-versatile';
+const USAGE = { promptTokens: 50, completionTokens: 8, totalTokens: 58 };
 const tool = { name: 'get_dashboard', description: 'Read the dashboard.', parameterSchema: z.object({}).strict() };
 const request = { messages: [{ role: 'user', content: 'Read the dashboard.' }], tools: [tool] };
 
@@ -62,7 +63,7 @@ describe('Groq provider', () => {
 
   it('sends one bounded non-streaming request with JSON schemas and server credentials', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(response());
-    await expect(provider(fetchImpl).chat(request)).resolves.toEqual({ text: 'Here is your dashboard.', toolCalls: [] });
+    await expect(provider(fetchImpl).chat(request)).resolves.toEqual({ text: 'Here is your dashboard.', toolCalls: [], usage: USAGE });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, options] = fetchImpl.mock.calls[0];
     expect(url).toBe('https://api.groq.com/openai/v1/chat/completions');
@@ -84,7 +85,7 @@ describe('Groq provider', () => {
     expect(body).not.toHaveProperty('max_tokens');
     expect(logger.info).toHaveBeenCalledWith('Groq chat completed', expect.objectContaining({
       provider: 'groq', model: MODEL, httpStatus: 200,
-      usage: { prompt_tokens: 50, completion_tokens: 8, total_tokens: 58 }, durationMs: expect.any(Number),
+      usage: USAGE, durationMs: expect.any(Number),
     }));
   });
 
@@ -94,6 +95,7 @@ describe('Groq provider', () => {
     const fetchImpl = jest.fn().mockResolvedValue(response(payload));
     await expect(provider(fetchImpl).chat(request)).resolves.toEqual({
       text: null, toolCalls: [{ id: 'call_1', name: 'get_dashboard', arguments: '{ "query": "Adaeze" }' }],
+      usage: USAGE,
     });
   });
 
@@ -102,7 +104,7 @@ describe('Groq provider', () => {
     payload.choices[0].message = { role: 'assistant', content: null, refusal: 'That action is unavailable.', reasoning: 'PRIVATE_REASONING' };
     payload.usage.private_detail = 'PRIVATE_USAGE_DETAIL';
     const fetchImpl = jest.fn().mockResolvedValue(response(payload));
-    await expect(provider(fetchImpl).chat(request)).resolves.toEqual({ text: 'That action is unavailable.', toolCalls: [] });
+    await expect(provider(fetchImpl).chat(request)).resolves.toEqual({ text: 'That action is unavailable.', toolCalls: [], usage: USAGE });
     expect(JSON.stringify(logger.info.mock.calls)).not.toMatch(/PRIVATE_REASONING|PRIVATE_USAGE_DETAIL/);
   });
 
@@ -112,6 +114,52 @@ describe('Groq provider', () => {
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).not.toHaveProperty('tools');
     expect(body).not.toHaveProperty('tool_choice');
+  });
+
+  it.each([undefined, null])('marks absent provider usage as unknown: %s', async (usage) => {
+    const payload = { ...completion(), usage };
+    const reply = await provider(jest.fn().mockResolvedValue(response(payload))).chat(request);
+    expect(reply.usage).toBeNull();
+    expect(logger.info).toHaveBeenCalledWith('Groq chat completed', expect.objectContaining({ usage: null }));
+  });
+
+  it.each([
+    { prompt_tokens: 50, completion_tokens: 8, total_tokens: 59 },
+    { prompt_tokens: 50.5, completion_tokens: 8, total_tokens: 58.5 },
+    { prompt_tokens: '50', completion_tokens: 8, total_tokens: 58 },
+    { prompt_tokens: Number.MAX_SAFE_INTEGER, completion_tokens: 1, total_tokens: Number.MAX_SAFE_INTEGER },
+  ])('rejects unusable accounting data without publishing a token total: %#', async (usage) => {
+    const error = await provider(jest.fn().mockResolvedValue(response({ ...completion(), usage }))).chat(request).catch((err) => err);
+    expect(error).toMatchObject({ code: 'AGENT_INVALID_RESPONSE' });
+    expect(error.usage).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith('Groq chat failed', expect.objectContaining({ usage: null }));
+  });
+
+  it.each(['length', 'invalid'])('retains valid usage even when a completion is rejected: %s', async (kind) => {
+    const payload = completion();
+    if (kind === 'length') payload.choices[0].finish_reason = 'length';
+    else payload.choices[0].message.role = 'system';
+    const error = await provider(jest.fn().mockResolvedValue(response(payload))).chat(request).catch((err) => err);
+    expect(error).toMatchObject({ code: kind === 'length' ? 'AGENT_RESPONSE_TRUNCATED' : 'AGENT_INVALID_RESPONSE', usage: USAGE, details: null });
+    expect(JSON.stringify(error)).not.toContain('usage');
+    expect(logger.warn).toHaveBeenCalledWith('Groq chat failed', expect.objectContaining({ usage: USAGE }));
+  });
+
+  it('uses server tracing metadata only for local logs', async () => {
+    const trace = { requestId: 'req_test', turnId: 'turn_test', workspaceId: 'workspace_test', actorUserId: 'user_test', actorMemberId: 'member_test', modelCall: 2 };
+    const fetchImpl = jest.fn().mockResolvedValue(response());
+    await provider(fetchImpl).chat({ ...request, trace });
+    expect(logger.info).toHaveBeenCalledWith('Groq chat completed', expect.objectContaining(trace));
+    const body = fetchImpl.mock.calls[0][1].body;
+    expect(JSON.parse(body)).not.toHaveProperty('trace');
+    for (const id of ['req_test', 'turn_test', 'workspace_test', 'user_test', 'member_test']) expect(body).not.toContain(id);
+  });
+
+  it('rejects unknown trace fields without sending or logging them', async () => {
+    const fetchImpl = jest.fn();
+    await expect(provider(fetchImpl).chat({ ...request, trace: { private: 'PRIVATE_TRACE_VALUE' } })).rejects.toBeInstanceOf(ValidationError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(JSON.stringify(logger.info.mock.calls)).not.toContain('PRIVATE_TRACE_VALUE');
   });
 
   it('loads server settings from the environment without choosing a default model', async () => {

@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const { READ_TURN_LIMITS, providerToolCallSchema } = require('./read-turn.validator');
+const { tokenCount, tokenUsageSchema, providerTraceSchema } = require('./provider-metadata.validator');
 
 const GROQ_LIMITS = Object.freeze({
   requestBytes: 256 * 1024,
@@ -48,9 +49,18 @@ const messageSchema = z.discriminatedUnion('role', [
 const groqRequestSchema = z.object({
   messages: z.array(messageSchema).min(1).max(GROQ_LIMITS.messages),
   tools: toolDefinitionsSchema.default([]),
+  trace: providerTraceSchema.optional(),
 }).strict();
 
-const tokenCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+// Parse usage separately so even a rejected completion retains reported usage.
+const groqUsageSchema = z.object({
+  prompt_tokens: tokenCount, completion_tokens: tokenCount, total_tokens: tokenCount,
+}).transform((usage) => ({
+  promptTokens: usage.prompt_tokens,
+  completionTokens: usage.completion_tokens,
+  totalTokens: usage.total_tokens,
+})).pipe(tokenUsageSchema).nullish();
+
 const groqResponseSchema = z.object({
   choices: z.array(z.object({
     index: z.literal(0),
@@ -65,7 +75,6 @@ const groqResponseSchema = z.object({
       executed_tools: z.array(z.unknown()).max(0).nullish(),
     }),
   })).length(1),
-  usage: z.object({ prompt_tokens: tokenCount, completion_tokens: tokenCount, total_tokens: tokenCount }).nullish(),
 });
 
-module.exports = { GROQ_LIMITS, groqConfigSchema, toolDefinitionsSchema, groqRequestSchema, groqResponseSchema };
+module.exports = { GROQ_LIMITS, groqConfigSchema, toolDefinitionsSchema, groqRequestSchema, groqResponseSchema, groqUsageSchema };

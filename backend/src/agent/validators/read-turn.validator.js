@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { tokenUsageSchema } = require('./provider-metadata.validator');
 
 const READ_TURN_LIMITS = Object.freeze({
   modelCalls: 6,
@@ -25,6 +26,7 @@ const providerToolCallSchema = z.object({
 const readProviderReplySchema = z.object({
   text: z.string().max(READ_TURN_LIMITS.replyChars).nullable().default(null),
   toolCalls: z.array(providerToolCallSchema).max(READ_TURN_LIMITS.toolCalls).default([]),
+  usage: tokenUsageSchema.nullable().optional(),
 }).strict().refine((reply) => reply.toolCalls.length > 0 || Boolean(reply.text?.trim()), {
   message: 'A provider reply must contain text or tool calls',
 });

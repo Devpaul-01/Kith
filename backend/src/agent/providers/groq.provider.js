@@ -1,6 +1,6 @@
 const { ValidationError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
-const { GROQ_LIMITS, groqConfigSchema, groqRequestSchema, groqResponseSchema } = require('../validators/groq.validator');
+const { GROQ_LIMITS, groqConfigSchema, groqRequestSchema, groqResponseSchema, groqUsageSchema } = require('../validators/groq.validator');
 const { readProviderReplySchema } = require('../validators/read-turn.validator');
 const { serializeToolDefinitions } = require('./tool-definitions');
 const { providerError, normalizeProviderError } = require('./provider-errors');
@@ -27,7 +27,7 @@ async function readResponseJson(response) {
   }
 }
 
-function normalizeReply(payload, allowedNames) {
+function normalizeReply(payload, allowedNames, usage) {
   const parsed = groqResponseSchema.safeParse(payload);
   if (!parsed.success) throw providerError('AGENT_INVALID_RESPONSE');
   const choice = parsed.data.choices[0];
@@ -45,9 +45,10 @@ function normalizeReply(payload, allowedNames) {
   const reply = readProviderReplySchema.safeParse({
     text: choice.message.refusal || choice.message.content || null,
     toolCalls: calls.map((call) => ({ id: call.id, name: call.function.name, arguments: call.function.arguments })),
+    usage,
   });
   if (!reply.success) throw providerError('AGENT_INVALID_RESPONSE');
-  return { reply: reply.data, usage: parsed.data.usage };
+  return reply.data;
 }
 
 /**
@@ -84,8 +85,9 @@ function createGroqProvider({
 
       const startedAt = Date.now();
       const controller = new AbortController();
-      const trace = { provider: 'groq', model: config.model };
+      const trace = { ...input.data.trace, provider: 'groq', model: config.model };
       let response;
+      let usage = null;
       let timer;
       let timedOut = false;
       const deadline = new Promise((resolve, reject) => {
@@ -109,16 +111,20 @@ function createGroqProvider({
           if (response.status === 429) throw providerError('AGENT_PROVIDER_RATE_LIMITED');
           if (!response.ok) throw providerError('AGENT_PROVIDER_UNAVAILABLE');
           const payload = await readResponseJson(response);
-          return normalizeReply(payload, new Set(input.data.tools.map((tool) => tool.name)));
+          const parsedUsage = groqUsageSchema.safeParse(payload?.usage);
+          if (!parsedUsage.success) throw providerError('AGENT_INVALID_RESPONSE');
+          usage = parsedUsage.data ?? null;
+          return normalizeReply(payload, new Set(input.data.tools.map((tool) => tool.name)), usage);
         })();
-        const { reply, usage } = await Promise.race([operation, deadline]);
+        const reply = await Promise.race([operation, deadline]);
         logger.info('Groq chat completed', { ...trace, usage, durationMs: Date.now() - startedAt });
         return reply;
       } catch (err) {
         controller.abort();
         if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
-        const error = timedOut ? providerError('AGENT_PROVIDER_TIMEOUT') : normalizeProviderError(err);
-        logger.warn('Groq chat failed', { ...trace, errorCode: error.code, durationMs: Date.now() - startedAt });
+        const normalized = normalizeProviderError(err);
+        const error = providerError(timedOut ? 'AGENT_PROVIDER_TIMEOUT' : normalized.code, usage || normalized.usage);
+        logger.warn('Groq chat failed', { ...trace, usage: error.usage ?? null, errorCode: error.code, durationMs: Date.now() - startedAt });
         throw error;
       } finally {
         clearTimeout(timer);

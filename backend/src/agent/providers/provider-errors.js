@@ -1,4 +1,5 @@
 const { AppError } = require('../../utils/errors');
+const { tokenUsageSchema } = require('../validators/provider-metadata.validator');
 
 const ERRORS = Object.freeze({
   AGENT_PROVIDER_CONFIGURATION: [503, 'The agent provider is not configured correctly.'],
@@ -10,16 +11,25 @@ const ERRORS = Object.freeze({
   AGENT_CONTEXT_LIMIT: [422, 'This request contains too much information. Please narrow it down.'],
 });
 
-function providerError(code = 'AGENT_PROVIDER_UNAVAILABLE') {
+function providerError(code = 'AGENT_PROVIDER_UNAVAILABLE', usage) {
   const known = Object.hasOwn(ERRORS, code) ? code : 'AGENT_PROVIDER_UNAVAILABLE';
   const [status, message] = ERRORS[known];
-  return new AppError(message, status, known);
+  const error = new AppError(message, status, known);
+  const parsed = tokenUsageSchema.safeParse(usage);
+  if (parsed.success) {
+    // Internal metadata, separate from client-facing error details.
+    Object.defineProperty(error, 'usage', { value: Object.freeze(parsed.data) });
+  }
+  return error;
 }
 
 // Keep known error codes across the loop boundary, but never trust a provider's
 // message/details: they may include response bodies, prompts, or credentials.
 function normalizeProviderError(error) {
-  return providerError(error instanceof AppError ? error.code : undefined);
+  return providerError(
+    error instanceof AppError ? error.code : undefined,
+    error instanceof AppError ? error.usage : undefined,
+  );
 }
 
 module.exports = { providerError, normalizeProviderError };
