@@ -29,4 +29,4 @@ const readProviderReplySchema = z.object({
   message: 'A provider reply must contain text or tool calls',
 });
 
-module.exports = { READ_TURN_LIMITS, readTurnInputSchema, readProviderReplySchema };
+module.exports = { READ_TURN_LIMITS, readTurnInputSchema, readProviderReplySchema, providerToolCallSchema };

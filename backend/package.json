@@ -39,7 +39,8 @@
     "resend": "^3.1.0",
     "uuid": "^9.0.0",
     "winston": "^3.11.0",
-    "zod": "^3.22.4"
+    "zod": "^3.22.4",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "jest": "^29.7.0",
