@@ -27,6 +27,34 @@ must enforce the user's entity selection separately from action approval.
 `has_more` means further candidates were omitted; refine the query or increase
 the limit. User-supplied names remain untrusted data.
 
+## Container and ledger summaries
+
+`get_container_summary` and `get_ledger_summary` are Tier 1 reads available
+to active workspace members and admins. Both accept only
+`{ "container_id": "<uuid>" }`. Resolve names with `find_container`; ambiguous
+matches should prompt a clarification. Workspace, caller, and role always
+come from authenticated context, including when handlers are called directly.
+
+The container tool wraps `container.service.getSummary` and preserves its
+field trimming: members see their own financial details and a reduced status
+view for other participants. Its member-view financial totals include only
+the caller's visible amounts. Admins receive all participants' financial
+details. Target totals use current non-cycle targets; they do not summarize
+a specific recurring billing cycle.
+
+The ledger tool wraps `ledger.service.getLedgerSummary`: admins see all
+entries in the container; members see only their own. Counts and base-currency
+totals cover all dates and cycles. Date/cycle filters are not supported and
+are rejected instead of silently ignored. Before querying totals, the handler
+uses `container.service.getContainer` to verify a non-deleted container in the
+authenticated workspace. That lookup's broader details are discarded.
+
+Both tools return the existing service values without recalculating amounts
+or counts. Summary text remains untrusted tool data. Unit tests exercise the
+handlers and real domain services with mocked Supabase responses, plus
+scripted resolution/clarification turns. Actual database isolation and
+live-model numerical accuracy still need integration/evaluation coverage.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
