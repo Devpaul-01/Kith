@@ -4,6 +4,7 @@ const logger = require('../../utils/logger');
 const { assertAgentContext } = require('./context.service');
 const { getAvailableTools, executeReadTool } = require('./tool-registry.service');
 const { normalizeProviderError } = require('../providers/provider-errors');
+const { tokenUsageSchema } = require('../validators/provider-metadata.validator');
 const {
   READ_TURN_LIMITS, readTurnInputSchema, readProviderReplySchema,
 } = require('../validators/read-turn.validator');
@@ -58,13 +59,14 @@ function toolResultMessage(call, result) {
  * from auth/membership middleware. No caller-supplied history is accepted.
  *
  * Server-owned provider contract:
- * chat({ messages, tools }) -> { text, toolCalls: [{ id, name, arguments }] }
+ * chat({ messages, tools, trace }) -> { text, toolCalls, usage? }
  * messages use chat-completion roles; tools retain their Zod parameterSchema
  * for the provider adapter to serialize. No handlers/context are sent.
  */
 async function runReadTurn({ data, context, provider } = {}) {
   const startedAt = Date.now();
   const trace = {
+    requestId: context?.requestId,
     turnId: randomUUID(),
     workspaceId: context?.workspace?.id,
     actorUserId: context?.userId,
@@ -72,6 +74,30 @@ async function runReadTurn({ data, context, provider } = {}) {
     modelCalls: 0,
     toolCalls: 0,
   };
+  let usageTotals = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  let reportedModelCalls = 0;
+
+  function recordUsage(usage) {
+    const parsed = tokenUsageSchema.safeParse(usage);
+    if (!parsed.success) return; // Missing/invalid usage is unknown, never free.
+    const next = Object.fromEntries(Object.keys(usageTotals).map((key) => [key, usageTotals[key] + parsed.data[key]]));
+    if (!Object.values(next).every(Number.isSafeInteger)) {
+      throw new AppError('The agent provider returned an invalid response.', 502, 'AGENT_INVALID_RESPONSE');
+    }
+    usageTotals = next;
+    reportedModelCalls += 1;
+  }
+
+  function usageSummary() {
+    return {
+      knownPromptTokens: usageTotals.promptTokens,
+      knownCompletionTokens: usageTotals.completionTokens,
+      knownTotalTokens: usageTotals.totalTokens,
+      reportedModelCalls,
+      unreportedModelCalls: trace.modelCalls - reportedModelCalls,
+      complete: reportedModelCalls === trace.modelCalls,
+    };
+  }
 
   try {
     assertAgentContext(context);
@@ -119,17 +145,25 @@ async function runReadTurn({ data, context, provider } = {}) {
         rawReply = await provider.chat({
           messages: structuredClone(messages),
           tools: available.map(({ name, description, parameterSchema }) => ({ name, description, parameterSchema })),
+          trace: {
+            requestId: trace.requestId, turnId: trace.turnId, workspaceId: trace.workspaceId,
+            actorUserId: trace.actorUserId, actorMemberId: trace.actorMemberId, modelCall: trace.modelCalls,
+          },
         });
       } catch (err) {
-        throw normalizeProviderError(err);
+        const error = normalizeProviderError(err);
+        recordUsage(error.usage);
+        throw error;
       }
+      // Usage may be valid even when the completion or subsequent tool fails.
+      recordUsage(rawReply?.usage);
       const parsed = readProviderReplySchema.safeParse(rawReply);
       if (!parsed.success) {
         throw new AppError('The agent provider returned an invalid response.', 502, 'AGENT_INVALID_RESPONSE');
       }
       const reply = parsed.data;
       if (reply.toolCalls.length === 0) {
-        logger.info('Agent read turn completed', { ...trace, durationMs: Date.now() - startedAt, outcome: 'success' });
+        logger.info('Agent read turn completed', { ...trace, usage: usageSummary(), durationMs: Date.now() - startedAt, outcome: 'success' });
         return { text: reply.text, modelCalls: trace.modelCalls, toolCalls: trace.toolCalls };
       }
       trace.requestedTools = reply.toolCalls.map(({ id, name }) => ({ id, name }));
@@ -162,7 +196,7 @@ async function runReadTurn({ data, context, provider } = {}) {
     }
   } catch (err) {
     logger.warn('Agent read turn failed', {
-      ...trace, errorCode: err.code, durationMs: Date.now() - startedAt, outcome: 'error',
+      ...trace, usage: usageSummary(), errorCode: err.code, durationMs: Date.now() - startedAt, outcome: 'error',
     });
     throw err;
   }

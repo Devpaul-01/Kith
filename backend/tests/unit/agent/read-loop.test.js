@@ -336,4 +336,100 @@ describe('agent read loop', () => {
       turnId: turnTrace.turnId, toolName: 'get_my_context',
     }));
   });
+
+  it('aggregates reported usage across model calls and links provider traces to the turn', async () => {
+    const context = { ...makeContext(), requestId: 'req_usage_test' };
+    const provider = scriptedProvider(
+      { toolCalls: [tool()], usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 } },
+      { text: 'Done.', usage: { promptTokens: 40, completionTokens: 5, totalTokens: 45 } },
+    );
+    await expect(run(provider, context)).resolves.toEqual({ text: 'Done.', modelCalls: 2, toolCalls: 2 });
+    const turn = logger.info.mock.calls.find(([message]) => message === 'Agent read turn completed')[1];
+    expect(turn.usage).toEqual({ knownPromptTokens: 140, knownCompletionTokens: 15, knownTotalTokens: 155, reportedModelCalls: 2, unreportedModelCalls: 0, complete: true });
+    for (let index = 0; index < 2; index += 1) {
+      expect(provider.chat.mock.calls[index][0].trace).toEqual({ requestId: context.requestId, turnId: turn.turnId, workspaceId: context.workspace.id, actorUserId: context.userId, actorMemberId: context.member.id, modelCall: index + 1 });
+    }
+    expect(JSON.stringify(provider.chat.mock.calls[1][0].messages)).not.toMatch(/promptTokens|completionTokens|req_usage_test/);
+  });
+
+  it.each([undefined, null])('keeps partial usage explicit when a reply omits accounting data: %s', async (usage) => {
+    const provider = scriptedProvider(
+      { toolCalls: [tool()], usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 } },
+      { text: 'Done.', usage },
+    );
+    await run(provider);
+    expect(logger.info).toHaveBeenCalledWith('Agent read turn completed', expect.objectContaining({
+      usage: { knownPromptTokens: 100, knownCompletionTokens: 10, knownTotalTokens: 110, reportedModelCalls: 1, unreportedModelCalls: 1, complete: false },
+    }));
+  });
+
+  it('retains usage from a truncated failure after an earlier successful model call', async () => {
+    const provider = scriptedProvider({ toolCalls: [tool()], usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 } });
+    const failure = new AppError('PRIVATE_UPSTREAM_DETAIL', 500, 'AGENT_RESPONSE_TRUNCATED', { secret: 'PRIVATE_DETAIL' });
+    failure.usage = { promptTokens: 40, completionTokens: 5, totalTokens: 45 };
+    provider.chat.mockRejectedValueOnce(failure);
+    const error = await run(provider).catch((err) => err);
+    expect(error).toMatchObject({ code: 'AGENT_RESPONSE_TRUNCATED', statusCode: 502, details: null, usage: failure.usage });
+    expect(logger.warn).toHaveBeenCalledWith('Agent read turn failed', expect.objectContaining({
+      usage: { knownPromptTokens: 140, knownCompletionTokens: 15, knownTotalTokens: 155, reportedModelCalls: 2, unreportedModelCalls: 0, complete: true },
+    }));
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toMatch(/PRIVATE_UPSTREAM_DETAIL|PRIVATE_DETAIL/);
+  });
+
+  it.each([
+    new Error('Transport failed'),
+    Object.assign(new AppError('Bad usage', 500, 'AGENT_PROVIDER_UNAVAILABLE'), { usage: { promptTokens: 1, completionTokens: 1, totalTokens: 9 } }),
+    Object.assign(new AppError('Extra metadata', 500, 'AGENT_PROVIDER_UNAVAILABLE'), { usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, secret: 'PRIVATE_USAGE' } }),
+  ])('counts missing or invalid failure usage as unreported: %#', async (failure) => {
+    const provider = scriptedProvider();
+    provider.chat.mockRejectedValueOnce(failure);
+    const error = await run(provider).catch((err) => err);
+    expect(error.usage).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith('Agent read turn failed', expect.objectContaining({
+      usage: { knownPromptTokens: 0, knownCompletionTokens: 0, knownTotalTokens: 0, reportedModelCalls: 0, unreportedModelCalls: 1, complete: false },
+    }));
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('PRIVATE_USAGE');
+  });
+
+  it('retains reported usage when the following tool fails', async () => {
+    dashboardService.getDashboardData.mockRejectedValueOnce(new Error('Database unavailable'));
+    const provider = scriptedProvider({ toolCalls: [tool()], usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 } });
+    await expect(run(provider)).rejects.toMatchObject({ code: 'AGENT_TOOL_FAILED' });
+    expect(logger.warn).toHaveBeenCalledWith('Agent read turn failed', expect.objectContaining({
+      usage: { knownPromptTokens: 100, knownCompletionTokens: 10, knownTotalTokens: 110, reportedModelCalls: 1, unreportedModelCalls: 0, complete: true },
+    }));
+  });
+
+  it('accounts for valid usage on a malformed scripted reply', async () => {
+    const provider = scriptedProvider({ text: 42, usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 } });
+    await expect(run(provider)).rejects.toMatchObject({ code: 'AGENT_INVALID_RESPONSE' });
+    expect(logger.warn).toHaveBeenCalledWith('Agent read turn failed', expect.objectContaining({
+      usage: expect.objectContaining({ knownTotalTokens: 110, reportedModelCalls: 1, complete: true }),
+    }));
+  });
+
+  it('stops on unsafe aggregate totals without logging a rounded count', async () => {
+    const provider = scriptedProvider(
+      { toolCalls: [tool()], usage: { promptTokens: Number.MAX_SAFE_INTEGER, completionTokens: 0, totalTokens: Number.MAX_SAFE_INTEGER } },
+      { text: 'Done.', usage: { promptTokens: 1, completionTokens: 0, totalTokens: 1 } },
+    );
+    await expect(run(provider)).rejects.toMatchObject({ code: 'AGENT_INVALID_RESPONSE' });
+    expect(logger.warn).toHaveBeenCalledWith('Agent read turn failed', expect.objectContaining({
+      usage: expect.objectContaining({ knownTotalTokens: Number.MAX_SAFE_INTEGER, reportedModelCalls: 1, unreportedModelCalls: 1, complete: false }),
+    }));
+  });
+
+  it('does not reuse usage totals for a second workspace', async () => {
+    const provider = scriptedProvider(
+      { text: 'First.', usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 } },
+      { text: 'Second.' },
+    );
+    await run(provider);
+    const second = makeContext('member', '44444444-4444-4444-8444-444444444444');
+    await run(provider, second);
+    const traces = logger.info.mock.calls.filter(([message]) => message === 'Agent read turn completed').map(([, trace]) => trace);
+    expect(traces[0].usage.knownTotalTokens).toBe(110);
+    expect(traces[1]).toMatchObject({ workspaceId: second.workspace.id, usage: { knownTotalTokens: 0, unreportedModelCalls: 1, complete: false } });
+    expect(traces[1].turnId).not.toBe(traces[0].turnId);
+  });
 });

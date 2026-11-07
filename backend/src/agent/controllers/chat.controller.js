@@ -7,7 +7,7 @@ async function chat(req, res, next) {
     const data = readTurnInputSchema.parse(req.body);
     const result = await runChatTurn({
       data,
-      context: { userId: req.user.id, member: req.member, workspace: req.workspace },
+      context: { userId: req.user.id, member: req.member, workspace: req.workspace, requestId: req.requestId },
     });
     res.set('Cache-Control', 'no-store');
     success(res, result);

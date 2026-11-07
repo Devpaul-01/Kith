@@ -179,6 +179,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     { message: 'Hello', history: [] }, { message: 'Hello', tools: [] },
     { message: 'Hello', model: 'client-model' }, { message: 'Hello', apiKey: 'client-key' },
     { message: 'Hello', provider: {} },
+    { message: 'Hello', trace: {} }, { message: 'Hello', usage: {} }, { message: 'Hello', requestId: 'forged' },
   ])('rejects invalid or privileged client fields before contacting Groq: %#', async (data) => {
     const res = await postChat(data);
     expect(res.status).toBe(400);
@@ -249,6 +250,39 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(JSON.stringify(body)).not.toContain('FIRST_PRIVATE_MESSAGE');
     expect(JSON.parse(body.messages.at(-1).content).data.workspace_id).toBe(OTHER_WORKSPACE_ID);
     expect(JSON.stringify(body)).not.toContain(WORKSPACE_ID);
+  });
+
+  it('correlates HTTP, turn, model and tool traces without returning usage metadata', async () => {
+    const payload = completion();
+    payload.usage = { prompt_tokens: 50, completion_tokens: 8, total_tokens: 58 };
+    fetchSpy.mockResolvedValueOnce(response(payload));
+    const res = await postChat().set('X-Request-Id', 'CLIENT_CONTROLLED_ID');
+    expect(res.status).toBe(200);
+    const requestId = res.headers['x-request-id'];
+    expect(requestId).not.toBe('CLIENT_CONTROLLED_ID');
+    const turn = logger.info.mock.calls.find(([message]) => message === 'Agent read turn completed')[1];
+    expect(turn).toMatchObject({ requestId, workspaceId: WORKSPACE_ID, actorUserId: USER_ID, usage: { knownTotalTokens: 58, complete: true } });
+    expect(logger.info).toHaveBeenCalledWith('Groq chat completed', expect.objectContaining({ requestId, turnId: turn.turnId, workspaceId: WORKSPACE_ID, modelCall: 1 }));
+    expect(logger.info).toHaveBeenCalledWith('Agent read tool completed', expect.objectContaining({ turnId: turn.turnId }));
+    expect(res.body.data).not.toHaveProperty('usage');
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).not.toHaveProperty('trace');
+    expect(fetchSpy.mock.calls[0][1].body).not.toContain(requestId);
+  });
+
+  it('accounts for rejected completion usage without putting it in the HTTP error', async () => {
+    const payload = completion();
+    payload.choices[0].finish_reason = 'length';
+    payload.usage = { prompt_tokens: 50, completion_tokens: 8, total_tokens: 58 };
+    fetchSpy.mockResolvedValueOnce(response(payload));
+    const res = await postChat();
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe('AGENT_RESPONSE_TRUNCATED');
+    expect(res.body.error).not.toHaveProperty('usage');
+    expect(res.body.error).not.toHaveProperty('details');
+    expect(logger.warn).toHaveBeenCalledWith('Agent read turn failed', expect.objectContaining({
+      requestId: res.headers['x-request-id'], workspaceId: WORKSPACE_ID,
+      usage: expect.objectContaining({ knownTotalTokens: 58, complete: true }),
+    }));
   });
 
   it('limits a user across workspaces and IPs before Groq while allowing another user on the same IP', async () => {
