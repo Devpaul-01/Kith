@@ -362,7 +362,7 @@ describe('Groq provider', () => {
     await expect(runReadTurn({ data: { message: 'Read the dashboard.' }, context: actor, provider: provider(fetchImpl) }))
       .resolves.toEqual({ text: 'Here is your dashboard.', modelCalls: 2, toolCalls: 2 });
     const first = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(first.tools.map((entry) => entry.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard']);
+    expect(first.tools.map((entry) => entry.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary']);
     const second = JSON.parse(fetchImpl.mock.calls[1][1].body);
     expect(JSON.parse(second.messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data });
     expect(dashboard.getDashboardData).toHaveBeenCalledWith({ workspaceId: actor.workspace.id, isAdmin: false, memberId: actor.member.id });

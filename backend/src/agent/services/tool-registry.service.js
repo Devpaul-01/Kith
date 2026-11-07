@@ -5,6 +5,8 @@ const { assertAgentContext } = require('./context.service');
 const { getMyContext, getDashboard, getOverdueSummary } = require('./read-tools.service');
 const { findMember, findContainer } = require('./resolution-tools.service');
 const { entitySearchSchema } = require('../../validators/search.validator');
+const { getContainerSummary, getLedgerSummary } = require('./summary-tools.service');
+const { containerSummaryArgsSchema } = require('../validators/summary-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -38,6 +40,22 @@ const tools = Object.freeze([
     minRole: 'member',
     tier: 1,
     handler: getDashboard,
+  }),
+  Object.freeze({
+    name: 'get_container_summary',
+    description: 'Get a container summary and permitted participant details. Find names with find_container and ask the user to choose ambiguous matches. Member financial totals include only their own visible amounts; admin totals include all participants. Target totals use current non-cycle targets, not billing-cycle targets. No date or cycle filtering.',
+    parameterSchema: containerSummaryArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getContainerSummary,
+  }),
+  Object.freeze({
+    name: 'get_ledger_summary',
+    description: 'Get server-calculated entry counts and base-currency totals for a container. Members see only their own entries; admins see all entries. Covers all dates and cycles, with no date or cycle filtering. Find container names with find_container and ask the user to choose ambiguous matches.',
+    parameterSchema: containerSummaryArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getLedgerSummary,
   }),
   Object.freeze({
     name: 'get_overdue_summary',

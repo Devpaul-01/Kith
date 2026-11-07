@@ -60,7 +60,7 @@ describe('agent read loop', () => {
     const request = provider.chat.mock.calls[0][0];
     expect(request.messages.map((message) => message.role)).toEqual(['system', 'user', 'assistant', 'tool']);
     expect(request.tools.map((entry) => entry.name)).toEqual([
-      'get_my_context', 'find_member', 'find_container', 'get_dashboard',
+      'get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary',
       ...(role === 'admin' ? ['get_overdue_summary'] : []),
     ]);
     request.tools.forEach((entry) => {
