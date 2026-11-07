@@ -6,6 +6,12 @@
 
 CREATE SCHEMA IF NOT EXISTS public;
 
+-- Supabase normally installs extensions here. Including public also supports
+-- an existing pg_trgm installation there without moving the extension.
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions;
+SET search_path TO public, extensions;
+
 SET default_tablespace = '';
 SET default_table_access_method = heap;
 
@@ -146,6 +152,9 @@ CREATE INDEX idx_workspace_members_user ON public.workspace_members USING btree 
 
 CREATE INDEX idx_workspace_members_workspace ON public.workspace_members USING btree (workspace_id) WHERE (deleted_at IS NULL);
 
+CREATE INDEX idx_workspace_members_display_name_trgm ON public.workspace_members
+    USING gin (display_name gin_trgm_ops) WHERE (is_active = true AND deleted_at IS NULL);
+
 CREATE TRIGGER workspace_members_updated_at BEFORE UPDATE ON public.workspace_members FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 CREATE TABLE public.workspace_settings (
@@ -272,7 +281,90 @@ CREATE INDEX idx_containers_type ON public.containers USING btree (workspace_id,
 
 CREATE INDEX idx_containers_workspace ON public.containers USING btree (workspace_id, status) WHERE (deleted_at IS NULL);
 
+CREATE INDEX idx_containers_name_trgm ON public.containers
+    USING gin (name gin_trgm_ops) WHERE (deleted_at IS NULL);
+
 CREATE TRIGGER containers_updated_at BEFORE UPDATE ON public.containers FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+-- Ranked entity resolution. search.service supplies p_pattern using the shared
+-- containsPattern() escaping helper and requests one extra row for has_more.
+-- The %> operator is word_similarity(p_query, name): it can match a misspelled
+-- first name inside a full name, and is supported by the GIN trigram indexes.
+-- Pin the threshold per call so connection/session settings cannot change it.
+CREATE FUNCTION public.search_members_ranked(
+    p_workspace_id uuid, p_query text, p_pattern text, p_limit integer DEFAULT 11
+) RETURNS TABLE (id uuid, display_name text, role text, is_proxy boolean, match_type text, score real)
+    LANGUAGE sql STABLE SECURITY INVOKER
+    SET search_path TO pg_catalog, public, extensions, pg_temp
+    SET pg_trgm.word_similarity_threshold TO '0.3'
+    AS $$
+    WITH matches AS (
+        SELECT m.id, m.display_name, m.role, m.is_proxy,
+            CASE WHEN lower(m.display_name) = lower(p_query) THEN 'exact'
+                 WHEN m.display_name ILIKE p_pattern ESCAPE E'\\' THEN 'substring'
+                 ELSE 'fuzzy' END AS match_type,
+            greatest(similarity(p_query, m.display_name), word_similarity(p_query, m.display_name)) AS score
+        FROM public.workspace_members m
+        WHERE m.workspace_id = p_workspace_id
+          AND m.is_active = true AND m.deleted_at IS NULL
+          AND char_length(p_query) BETWEEN 2 AND 200
+          AND EXISTS (SELECT 1 FROM public.workspaces w WHERE w.id = p_workspace_id AND w.deleted_at IS NULL)
+          AND (m.display_name ILIKE p_pattern ESCAPE E'\\'
+               OR (char_length(p_query) >= 3 AND m.display_name %> p_query))
+    )
+    SELECT m.id, m.display_name, m.role, m.is_proxy, m.match_type, m.score
+    FROM matches m
+    ORDER BY CASE m.match_type WHEN 'exact' THEN 0 WHEN 'substring' THEN 1 ELSE 2 END,
+             m.score DESC, lower(m.display_name) COLLATE "C", m.id
+    LIMIT least(21, greatest(2, coalesce(p_limit, 11)));
+$$;
+
+CREATE FUNCTION public.search_containers_ranked(
+    p_workspace_id uuid, p_query text, p_pattern text, p_limit integer DEFAULT 11
+) RETURNS TABLE (id uuid, name text, container_type text, status text, match_type text, score real)
+    LANGUAGE sql STABLE SECURITY INVOKER
+    SET search_path TO pg_catalog, public, extensions, pg_temp
+    SET pg_trgm.word_similarity_threshold TO '0.3'
+    AS $$
+    WITH matches AS (
+        SELECT c.id, c.name, c.container_type, c.status,
+            CASE WHEN lower(c.name) = lower(p_query) THEN 'exact'
+                 WHEN c.name ILIKE p_pattern ESCAPE E'\\' THEN 'substring'
+                 ELSE 'fuzzy' END AS match_type,
+            greatest(similarity(p_query, c.name), word_similarity(p_query, c.name)) AS score
+        FROM public.containers c
+        WHERE c.workspace_id = p_workspace_id AND c.deleted_at IS NULL
+          AND char_length(p_query) BETWEEN 2 AND 200
+          AND EXISTS (SELECT 1 FROM public.workspaces w WHERE w.id = p_workspace_id AND w.deleted_at IS NULL)
+          AND (c.name ILIKE p_pattern ESCAPE E'\\'
+               OR (char_length(p_query) >= 3 AND c.name %> p_query))
+    )
+    SELECT c.id, c.name, c.container_type, c.status, c.match_type, c.score
+    FROM matches c
+    ORDER BY CASE c.match_type WHEN 'exact' THEN 0 WHEN 'substring' THEN 1 ELSE 2 END,
+             c.score DESC, lower(c.name) COLLATE "C", c.id
+    LIMIT least(21, greatest(2, coalesce(p_limit, 11)));
+$$;
+
+-- These RPCs trust the backend's membership check. Do not let browser roles
+-- call them with an arbitrary workspace ID, even under Supabase's default
+-- function grants. Bare local Postgres tests run as the function owner.
+REVOKE EXECUTE ON FUNCTION public.search_members_ranked(uuid, text, text, integer),
+    public.search_containers_ranked(uuid, text, text, integer) FROM PUBLIC;
+
+DO $$
+DECLARE browser_role text;
+BEGIN
+    FOR browser_role IN SELECT rolname FROM pg_roles WHERE rolname IN ('anon', 'authenticated') LOOP
+        EXECUTE format('REVOKE EXECUTE ON FUNCTION public.search_members_ranked(uuid, text, text, integer), public.search_containers_ranked(uuid, text, text, integer) FROM %I', browser_role);
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        GRANT USAGE ON SCHEMA extensions TO service_role;
+        GRANT EXECUTE ON FUNCTION public.search_members_ranked(uuid, text, text, integer),
+            public.search_containers_ranked(uuid, text, text, integer) TO service_role;
+    END IF;
+END;
+$$;
 
 CREATE TABLE public.container_cycles (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
