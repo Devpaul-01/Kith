@@ -31,6 +31,18 @@ describe('middleware/errorHandler', () => {
     process.env.NODE_ENV = originalNodeEnv;
   });
 
+  it.each([
+    ['entity.parse.failed', 400, 'VALIDATION_FAILED', 'Request body must contain valid JSON.'],
+    ['entity.too.large', 413, 'PAYLOAD_TOO_LARGE', 'Request body is too large.'],
+  ])('preserves the client status for %s without logging private input', (type, status, code, message) => {
+    const err = Object.assign(new Error('PRIVATE_REQUEST_TEXT'), { type, status, body: 'PRIVATE_REQUEST_TEXT' });
+    const res = mockRes();
+    errorHandler(err, mockReq(), res, mockNext());
+    expect(res.status).toHaveBeenCalledWith(status);
+    expect(res.json).toHaveBeenCalledWith({ error: { code, message } });
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
   describe('ZodError handling', () => {
     it('returns 400 VALIDATION_FAILED using the first issue message and field path', () => {
       const err = makeZodError();

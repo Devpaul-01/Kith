@@ -4,6 +4,19 @@ const { ZodError }  = require('zod');
 const logger        = require('../utils/logger');
 
 function errorHandler(err, req, res, next) {
+  // Body parsing runs before the routers. Never echo malformed JSON or
+  // log parser messages/stacks, which can contain private request text.
+  if (err.type === 'entity.parse.failed' && err.status === 400) {
+    return res.status(400).json({
+      error: { code: 'VALIDATION_FAILED', message: 'Request body must contain valid JSON.' },
+    });
+  }
+  if (err.type === 'entity.too.large' && err.status === 413) {
+    return res.status(413).json({
+      error: { code: 'PAYLOAD_TOO_LARGE', message: 'Request body is too large.' },
+    });
+  }
+
   // Zod validation errors
   if (err instanceof ZodError) {
     const firstError = err.errors[0];
