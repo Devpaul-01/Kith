@@ -49,6 +49,7 @@ router.post('/avatar-upload-url', requireAdmin, uploadLimiter, wCtrl.getAvatarUp
 router.get('/ledger/export', requireAdmin, lCtrl.exportLedger);
 
 // ── Sub-resources ────────────────────────────────────────────────────
+router.use('/agent',      require('../agent/routes/chat.routes'));
 router.use('/members',    require('./member.routes'));
 router.use('/invites',    require('./workspace-invites.routes'));
 router.use('/groups',     require('./group.routes'));

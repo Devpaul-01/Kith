@@ -1,8 +1,8 @@
 // tests/unit/middleware/rateLimiter.test.js
 //
-// The real src/middleware/rateLimiter.js only exports the 6 constructed
+// The real src/middleware/rateLimiter.js only exports the 7 constructed
 // limiter instances (authLimiter, inviteLimiter, uploadLimiter,
-// publicLookupLimiter, generalLimiter, userGeneralLimiter) — the
+// publicLookupLimiter, generalLimiter, userGeneralLimiter, agentLimiter) — the
 // internal helpers (buildStore, perUserKey, perIpKey, createLimiter)
 // are module-private. This suite tests the module's real, public
 // surface: that it loads safely under both healthy and unhealthy Redis
@@ -10,7 +10,8 @@
 // middleware function. Direct unit coverage of the private
 // keyGenerator/store-fallback logic is not reachable without either
 // modifying the source (out of scope) or exercising it through a real
-// HTTP request via supertest, which belongs in the integration suite.
+// HTTP request via supertest. Agent endpoint tests cover HTTP throttling
+// with the memory fallback; shared Redis behavior needs integration tests.
 
 jest.mock('../../../src/utils/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),
@@ -31,7 +32,7 @@ describe('middleware/rateLimiter', () => {
   });
 
   describe('module load — Redis client healthy', () => {
-    it('loads without throwing and exports all 6 limiters as valid Express middleware functions', () => {
+    it('loads without throwing and exports all 7 limiters as valid Express middleware functions', () => {
       // RedisStore's constructor eagerly fires `SCRIPT LOAD` for its two
       // Lua scripts and awaits the reply (unawaited at the call site —
       // see rate-limit-redis's RedisStore constructor). A bare jest.fn()
@@ -59,6 +60,7 @@ describe('middleware/rateLimiter', () => {
       const expectedExports = [
         'authLimiter', 'inviteLimiter', 'uploadLimiter',
         'publicLookupLimiter', 'generalLimiter', 'userGeneralLimiter',
+        'agentLimiter',
       ];
       expectedExports.forEach((name) => {
         expect(typeof limiters[name]).toBe('function');

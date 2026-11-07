@@ -121,6 +121,16 @@ const userGeneralLimiter = createLimiter(
   { keyGenerator: perUserKey }
 );
 
+// Agent chat: 10 / min per authenticated user, across all workspaces.
+// This caps requests separately from the loop's model/tool-call limits.
+const agentLimiter = createLimiter(
+  'rl:agent:',
+  60 * 1000,
+  10,
+  'Agent request limit reached. Try again in a minute.',
+  { keyGenerator: perUserKey }
+);
+
 module.exports = {
   authLimiter,
   inviteLimiter,
@@ -128,4 +138,5 @@ module.exports = {
   publicLookupLimiter,
   generalLimiter,
   userGeneralLimiter,
+  agentLimiter,
 };
