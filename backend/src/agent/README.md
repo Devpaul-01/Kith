@@ -27,6 +27,64 @@ must enforce the user's entity selection separately from action approval.
 `has_more` means further candidates were omitted; refine the query or increase
 the limit. User-supplied names remain untrusted data.
 
+## Chat endpoint
+
+`POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
+body containing only a nonempty `message` (up to 8,000 characters):
+
+```json
+{ "message": "Show my workspace dashboard." }
+```
+
+This first HTTP increment returns one complete JSON response using the existing
+API envelope. For example, after a dashboard read:
+
+```json
+{
+  "data": {
+    "text": "Here is your workspace dashboard.",
+    "modelCalls": 2,
+    "toolCalls": 2
+  }
+}
+```
+
+`modelCalls` and `toolCalls` are server-counted turn metrics; the initial
+context read is included in `toolCalls`. Successful replies use
+`Cache-Control: no-store`. Each request starts a fresh conversation. Streaming
+and server-owned conversation memory remain later increments of the architecture.
+
+The route inherits `requireAuth` → `loadDbUser` → `requireMembership` from the
+workspace router. Context comes exclusively from those middleware results.
+Client-supplied history, roles, tools, identity fields, model settings, and
+workspace IDs in the body are rejected. Query parameters cannot change the
+workspace or actor. The tools offered and executed are still role-filtered
+Tier 0/1 reads; chat does not execute writes or approve proposals.
+
+The dedicated `agentLimiter` allows 10 requests per minute per authenticated
+user across all workspaces, using the shared Redis store with prefix
+`rl:agent:`. Existing general limits also apply. A blocked request returns
+429 `RATE_LIMITED` with `Retry-After` before invoking Groq. As with the existing
+limiters, a missing Redis client or synchronous store-construction failure
+falls back to an in-memory store with a warning; those counters are local to
+each process. Request limits and per-completion token caps do not enforce a
+per-user or workspace spending budget.
+
+Validation failures return 400; malformed JSON also returns 400 without echoing
+the body, and the application's 1 MiB body limit returns 413. Missing/invalid
+authentication or an unavailable user profile returns 401. An unavailable
+workspace or membership returns the existing non-enumerating 404. Provider
+configuration/unavailability/rate limits return 503, timeouts return 504,
+invalid or truncated completions return 502, and loop/size limits return 422.
+Errors use the existing `{ error: { code, message, ... } }` API envelope.
+
+Provider construction happens per accepted request, so missing Groq settings
+disable chat with a 503 without preventing the rest of the API from starting.
+HTTP unit tests run the real application middleware, read loop, and adapter
+with mocked external services. Throttling tests exercise the memory fallback;
+shared Redis enforcement and deployed Supabase/Groq behavior still need live
+integration verification.
+
 ## Internal read loop
 
 `runReadTurn({ data: { message }, context, provider })` in
@@ -62,8 +120,8 @@ the turn; transport and unexpected service details are not returned to callers.
 Success returns `{ text, modelCalls, toolCalls }`. Turn and tool traces share
 a server-generated `turnId`; rejected batches identify their requested tools.
 
-The authenticated HTTP endpoint, rate limiting, workspace token budgets, and
-server-owned conversation memory are subsequent increments.
+Workspace token budgets, streaming, and server-owned conversation memory are
+subsequent increments.
 
 ## Groq adapter
 
