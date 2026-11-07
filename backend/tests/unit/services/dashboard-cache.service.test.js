@@ -31,6 +31,20 @@ describe('services/dashboard-cache.service', () => {
       expect(await getCachedDashboard('ws-unknown', true)).toBeNull();
     });
 
+    it.each([false, true])('keeps workspaces separate for the same role (isAdmin=%s)', async (isAdmin) => {
+      await setCachedDashboard('ws-1', isAdmin, { summary: 'first-workspace' });
+      expect(await getCachedDashboard('ws-2', isAdmin)).toBeNull();
+      await setCachedDashboard('ws-2', isAdmin, { summary: 'second-workspace' });
+
+      expect(await getCachedDashboard('ws-1', isAdmin)).toEqual({ summary: 'first-workspace' });
+      expect(await getCachedDashboard('ws-2', isAdmin)).toEqual({ summary: 'second-workspace' });
+    });
+
+    it.each(['admin', 'member'])('ignores %s payloads cached before the workspace-isolation fix', async (role) => {
+      await getRedis().set(`kith:dashboard:ws-1:${role}`, JSON.stringify({ upcoming_deadlines: ['other-workspace'] }));
+      expect(await getCachedDashboard('ws-1', role === 'admin')).toBeNull();
+    });
+
     it('fails open on Redis read error (returns null, logs warning)', async () => {
       const redis = getRedis();
       const original = redis.get.bind(redis);
@@ -60,6 +74,20 @@ describe('services/dashboard-cache.service', () => {
       expect(await getCachedOverdueSummary('ws-1')).toEqual({ overdue_count: 3 });
     });
 
+    it('keeps overdue summaries separate across workspaces', async () => {
+      await setCachedOverdueSummary('ws-1', { overdue_count: 3 });
+      expect(await getCachedOverdueSummary('ws-2')).toBeNull();
+      await setCachedOverdueSummary('ws-2', { overdue_count: 1 });
+
+      expect(await getCachedOverdueSummary('ws-1')).toEqual({ overdue_count: 3 });
+      expect(await getCachedOverdueSummary('ws-2')).toEqual({ overdue_count: 1 });
+    });
+
+    it('ignores overdue payloads cached before the workspace-isolation fix', async () => {
+      await getRedis().set('kith:overdue-summary:ws-1', JSON.stringify({ overdue: ['other-workspace'] }));
+      expect(await getCachedOverdueSummary('ws-1')).toBeNull();
+    });
+
     it('fails open on read error', async () => {
       const redis = getRedis();
       const original = redis.get.bind(redis);
@@ -75,12 +103,18 @@ describe('services/dashboard-cache.service', () => {
       await setCachedDashboard('ws-1', true, { a: 1 });
       await setCachedDashboard('ws-1', false, { b: 2 });
       await setCachedOverdueSummary('ws-1', { c: 3 });
+      await setCachedDashboard('ws-2', true, { other: 'admin' });
+      await setCachedDashboard('ws-2', false, { other: 'member' });
+      await setCachedOverdueSummary('ws-2', { overdue_count: 2 });
 
       await invalidateDashboard('ws-1');
 
       expect(await getCachedDashboard('ws-1', true)).toBeNull();
       expect(await getCachedDashboard('ws-1', false)).toBeNull();
       expect(await getCachedOverdueSummary('ws-1')).toBeNull();
+      expect(await getCachedDashboard('ws-2', true)).toEqual({ other: 'admin' });
+      expect(await getCachedDashboard('ws-2', false)).toEqual({ other: 'member' });
+      expect(await getCachedOverdueSummary('ws-2')).toEqual({ overdue_count: 2 });
     });
 
     it('no-ops when workspaceId is falsy', async () => {

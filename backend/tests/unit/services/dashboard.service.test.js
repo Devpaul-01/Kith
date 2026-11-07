@@ -19,7 +19,21 @@ const dashboardService = require('../../../src/services/dashboard.service');
 const dashboardCache = require('../../../src/services/dashboard-cache.service');
 const mockSupabaseInstance = require('../../../src/config/supabase').__mockInstance;
 
-const WORKSPACE_ID = 'ws-1';
+const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
+
+function getQueries(table) {
+  const queries = [];
+  let current;
+  for (const call of mockSupabaseInstance.getCalls()) {
+    if (call.method === 'from') {
+      current = { table: call.args[0], calls: [] };
+      queries.push(current);
+    } else if (current) {
+      current.calls.push(call);
+    }
+  }
+  return queries.filter((query) => query.table === table).map((query) => query.calls);
+}
 
 /**
  * Queues the 7 responses buildSharedDashboardPayload's fan-out consumes.
@@ -43,6 +57,7 @@ const WORKSPACE_ID = 'ws-1';
  * container_participants, then containers (for names).
  */
 function queueDashboardResponses({
+  isAdmin = true,
   unreadCount = { count: 0, error: null },
   members = { data: [], error: null },
   events = { data: [], error: null },
@@ -62,8 +77,10 @@ function queueDashboardResponses({
   mockSupabaseInstance.mockNextResponse(pools);         // 4: containers (recurring)
   mockSupabaseInstance.mockNextResponse(targets);       // 5: contributor_targets
   mockSupabaseInstance.mockNextResponse(activity);      // 6: audit_log
-  mockSupabaseInstance.mockNextResponse(pending);       // 7: ledger_entries
-  mockSupabaseInstance.mockNextResponse(disputes);      // 8: disputes
+  if (isAdmin) {
+    mockSupabaseInstance.mockNextResponse(pending);     // 7: ledger_entries
+    mockSupabaseInstance.mockNextResponse(disputes);    // 8: disputes
+  }
   mockSupabaseInstance.mockNextResponse(milestones);    // 9: milestones (in Promise.all, but I missed this!)
 
   // ── Query 10: container_participants ──
@@ -91,6 +108,22 @@ describe('services/dashboard.service', () => {
     dashboardCache.setCachedOverdueSummary.mockResolvedValue();
   });
 
+  describe.each(['getDashboardData', 'getOverdueSummaryData'])('%s workspace validation', (method) => {
+    it.each([
+      undefined, {}, { workspaceId: null }, { workspaceId: '' },
+      { workspaceId: '   ' }, { workspaceId: 'not-a-uuid' }, { workspaceId: 123 },
+    ])('rejects invalid scope before accessing the cache or database: %j', async (params) => {
+      await expect(dashboardService[method](params)).rejects.toMatchObject({
+        code: 'VALIDATION_FAILED', field: 'workspaceId',
+      });
+      expect(mockSupabaseInstance.getCalls()).toEqual([]);
+      expect(dashboardCache.getCachedDashboard).not.toHaveBeenCalled();
+      expect(dashboardCache.getCachedOverdueSummary).not.toHaveBeenCalled();
+      expect(dashboardCache.setCachedDashboard).not.toHaveBeenCalled();
+      expect(dashboardCache.setCachedOverdueSummary).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getDashboardData', () => {
     it('cache hit: uses the cached shared payload, still fetches unread count fresh', async () => {
       dashboardCache.getCachedDashboard.mockResolvedValueOnce({
@@ -115,11 +148,40 @@ describe('services/dashboard.service', () => {
     });
 
     it('non-admin caller: pending_confirmations is always [] regardless of DB content', async () => {
-      queueDashboardResponses();
+      queueDashboardResponses({ isAdmin: false });
 
       const result = await dashboardService.getDashboardData({ workspaceId: WORKSPACE_ID, isAdmin: false, memberId: 'm1' });
 
       expect(result.pending_confirmations).toEqual([]);
+    });
+
+    it.each([false, true])('scopes deadlines and name lookups to the workspace (isAdmin=%s)', async (isAdmin) => {
+      queueDashboardResponses({
+        isAdmin,
+        targets: { data: [{ container_id: 'c1', container_participant_id: 'p1', target_amount: 50 }], error: null },
+      });
+
+      await dashboardService.getDashboardData({ workspaceId: WORKSPACE_ID, isAdmin, memberId: 'm1' });
+
+      const [targets] = getQueries('contributor_targets');
+      expect(targets).toEqual(expect.arrayContaining([
+        { method: 'select', args: [expect.stringContaining('containers!contributor_targets_container_id_fkey!inner(')] },
+        { method: 'eq', args: ['containers.workspace_id', WORKSPACE_ID] },
+        { method: 'is', args: ['containers.deleted_at', null] },
+      ]));
+
+      const [participants] = getQueries('container_participants');
+      expect(participants).toEqual(expect.arrayContaining([
+        { method: 'select', args: [expect.stringContaining('workspace_members!container_participants_workspace_member_id_fkey!inner(')] },
+        { method: 'eq', args: ['workspace_members.workspace_id', WORKSPACE_ID] },
+      ]));
+
+      const containerNames = getQueries('containers').find((query) => query.some((call) => call.method === 'in'));
+      expect(containerNames).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+      expect(getQueries('notifications')[0]).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] },
+        { method: 'eq', args: ['recipient_id', 'm1'] },
+      ]));
     });
 
     it('admin caller: pending_confirmations includes joined names', async () => {
@@ -292,6 +354,30 @@ describe('services/dashboard.service', () => {
 
       expect(result.overdue_count).toBe(1);
       expect(result.overdue[0].display_name).toBe('Bob');
+    });
+
+    it('restricts participants through an inner container join and scopes ledger/name reads', async () => {
+      mockSupabaseInstance.mockNextResponse({
+        data: [{
+          workspace_member_id: 'm1', container_id: 'c1', containers: { name: 'Rent' },
+          contributor_targets: [{ target_amount: 100, due_date: '2020-01-01', is_current: true, cycle_id: null }],
+        }],
+        error: null,
+      });
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null });
+      mockSupabaseInstance.mockNextResponse({ data: [{ id: 'm1', display_name: 'Bob' }], error: null });
+
+      await dashboardService.getOverdueSummaryData({ workspaceId: WORKSPACE_ID });
+
+      expect(getQueries('container_participants')[0]).toEqual(expect.arrayContaining([
+        { method: 'select', args: [expect.stringContaining('containers!container_participants_container_id_fkey!inner(')] },
+        { method: 'eq', args: ['containers.workspace_id', WORKSPACE_ID] },
+        { method: 'eq', args: ['containers.status', 'active'] },
+        { method: 'eq', args: ['containers.enable_money', true] },
+        { method: 'is', args: ['containers.deleted_at', null] },
+      ]));
+      expect(getQueries('ledger_entries')[0]).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+      expect(getQueries('workspace_members')[0]).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
     });
 
     it('multiple overdue containers for the same member are aggregated into one entry', async () => {

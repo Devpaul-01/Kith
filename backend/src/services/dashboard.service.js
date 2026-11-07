@@ -13,6 +13,8 @@
 
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
+const { ValidationError } = require('../utils/errors');
+const { dashboardWorkspaceSchema } = require('../validators/dashboard.validator');
 const { describeAuditAction } = require('../constants/audit-actions');
 const { PAID_STATUSES } = require('../constants/ledger-status');
 const { computeEngagement } = require('./engagement.service');
@@ -21,11 +23,19 @@ const {
   getCachedOverdueSummary, setCachedOverdueSummary,
 } = require('./dashboard-cache.service');
 
-async function getUnreadNotificationCount(memberId) {
+function assertWorkspaceId(workspaceId) {
+  const parsed = dashboardWorkspaceSchema.safeParse({ workspaceId });
+  if (!parsed.success) {
+    throw new ValidationError('A valid workspace ID is required', 'workspaceId', parsed.error.issues);
+  }
+}
+
+async function getUnreadNotificationCount({ workspaceId, memberId }) {
   if (!memberId) return 0;
   const { count, error } = await supabaseAdmin
     .from('notifications')
     .select('*', { count: 'exact', head: true })
+    .eq('workspace_id', workspaceId)
     .eq('recipient_id', memberId)
     .eq('is_read', false);
 
@@ -109,6 +119,8 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
       .is('deleted_at', null)
       .order('created_at', { ascending: false }),
 
+    // An inner relation is required: filtering an embedded container alone
+    // would leave targets from other workspaces in the top-level result.
     supabaseAdmin
       .from('contributor_targets')
       .select(`
@@ -116,8 +128,11 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
         target_currency,
         due_date,
         container_participant_id,
-        container_id
+        container_id,
+        containers!contributor_targets_container_id_fkey!inner(workspace_id)
       `)
+      .eq('containers.workspace_id', workspaceId)
+      .is('containers.deleted_at', null)
       .eq('is_current', true)
       .gte('due_date', todayStr)
       .lte('due_date', today14Str),
@@ -143,7 +158,8 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
     if (participantIds.length > 0) {
       const { data: participants } = await supabaseAdmin
         .from('container_participants')
-        .select('id, workspace_member_id, workspace_members!container_participants_workspace_member_id_fkey(display_name)')
+        .select('id, workspace_member_id, workspace_members!container_participants_workspace_member_id_fkey!inner(display_name)')
+        .eq('workspace_members.workspace_id', workspaceId)
         .in('id', participantIds);
 
       const participantMap = {};
@@ -158,6 +174,8 @@ async function buildSharedDashboardPayload({ workspaceId, isAdmin }) {
       const { data: containers } = await supabaseAdmin
         .from('containers')
         .select('id, name')
+        .eq('workspace_id', workspaceId)
+        .is('deleted_at', null)
         .in('id', containerIds);
       containerNamesMap = (containers || []).reduce((acc, c) => {
         acc[c.id] = c.name;
@@ -356,10 +374,12 @@ async function getEngagementSummary({ workspaceId }) {
  * (admin only), recent activity, and unread notification count, plus:
  * overdue summary, my-tasks summary, open disputes count, engagement summary.
  */
-async function getDashboardData({ workspaceId, isAdmin, memberId }) {
+async function getDashboardData({ workspaceId, isAdmin, memberId } = {}) {
+  assertWorkspaceId(workspaceId);
+
   const [cached, unreadCount] = await Promise.all([
     getCachedDashboard(workspaceId, isAdmin),
-    getUnreadNotificationCount(memberId),
+    getUnreadNotificationCount({ workspaceId, memberId }),
   ]);
 
   const shared = cached || await buildSharedDashboardPayload({ workspaceId, isAdmin });
@@ -390,20 +410,25 @@ async function getDashboardData({ workspaceId, isAdmin, memberId }) {
  * Computes, per member, total outstanding balance across all active
  * money-enabled containers where their current target is past due.
  */
-async function getOverdueSummaryData({ workspaceId }) {
+async function getOverdueSummaryData({ workspaceId } = {}) {
+  assertWorkspaceId(workspaceId);
+
   const cached = await getCachedOverdueSummary(workspaceId);
   if (cached) return cached;
 
   const today = new Date().toISOString().split('T')[0];
 
+  // !inner makes the container filters exclude unrelated participants,
+  // rather than returning them with a null embedded container.
   const { data: participants, error: pErr } = await supabaseAdmin
     .from('container_participants')
     .select(`
       workspace_member_id, container_id, money_enabled,
-      containers!container_participants_container_id_fkey(name, status, workspace_id, enable_money),
+      containers!container_participants_container_id_fkey!inner(name, status, workspace_id, enable_money),
       contributor_targets(target_amount, target_currency, due_date, is_current, cycle_id)
     `)
     .eq('containers.workspace_id', workspaceId)
+    .is('containers.deleted_at', null)
     .eq('containers.status', 'active')
     .eq('containers.enable_money', true)
     .eq('money_enabled', true);
@@ -449,7 +474,10 @@ async function getOverdueSummaryData({ workspaceId }) {
 
   if (overdueIds.length > 0) {
     const { data: members } = await supabaseAdmin
-      .from('workspace_members').select('id, display_name').in('id', overdueIds);
+      .from('workspace_members')
+      .select('id, display_name')
+      .eq('workspace_id', workspaceId)
+      .in('id', overdueIds);
     for (const m of (members || [])) displayNames[m.id] = m.display_name;
   }
 

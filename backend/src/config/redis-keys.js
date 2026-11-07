@@ -20,7 +20,9 @@ const membershipKey = (workspaceId, userId) => `kith:membership:${workspaceId}:$
 // across roles would either leak admin-only data to members or force an
 // isAdmin check on every cached read. Per-member fields (unread counts)
 // are deliberately NOT part of this cached payload — see dashboard.service.js.
-const dashboardKey      = (workspaceId, isAdmin) => `kith:dashboard:${workspaceId}:${isAdmin ? 'admin' : 'member'}`;
-const overdueSummaryKey = (workspaceId) => `kith:overdue-summary:${workspaceId}`;
+// v2 skips payloads cached before target/participant workspace isolation
+// was enforced. Old keys expire normally without being served again.
+const dashboardKey      = (workspaceId, isAdmin) => `kith:dashboard:v2:${workspaceId}:${isAdmin ? 'admin' : 'member'}`;
+const overdueSummaryKey = (workspaceId) => `kith:overdue-summary:v2:${workspaceId}`;
 
 module.exports = { TTL, lastSeenKey, membershipKey, dashboardKey, overdueSummaryKey };
