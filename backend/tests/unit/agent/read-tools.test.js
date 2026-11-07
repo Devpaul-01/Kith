@@ -2,6 +2,10 @@ jest.mock('../../../src/services/dashboard.service', () => ({
   getDashboardData: jest.fn(),
   getOverdueSummaryData: jest.fn(),
 }));
+jest.mock('../../../src/services/search.service', () => ({
+  findMembers: jest.fn(),
+  findContainers: jest.fn(),
+}));
 
 const dashboardService = require('../../../src/services/dashboard.service');
 const { getMyContext, getDashboard, getOverdueSummary } = require('../../../src/agent/services/read-tools.service');
@@ -35,15 +39,15 @@ describe('agent read-tool foundation', () => {
     dashboardService.getOverdueSummaryData.mockReset();
   });
 
-  it('offers members only context and their permitted dashboard', () => {
+  it('offers members context, resolution, and their permitted dashboard', () => {
     expect(getAvailableTools(makeContext()).map((tool) => tool.name))
-      .toEqual(['get_my_context', 'get_dashboard']);
+      .toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard']);
   });
 
   it('offers admins the overdue tool as well, without exposing handlers', () => {
     const available = getAvailableTools(makeContext('admin'));
     expect(available.map((tool) => tool.name))
-      .toEqual(['get_my_context', 'get_dashboard', 'get_overdue_summary']);
+      .toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_overdue_summary']);
     available.forEach((tool) => expect(tool).not.toHaveProperty('handler'));
   });
 

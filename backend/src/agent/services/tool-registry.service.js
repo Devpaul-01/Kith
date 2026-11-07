@@ -3,6 +3,8 @@ const { ValidationError, NotFoundError, BusinessRuleError } = require('../../uti
 const logger = require('../../utils/logger');
 const { assertAgentContext } = require('./context.service');
 const { getMyContext, getDashboard, getOverdueSummary } = require('./read-tools.service');
+const { findMember, findContainer } = require('./resolution-tools.service');
+const { entitySearchSchema } = require('../../validators/search.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -12,6 +14,22 @@ const tools = Object.freeze([
     minRole: 'member',
     tier: 0,
     handler: getMyContext,
+  }),
+  Object.freeze({
+    name: 'find_member',
+    description: 'Find ranked member candidates by name in your workspace. Ask the user to choose among ambiguous matches or confirm a single match before using it in a write. If has_more is true, narrow the query or increase the limit.',
+    parameterSchema: entitySearchSchema,
+    minRole: 'member',
+    tier: 0,
+    handler: findMember,
+  }),
+  Object.freeze({
+    name: 'find_container',
+    description: 'Find ranked container candidates by name in your workspace. Ask the user to choose among ambiguous matches or confirm a single match before using it in a write. If has_more is true, narrow the query or increase the limit.',
+    parameterSchema: entitySearchSchema,
+    minRole: 'member',
+    tier: 0,
+    handler: findContainer,
   }),
   Object.freeze({
     name: 'get_dashboard',
