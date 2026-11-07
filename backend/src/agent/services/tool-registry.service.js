@@ -62,10 +62,11 @@ function getAvailableTools(context) {
  * separate entry point; no model-controlled flag can enable writes here.
  * Results remain service data, including any untrusted user-generated text.
  */
-async function executeReadTool({ name, args = {}, context }) {
+async function executeReadTool({ name, args = {}, context, turnId }) {
   const startedAt = Date.now();
   const tool = tools.find((candidate) => candidate.name === name);
   const trace = {
+    turnId,
     toolName: typeof name === 'string' ? name : null,
     tier: tool?.tier,
     workspaceId: context?.workspace?.id,
