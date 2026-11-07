@@ -24,11 +24,12 @@
 const { getRedis } = require('../config/redis');
 const { TTL, membershipKey } = require('../config/redis-keys');
 const logger = require('../utils/logger');
+const { withRedisDeadline } = require('../utils/redis-deadline');
 
 async function getCachedMembership(workspaceId, userId) {
   try {
     const redis = getRedis();
-    const raw = await redis.get(membershipKey(workspaceId, userId));
+    const raw = await withRedisDeadline(redis, () => redis.get(membershipKey(workspaceId, userId)));
     if (!raw) return null;
     return JSON.parse(raw);
   } catch (err) {

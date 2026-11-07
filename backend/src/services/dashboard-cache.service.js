@@ -38,11 +38,12 @@
 const { getRedis } = require('../config/redis');
 const { TTL, dashboardKey, overdueSummaryKey } = require('../config/redis-keys');
 const logger = require('../utils/logger');
+const { withRedisDeadline } = require('../utils/redis-deadline');
 
 async function getCachedDashboard(workspaceId, isAdmin) {
   try {
     const redis = getRedis();
-    const raw = await redis.get(dashboardKey(workspaceId, isAdmin));
+    const raw = await withRedisDeadline(redis, () => redis.get(dashboardKey(workspaceId, isAdmin)));
     return raw ? JSON.parse(raw) : null;
   } catch (err) {
     logger.warn('Dashboard cache read failed — falling back to DB', { workspaceId, error: err.message });
@@ -62,7 +63,7 @@ async function setCachedDashboard(workspaceId, isAdmin, payload) {
 async function getCachedOverdueSummary(workspaceId) {
   try {
     const redis = getRedis();
-    const raw = await redis.get(overdueSummaryKey(workspaceId));
+    const raw = await withRedisDeadline(redis, () => redis.get(overdueSummaryKey(workspaceId)));
     return raw ? JSON.parse(raw) : null;
   } catch (err) {
     logger.warn('Overdue-summary cache read failed — falling back to DB', { workspaceId, error: err.message });

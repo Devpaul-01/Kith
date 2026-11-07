@@ -27,18 +27,25 @@ const rateLimit = require('express-rate-limit');
 const { RedisStore } = require('rate-limit-redis');
 const { getRedis } = require('../config/redis');
 const logger = require('../utils/logger');
+const { withRedisDeadline } = require('../utils/redis-deadline');
+const { ResilientRateLimitStore } = require('./resilient-rate-limit-store');
 
-function buildStore(prefix) {
+function buildStore(prefix, fallbackOnError) {
   try {
     const redis = getRedis();
     if (!redis || typeof redis.call !== 'function') {
       logger.warn(`Rate limiter [${prefix}]: Redis client unavailable or missing .call() — falling back to in-memory store. Rate limits will NOT be shared across instances.`);
       return undefined;
     }
-    return new RedisStore({
-      sendCommand: (...args) => redis.call(...args),
+    const store = new RedisStore({
+      sendCommand: (...args) => withRedisDeadline(redis, () => redis.call(...args)),
       prefix,
     });
+    // The library loads scripts eagerly. Observe failures until increment()
+    // retries them, so starting with Redis offline cannot crash the process.
+    store.incrementScriptSha.catch(() => {});
+    store.getScriptSha.catch(() => {});
+    return fallbackOnError ? new ResilientRateLimitStore(store, prefix) : store;
   } catch (err) {
     logger.warn(`Rate limiter [${prefix}]: failed to initialize Redis store — falling back to in-memory store`, { error: err.message });
     return undefined;
@@ -51,11 +58,11 @@ const perUserKey = (req) => req.user?.id || req.ip;
 // Pre-auth / identity-agnostic routes are keyed by IP only.
 const perIpKey = (req) => req.ip;
 
-const createLimiter = (prefix, windowMs, max, message, { keyGenerator = perIpKey } = {}) =>
+const createLimiter = (prefix, windowMs, max, message, { keyGenerator = perIpKey, fallbackOnError = false } = {}) =>
   rateLimit({
     windowMs,
     max,
-    store: buildStore(prefix),
+    store: buildStore(prefix, fallbackOnError),
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator,
@@ -108,7 +115,7 @@ const generalLimiter = createLimiter(
   60 * 1000,
   200,
   'Request limit reached. Slow down.',
-  { keyGenerator: perIpKey }
+  { keyGenerator: perIpKey, fallbackOnError: true }
 );
 
 // General API, per authenticated user: 200 / min per user. Mounted AFTER
@@ -118,7 +125,7 @@ const userGeneralLimiter = createLimiter(
   60 * 1000,
   200,
   'Request limit reached. Slow down.',
-  { keyGenerator: perUserKey }
+  { keyGenerator: perUserKey, fallbackOnError: true }
 );
 
 // Agent chat: 10 / min per authenticated user, across all workspaces.
@@ -128,7 +135,7 @@ const agentLimiter = createLimiter(
   60 * 1000,
   10,
   'Agent request limit reached. Try again in a minute.',
-  { keyGenerator: perUserKey }
+  { keyGenerator: perUserKey, fallbackOnError: true }
 );
 
 module.exports = {
