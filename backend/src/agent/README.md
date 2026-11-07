@@ -5,7 +5,7 @@ and `executeReadTool({ name, args, context })`. Server code must build context
 after the existing auth and membership middleware:
 
 ```js
-const context = { userId: req.user.id, member: req.member, workspace: req.workspace };
+const context = { userId: req.user.id, member: req.member, workspace: req.workspace, requestId: req.requestId };
 ```
 
 `find_member` and `find_container` take `{ query, limit? }`. Queries are trimmed
@@ -97,8 +97,9 @@ messages and authenticated identity local to that invocation.
 The injected provider implements:
 
 ```js
-provider.chat({ messages, tools })
-// -> { text: string | null, toolCalls: [{ id, name, arguments: string }] }
+provider.chat({ messages, tools, trace })
+// -> { text: string | null, toolCalls: [{ id, name, arguments: string }], usage? }
+// usage: { promptTokens, completionTokens, totalTokens } | null
 ```
 
 Messages use chat-completion roles and correlated `tool_call_id` values.
@@ -119,6 +120,36 @@ IDs, malformed responses/arguments, and oversized results. Errors terminate
 the turn; transport and unexpected service details are not returned to callers.
 Success returns `{ text, modelCalls, toolCalls }`. Turn and tool traces share
 a server-generated `turnId`; rejected batches identify their requested tools.
+Provider calls receive a separate server-owned `trace` with the HTTP request
+ID (when available), turn ID, workspace/caller IDs, and model-call index. The
+Groq adapter uses this only for local logs; it is not sent to the model.
+
+## Token accounting and budget scope
+
+The adapter normalizes provider-reported prompt, completion, and total token
+counts. Counts must be nonnegative safe integers, and the total must equal
+prompt plus completion tokens. Unknown provider metadata is discarded.
+Missing usage remains `null`, not a claim of zero consumption.
+
+Usage is parsed before completion validation. A truncated or rejected
+completion can therefore retain valid usage on its canonical error's internal
+`usage` property. Normalization preserves only validated counts; that property
+is separate from client-facing error details and is not serialized into HTTP
+errors. Unreadable bodies, timeouts without usage, and invalid usage remain
+unreported. Successful HTTP responses also keep their existing shape.
+
+Each turn's success or failure trace contains a `usage` summary:
+`knownPromptTokens`, `knownCompletionTokens`, `knownTotalTokens`,
+`reportedModelCalls`, `unreportedModelCalls`, and `complete`. Totals include
+reported usage from failed completions and calls followed by tool failures.
+`complete` describes accounting coverage, not whether the turn succeeded.
+When usage is incomplete, the known totals are only a partial count. The loop
+rejects aggregate totals that cannot be represented safely instead of rounding.
+
+These are per-turn structured logs and internal provider metadata, not a
+durable quota ledger. The agreed budget scope is **one shared allowance per
+workspace**. The allowance amount, reset schedule, reservation/reconciliation
+policy, and durable enforcement remain for the budget milestone.
 
 Workspace token budgets, streaming, and server-owned conversation memory are
 subsequent increments.
@@ -152,11 +183,11 @@ and response-body read. `GROQ_MAX_COMPLETION_TOKENS` defaults to 1024 (maximum
 endpoint is fixed to Groq's HTTPS chat-completions API, redirects are rejected,
 and requests are non-streaming with one completion and no automatic retries.
 
-Successful responses normalize to the existing `{ text, toolCalls }` contract.
+Successful responses normalize to `{ text, toolCalls, usage }`.
 Truncated, malformed, or inconsistent completions terminate the turn. Timeout
 and rate-limit codes survive the loop boundary, but upstream messages, bodies,
 reasoning fields, and credentials are not exposed to callers or logs. Provider
-token usage, model, HTTP status, and latency are logged when available; this
+token usage, model, HTTP status, latency, and server trace IDs are logged; this
 does not yet enforce a per-user or per-workspace spending budget.
 
 Unit tests use synthetic Groq responses, Web Streams, and the real read loop.
