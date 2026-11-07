@@ -1,5 +1,8 @@
 # Dependencies
 node_modules/
+KITH_AGENT_ARCHITECTURE.md
+AGENTS.md
+.codex*
 
 # Environment variables
 .env
