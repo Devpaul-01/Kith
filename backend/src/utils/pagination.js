@@ -11,4 +11,13 @@ function getPagination(query) {
   return { page, perPage, offset };
 }
 
-module.exports = { getPagination };
+function getPaginationMeta({ total, page, perPage }) {
+  return {
+    page: parseInt(page),
+    per_page: parseInt(perPage),
+    total,
+    total_pages: Math.ceil(total / perPage),
+  };
+}
+
+module.exports = { getPagination, getPaginationMeta };

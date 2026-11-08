@@ -7,6 +7,8 @@ const { findMember, findContainer } = require('./resolution-tools.service');
 const { entitySearchSchema } = require('../../validators/search.validator');
 const { getContainerSummary, getLedgerSummary, getMemberContributionSummary, getMemberEngagement } = require('./summary-tools.service');
 const { containerSummaryArgsSchema, memberSummaryArgsSchema, memberEngagementArgsSchema } = require('../validators/summary-tools.validator');
+const { listCycles } = require('./cycle-tools.service');
+const { listCyclesArgsSchema } = require('../validators/cycle-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -80,6 +82,14 @@ const tools = Object.freeze([
     minRole: 'admin',
     tier: 1,
     handler: getMemberEngagement,
+  }),
+  Object.freeze({
+    name: 'list_cycles',
+    description: 'List a container\'s billing cycles by descending cycle number. Admin access required. Find container names with find_container and ask the user to choose ambiguous matches. Returns stored dates and statuses, with optional status filtering and server-generated pagination. Use next_page to continue; it is null at the last page or the page limit. Does not provide financial totals or generate, open, close, or change cycles.',
+    parameterSchema: listCyclesArgsSchema,
+    minRole: 'admin',
+    tier: 1,
+    handler: listCycles,
   }),
 ]);
 

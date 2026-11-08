@@ -33,6 +33,12 @@ const MEMBER_ID = '22222222-2222-4222-8222-222222222222';
 const WORKSPACE_ID = '33333333-3333-4333-8333-333333333333';
 const OTHER_WORKSPACE_ID = '44444444-4444-4444-8444-444444444444';
 const OTHER_USER_ID = '55555555-5555-4555-8555-555555555555';
+const CYCLE_CONTAINER_ID = '66666666-6666-4666-8666-666666666666';
+const CYCLE = Object.freeze({
+  id: '77777777-7777-4777-8777-777777777777', container_id: CYCLE_CONTAINER_ID,
+  cycle_number: 3, cycle_start: '2026-11-01', cycle_end: '2026-11-30', status: 'open',
+  total_expected: null, total_collected: '0.00', created_at: '2026-10-01T00:00:00Z', closed_at: null,
+});
 const MODEL = 'llama-3.3-70b-versatile';
 const CHAT_PATH = `/v1/workspaces/${WORKSPACE_ID}/agent/chat`;
 
@@ -55,10 +61,10 @@ function completion(text = 'Here is your workspace information.') {
   return { choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: text } }] };
 }
 
-function toolCompletion(name) {
+function toolCompletion(name, args = {}) {
   return { choices: [{ index: 0, finish_reason: 'tool_calls', message: {
     role: 'assistant', content: null,
-    tool_calls: [{ id: 'call_1', type: 'function', function: { name, arguments: '{}' } }],
+    tool_calls: [{ id: 'call_1', type: 'function', function: { name, arguments: JSON.stringify(args) } }],
   } }] };
 }
 
@@ -147,7 +153,75 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(db.getCalls()).toContainEqual({ method: 'eq', args: ['containers.workspace_id', WORKSPACE_ID] });
   });
 
-  it.each(['get_overdue_summary', 'get_member_engagement'])('rejects a model attempt to request %s for a member', async (name) => {
+  it('reads cycle schedules through the real workspace-scoped service for an admin', async () => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('list_cycles', { container_id: CYCLE_CONTAINER_ID })))
+      .mockResolvedValueOnce(response(completion('The open cycle ends on 2026-11-30.')));
+    const pendingRequest = postChat({ message: 'Show the billing cycles.' }, { role: 'admin' })
+      .query({ workspaceId: OTHER_WORKSPACE_ID });
+    db.mockResponses(
+      { data: { id: CYCLE_CONTAINER_ID }, error: null },
+      { data: [CYCLE], error: null, count: 1 },
+    );
+
+    const res = await pendingRequest;
+    expect(res.status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    expect(JSON.parse(messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: {
+      cycles: [{
+        id: CYCLE.id, container_id: CYCLE_CONTAINER_ID, cycle_number: 3,
+        cycle_start: '2026-11-01', cycle_end: '2026-11-30', status: 'open',
+        created_at: '2026-10-01T00:00:00Z', closed_at: null,
+      }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1, next_page: null },
+    } });
+    const calls = db.getCalls();
+    const parentStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'containers');
+    const cycleStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_cycles');
+    expect(calls.slice(parentStart, cycleStart)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+  });
+
+  it('preserves the existing cycle-list HTTP envelope and forwards the routed workspace', async () => {
+    authenticate({ role: 'admin' });
+    db.mockResponses(
+      { data: { id: CYCLE_CONTAINER_ID }, error: null },
+      { data: [CYCLE], error: null, count: 3 },
+    );
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers/${CYCLE_CONTAINER_ID}/cycles`)
+      .set('Authorization', 'Bearer TEST_TOKEN').query({ page: 2, per_page: 1, status: 'open' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: { cycles: [CYCLE] }, meta: { pagination: { page: 2, per_page: 1, total: 3, total_pages: 3 } } });
+    const calls = db.getCalls();
+    const parentStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'containers');
+    const cycleStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_cycles');
+    expect(calls.slice(parentStart, cycleStart)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+    expect(calls.slice(cycleStart)).toContainEqual({ method: 'range', args: [1, 1] });
+    expect(calls.slice(cycleStart)).toContainEqual({ method: 'eq', args: ['status', 'open'] });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 from the cycle-list endpoint when its workspace parent lookup misses', async () => {
+    authenticate({ role: 'admin' });
+    db.mockNextResponse({ data: null, error: null });
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers/${CYCLE_CONTAINER_ID}/cycles`)
+      .set('Authorization', 'Bearer TEST_TOKEN');
+    expect(res.status).toBe(404);
+    expect(db.client.from.mock.calls).not.toContainEqual(['container_cycles']);
+    const calls = db.getCalls();
+    const parentStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'containers');
+    expect(calls.slice(parentStart)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing cycle-list endpoint admin-only', async () => {
+    authenticate();
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers/${CYCLE_CONTAINER_ID}/cycles`)
+      .set('Authorization', 'Bearer TEST_TOKEN');
+    expect(res.status).toBe(403);
+    expect(db.client.from.mock.calls).not.toContainEqual(['containers']);
+    expect(db.client.from.mock.calls).not.toContainEqual(['container_cycles']);
+  });
+
+  it.each(['get_overdue_summary', 'get_member_engagement', 'list_cycles'])('rejects a model attempt to request %s for a member', async (name) => {
     fetchSpy.mockResolvedValueOnce(response(toolCompletion(name)));
     const res = await postChat();
     expect(res.status).toBe(502);
@@ -156,6 +230,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body).tools.map((tool) => tool.function.name)).not.toContain(name);
     expect(db.client.from.mock.calls).not.toContainEqual(['ledger_entries']);
     expect(db.client.from.mock.calls).not.toContainEqual(['container_tasks']);
+    expect(db.client.from.mock.calls).not.toContainEqual(['container_cycles']);
   });
 
   it('rejects missing authentication before consulting membership or Groq', async () => {

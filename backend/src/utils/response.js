@@ -1,5 +1,7 @@
 // src/utils/response.js
 
+const { getPaginationMeta } = require('./pagination');
+
 function success(res, data, statusCode = 200, meta = null) {
   const body = { data };
   if (meta) body.meta = meta;
@@ -8,12 +10,7 @@ function success(res, data, statusCode = 200, meta = null) {
 
 function paginate(res, data, total, page, perPage) {
   return success(res, data, 200, {
-    pagination: {
-      page: parseInt(page),
-      per_page: parseInt(perPage),
-      total,
-      total_pages: Math.ceil(total / perPage),
-    },
+    pagination: getPaginationMeta({ total, page, perPage }),
   });
 }
 
