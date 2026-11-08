@@ -95,6 +95,43 @@ resolution/clarification turns. Real database isolation and join behavior,
 plus live-model disambiguation and numerical fidelity, still need integration
 and evaluation coverage.
 
+## Member engagement
+
+`get_member_engagement` is an admin-only Tier 1 read accepting `{}`. The registry
+omits it for members, and the handler separately checks active admin membership
+before calling `member.service.getMemberEngagement`. Identity and workspace
+come from authenticated context; member, date, container, and other filters
+are rejected.
+
+The tool returns non-deleted, non-proxy members, including deactivated
+memberships, matching the existing engagement endpoint. Each row includes
+`member_id`, `display_name`, `last_activity`, `confirmed_contributions_count`,
+`pending_contributions_count`, and `engagement_level`. The service computes
+activity from the latest stored member activity, confirmed/resolved ledger
+confirmation, or completed task. Its classifications are `active` within
+30 days, `quiet` within 90 days, and `inactive` otherwise, including no recorded
+activity. These describe activity, not whether a membership is enabled.
+
+Counts cover all dates. Confirmed counts include resolved entries; pending
+counts include only `pending` entries and exclude `proof_uploaded`. The tool
+preserves these existing definitions and values. The service's legacy
+`overdue_count: 0` placeholder is omitted from agent results. Use
+`get_overdue_summary` for overdue contributions and `get_dashboard` for
+workspace counts of quiet/inactive members; the model must not count rows.
+
+Member engagement reads scope the member list, ledger entries, and completed
+tasks to the workspace; tasks are scoped through an inner container join.
+The shared activity helper retains its existing batch mode for callers that
+scan member IDs across workspaces. Failed queries or missing/non-array data
+raise `ENGAGEMENT_UNAVAILABLE` (503) instead of producing partial counts or
+classifications. This failure handling also applies to the helper's dashboard
+and background-job callers. The chat loop returns `AGENT_TOOL_FAILED` on a
+service failure.
+
+Unit and HTTP tests exercise permissions, query scope, service calculations,
+field trimming, and untrusted member names. Real database join/isolation checks
+and live-model evaluation remain pending.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
