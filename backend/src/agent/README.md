@@ -55,6 +55,46 @@ handlers and real domain services with mocked Supabase responses, plus
 scripted resolution/clarification turns. Actual database isolation and
 live-model numerical accuracy still need integration/evaluation coverage.
 
+## Member contribution summaries
+
+`get_member_contribution_summary` is a Tier 1 read accepting only
+`{ "member_id": "<uuid>" }`. Use `find_member` for names and ask the user to
+choose or refine ambiguous matches. For the caller's own summary, use the
+member ID returned by `get_my_context`.
+
+Any active workspace member or admin may read another member's contribution
+summary within the same workspace, matching the existing member-summary HTTP
+route. The handler checks authenticated membership, then uses
+`member.service.getMember` with the real workspace and role to verify that the
+target member exists and is not deleted. Profile details from that lookup are
+discarded. Only `member.service.getContributionSummary` results reach the model.
+
+The result preserves the service's calculations and field types:
+
+- `total_containers` counts distinct containers represented in ledger entries.
+- `total_confirmed_count` and `total_paid_base_currency` include confirmed and
+  resolved entries across all dates and cycles.
+- `last_contribution_date` comes from those entries' confirmation dates.
+- `containers` contains participation summaries using current non-cycle
+  targets, retaining each target's amount and currency.
+
+Date, container, and cycle filters are unsupported and rejected. These totals
+cannot answer a request specifically for this month's contributions. The
+agent must report that limitation and must not calculate a filtered total or
+convert target currencies itself.
+
+The shared service now scopes ledger reads by workspace and uses an inner
+container join to exclude participations outside that workspace. Failed queries
+or results without a row array raise `MEMBER_SUMMARY_UNAVAILABLE` (503) instead of
+producing a partial or zero summary; the chat loop returns its existing
+`AGENT_TOOL_FAILED` response without asking the model to narrate a result.
+
+Unit tests cover handler permissions, workspace/target lookup, query filters,
+service calculations and errors, argument validation, and scripted
+resolution/clarification turns. Real database isolation and join behavior,
+plus live-model disambiguation and numerical fidelity, still need integration
+and evaluation coverage.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
