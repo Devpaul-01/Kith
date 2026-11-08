@@ -132,6 +132,42 @@ Unit and HTTP tests exercise permissions, query scope, service calculations,
 field trimming, and untrusted member names. Real database join/isolation checks
 and live-model evaluation remain pending.
 
+## Billing cycle lists
+
+`list_cycles` is an admin-only Tier 1 read, matching the existing cycles HTTP
+route. It accepts a required `container_id` UUID, optional `status`
+(`upcoming`, `open`, `closed`, or `skipped`), `page` (1–10,000, default 1), and
+`per_page` (1–100, default 20). Use `find_container` for names; ask the user to
+choose or refine ambiguous matches. The handler checks active admin membership
+even when called directly, and rejects workspace/role overrides and unsupported
+filters.
+
+The shared container service now checks that the container belongs to the
+requested workspace and is not deleted before reading its cycles. The existing
+HTTP controller also supplies that workspace, closing the same gap for direct
+cycle-list requests. An unavailable parent returns `NOT_FOUND`; failed queries
+or invalid row/count results return `CYCLES_UNAVAILABLE` (503). The chat loop
+maps service failures to its existing `AGENT_TOOL_FAILED` response.
+
+Results contain `cycles` in descending `cycle_number` order and a `pagination`
+object with `page`, `per_page`, `total`, `total_pages`, and `next_page`. Counts
+apply to the optional status filter across all pages. Pagination metadata uses
+the same utility as HTTP responses; the server also supplies `next_page`, so
+the model does not calculate it. It is null on the last page or at page 10,000;
+refine the status filter when the page limit is reached. An empty page can
+mean that the requested page is past the end, so consult `pagination.total`.
+
+Each cycle exposes only its ID, container ID, sequence number, start/end dates,
+stored status, creation timestamp, and closure timestamp. The legacy
+`total_expected` and `total_collected` columns are not maintained by the current
+generation/lifecycle jobs and are omitted from agent results. This tool cannot
+answer cycle-specific financial totals or generate, override, open, or close
+cycles. All returned values remain untrusted data.
+
+Unit and HTTP tests cover permissions, workspace scope, filtering, pagination,
+field trimming, and scripted resolution/clarification. Real database isolation
+and live-model evaluation remain pending.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
