@@ -345,9 +345,11 @@ async function getMemberEngagement({ workspaceId }) {
     .eq('is_proxy', false)
     .is('deleted_at', null);
 
-  if (error) throw new Error(error.message);
+  if (error || !Array.isArray(members)) {
+    throw new AppError('Member engagement is unavailable. Please try again.', 503, 'ENGAGEMENT_UNAVAILABLE');
+  }
 
-  return computeEngagement(members || []);
+  return computeEngagement(members, { workspaceId });
 }
 
 module.exports = {

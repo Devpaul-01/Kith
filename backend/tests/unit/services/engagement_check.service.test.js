@@ -31,6 +31,19 @@ describe('services/engagement_check.service — runEngagementCheck', () => {
     expect(logger.info).toHaveBeenCalledWith('Engagement check complete', { processed: 0 });
   });
 
+  it.each(['ledger', 'tasks'])('stops before member updates when the shared %s read fails', async (source) => {
+    const failed = { data: null, error: { message: 'Database unavailable' } };
+    mockSupabaseInstance.mockResponses(
+      { data: [{ id: 'm1', workspace_id: 'ws-1', last_active_at: '2026-07-20T00:00:00Z' }], error: null },
+      source === 'ledger' ? failed : { data: [], error: null },
+      source === 'tasks' ? failed : { data: [], error: null },
+    );
+
+    await expect(runEngagementCheck()).rejects.toMatchObject({ code: 'ENGAGEMENT_UNAVAILABLE' });
+    expect(mockSupabaseInstance.builder.update).not.toHaveBeenCalled();
+    expect(logger.info).not.toHaveBeenCalledWith('Engagement check complete', expect.anything());
+  });
+
   it('excludes proxy members via the query filter', async () => {
     mockSupabaseInstance.mockNextResponse({ data: [], error: null });
 

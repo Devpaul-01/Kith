@@ -9,21 +9,32 @@
 
 const { supabaseAdmin } = require('../config/supabase');
 const { PAID_STATUSES } = require('../constants/ledger-status');
+const { AppError } = require('../utils/errors');
 
-async function fetchEngagementData(memberIds) {
+async function fetchEngagementData(memberIds, { workspaceId } = {}) {
   if (!memberIds.length) return { ledgerByMember: new Map(), tasksByMember: new Map() };
 
-  const [{ data: allLedger }, { data: allTasks }] = await Promise.all([
-    supabaseAdmin
-      .from('ledger_entries')
-      .select('contributor_id, status, confirmed_at')
-      .in('contributor_id', memberIds),
-    supabaseAdmin
-      .from('container_tasks')
-      .select('assigned_to, status, completed_at')
-      .in('assigned_to', memberIds)
-      .eq('status', 'completed'),
-  ]);
+  // The member endpoint passes workspace scope. The background check can still
+  // batch members from several workspaces using the original member-ID scope.
+  let ledgerQuery = supabaseAdmin
+    .from('ledger_entries')
+    .select('contributor_id, status, confirmed_at')
+    .in('contributor_id', memberIds);
+  if (workspaceId !== undefined) ledgerQuery = ledgerQuery.eq('workspace_id', workspaceId);
+
+  let tasksQuery = supabaseAdmin
+    .from('container_tasks')
+    .select(workspaceId !== undefined
+      ? 'assigned_to, status, completed_at, containers!container_tasks_container_id_fkey!inner(workspace_id)'
+      : 'assigned_to, status, completed_at')
+    .in('assigned_to', memberIds)
+    .eq('status', 'completed');
+  if (workspaceId !== undefined) tasksQuery = tasksQuery.eq('containers.workspace_id', workspaceId);
+
+  const [{ data: allLedger, error: ledgerError }, { data: allTasks, error: taskError }] = await Promise.all([ledgerQuery, tasksQuery]);
+  if (ledgerError || taskError || !Array.isArray(allLedger) || !Array.isArray(allTasks)) {
+    throw new AppError('Member engagement is unavailable. Please try again.', 503, 'ENGAGEMENT_UNAVAILABLE');
+  }
 
   const ledgerByMember = new Map();
   for (const le of (allLedger || [])) {
@@ -45,9 +56,9 @@ async function fetchEngagementData(memberIds) {
  * endpoint. `members` entries must include at least { id, display_name,
  * last_active_at }.
  */
-async function computeEngagement(members) {
+async function computeEngagement(members, options) {
   const memberIds = members.map((m) => m.id);
-  const { ledgerByMember, tasksByMember } = await fetchEngagementData(memberIds);
+  const { ledgerByMember, tasksByMember } = await fetchEngagementData(memberIds, options);
   const now = new Date();
 
   return members.map((m) => {

@@ -39,6 +39,46 @@ describe('services/engagement.service', () => {
       const fromCalls = mockSupabaseInstance.getCalls().filter((c) => c.method === 'from');
       expect(fromCalls).toHaveLength(2);
     });
+
+    it('scopes both activity sources to a workspace when supplied', async () => {
+      mockSupabaseInstance.mockResponses({ data: [], error: null }, { data: [], error: null });
+      await fetchEngagementData(['m1'], { workspaceId: 'ws-1' });
+
+      const calls = mockSupabaseInstance.getCalls();
+      const taskStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_tasks');
+      expect(calls.slice(0, taskStart)).toEqual(expect.arrayContaining([
+        { method: 'in', args: ['contributor_id', ['m1']] },
+        { method: 'eq', args: ['workspace_id', 'ws-1'] },
+      ]));
+      expect(calls.slice(taskStart)).toEqual(expect.arrayContaining([
+        { method: 'select', args: [expect.stringContaining('containers!container_tasks_container_id_fkey!inner(workspace_id)')] },
+        { method: 'in', args: ['assigned_to', ['m1']] },
+        { method: 'eq', args: ['status', 'completed'] },
+        { method: 'eq', args: ['containers.workspace_id', 'ws-1'] },
+      ]));
+    });
+
+    it.each(['ledger', 'tasks'])('rejects a %s read failure instead of classifying partial activity', async (source) => {
+      const failed = { data: [], error: { message: 'PRIVATE_DATABASE_DETAIL' } };
+      mockSupabaseInstance.mockResponses(
+        source === 'ledger' ? failed : { data: [], error: null },
+        source === 'tasks' ? failed : { data: [], error: null },
+      );
+      await expect(fetchEngagementData(['m1'], { workspaceId: 'ws-1' })).rejects.toMatchObject({
+        statusCode: 503, code: 'ENGAGEMENT_UNAVAILABLE',
+        message: 'Member engagement is unavailable. Please try again.',
+      });
+    });
+
+    it.each([
+      ['ledger', null], ['ledger', {}], ['tasks', null], ['tasks', {}],
+    ])('rejects non-array %s data: %j', async (source, data) => {
+      mockSupabaseInstance.mockResponses(
+        { data: source === 'ledger' ? data : [], error: null },
+        { data: source === 'tasks' ? data : [], error: null },
+      );
+      await expect(fetchEngagementData(['m1'])).rejects.toMatchObject({ code: 'ENGAGEMENT_UNAVAILABLE', statusCode: 503 });
+    });
   });
 
   describe('computeEngagement', () => {
@@ -102,12 +142,14 @@ describe('services/engagement.service', () => {
       expect(result[0].last_activity).toBe('2026-07-20');
     });
 
-    it('counts confirmed and pending contributions separately', async () => {
+    it('counts confirmed/resolved entries and retains the pending-only status definition', async () => {
       mockSupabaseInstance.mockNextResponse({
         data: [
           { contributor_id: 'm1', status: 'confirmed', confirmed_at: '2026-07-01' },
-          { contributor_id: 'm1', status: 'confirmed', confirmed_at: '2026-07-02' },
+          { contributor_id: 'm1', status: 'resolved', confirmed_at: '2026-07-02' },
           { contributor_id: 'm1', status: 'pending', confirmed_at: null },
+          { contributor_id: 'm1', status: 'proof_uploaded', confirmed_at: null },
+          { contributor_id: 'm1', status: 'disputed', confirmed_at: '2026-07-03' },
         ],
         error: null,
       });
@@ -118,6 +160,7 @@ describe('services/engagement.service', () => {
 
       expect(result[0].confirmed_contributions_count).toBe(2);
       expect(result[0].pending_contributions_count).toBe(1);
+      expect(result[0].last_activity).toBe('2026-07-02');
     });
 
     it('handles multiple members independently', async () => {

@@ -439,8 +439,21 @@ describe('services/member.service', () => {
 
       const proxyEqCall = mockSupabaseInstance.getCalls().find((c) => c.method === 'eq' && c.args[0] === 'is_proxy');
       expect(proxyEqCall.args[1]).toBe(false);
-      expect(engagement.computeEngagement).toHaveBeenCalledWith([{ id: 'm1', display_name: 'Bob', last_active_at: null }]);
+      expect(engagement.computeEngagement).toHaveBeenCalledWith([{ id: 'm1', display_name: 'Bob', last_active_at: null }], { workspaceId: WORKSPACE_ID });
       expect(result).toEqual([{ member_id: 'm1', engagement_level: 'active' }]);
+    });
+
+    it.each([
+      { data: [], error: { message: 'PRIVATE_DATABASE_DETAIL' } },
+      { data: null, error: null },
+      { data: {}, error: null },
+    ])('rejects failed or missing member rows before computing engagement: %j', async (response) => {
+      mockSupabaseInstance.mockNextResponse(response);
+      await expect(memberService.getMemberEngagement({ workspaceId: WORKSPACE_ID })).rejects.toMatchObject({
+        statusCode: 503, code: 'ENGAGEMENT_UNAVAILABLE',
+        message: 'Member engagement is unavailable. Please try again.',
+      });
+      expect(engagement.computeEngagement).not.toHaveBeenCalled();
     });
   });
 });
