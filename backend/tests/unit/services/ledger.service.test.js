@@ -665,6 +665,8 @@ describe('services/ledger.service', () => {
   // single most important access-control branch in this function), the
   // joined-name reshaping, query filters, and the fail-loud error path.
   describe('listEntries', () => {
+    beforeEach(() => mockSupabaseInstance.mockNextResponse({ data: { id: CONTAINER_ID }, error: null }));
+
     it('non-admin caller is scoped to their own contributor_id regardless of query filters', async () => {
       mockSupabaseInstance.mockNextResponse({ data: [], error: null, count: 0 });
 
@@ -751,16 +753,14 @@ describe('services/ledger.service', () => {
       expect(entries[0].confirmed_by_member).toBeUndefined();
     });
 
-    it('a null count from Postgres is normalized to 0, not passed through as null', async () => {
+    it('rejects an unavailable count instead of claiming zero entries', async () => {
       mockSupabaseInstance.mockNextResponse({ data: [], error: null, count: null });
 
-      const { count } = await ledgerService.listEntries({
+      await expect(ledgerService.listEntries({
         workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID,
         isAdmin: true, callerId: CALLER_ID,
         query: {}, page: 1, perPage: 20, offset: 0,
-      });
-
-      expect(count).toBe(0);
+      })).rejects.toMatchObject({ code: 'LEDGER_UNAVAILABLE', statusCode: 503 });
     });
 
     it('query error is fail-loud (throws rather than returning an empty page)', async () => {
@@ -772,7 +772,7 @@ describe('services/ledger.service', () => {
           isAdmin: true, callerId: CALLER_ID,
           query: {}, page: 1, perPage: 20, offset: 0,
         })
-      ).rejects.toThrow('relation does not exist');
+      ).rejects.toMatchObject({ code: 'LEDGER_UNAVAILABLE', message: 'Ledger entries are unavailable. Please try again.' });
     });
   });
 
@@ -782,6 +782,8 @@ describe('services/ledger.service', () => {
   // every mutating ledger endpoint — but previously the only ledger
   // service function with that rule that had no direct test.
   describe('getEntry', () => {
+    beforeEach(() => mockSupabaseInstance.mockNextResponse({ data: { id: CONTAINER_ID }, error: null }));
+
     it('returns the reshaped entry for its own contributor (non-admin)', async () => {
       mockSupabaseInstance.mockNextResponse({
         data: {
@@ -795,7 +797,7 @@ describe('services/ledger.service', () => {
       });
 
       const entry = await ledgerService.getEntry({
-        containerId: CONTAINER_ID, entryId: 'e1', isAdmin: false, callerId: CALLER_ID,
+        workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'e1', isAdmin: false, callerId: CALLER_ID,
       });
 
       expect(entry.id).toBe('e1');
@@ -810,7 +812,7 @@ describe('services/ledger.service', () => {
       });
 
       await expect(
-        ledgerService.getEntry({ containerId: CONTAINER_ID, entryId: 'e1', isAdmin: false, callerId: CALLER_ID })
+        ledgerService.getEntry({ workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'e1', isAdmin: false, callerId: CALLER_ID })
       ).rejects.toBeInstanceOf(ForbiddenError);
     });
 
@@ -821,7 +823,7 @@ describe('services/ledger.service', () => {
       });
 
       const entry = await ledgerService.getEntry({
-        containerId: CONTAINER_ID, entryId: 'e1', isAdmin: true, callerId: CALLER_ID,
+        workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'e1', isAdmin: true, callerId: CALLER_ID,
       });
 
       expect(entry.id).toBe('e1');
@@ -831,7 +833,7 @@ describe('services/ledger.service', () => {
       mockSupabaseInstance.mockNextResponse({ data: null, error: null });
 
       await expect(
-        ledgerService.getEntry({ containerId: CONTAINER_ID, entryId: 'missing', isAdmin: true, callerId: CALLER_ID })
+        ledgerService.getEntry({ workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'missing', isAdmin: true, callerId: CALLER_ID })
       ).rejects.toBeInstanceOf(NotFoundError);
     });
 
@@ -839,8 +841,52 @@ describe('services/ledger.service', () => {
       mockSupabaseInstance.mockNextResponse({ data: null, error: { message: 'connection reset' } });
 
       await expect(
-        ledgerService.getEntry({ containerId: CONTAINER_ID, entryId: 'e1', isAdmin: true, callerId: CALLER_ID })
-      ).rejects.toThrow('connection reset');
+        ledgerService.getEntry({ workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'e1', isAdmin: true, callerId: CALLER_ID })
+      ).rejects.toMatchObject({ code: 'LEDGER_UNAVAILABLE', statusCode: 503 });
+    });
+  });
+
+  describe('ledger read boundaries', () => {
+    const parameters = { workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, entryId: 'e1', isAdmin: false, callerId: CALLER_ID, page: 2, perPage: 10, offset: 10 };
+
+    it.each(['listEntries', 'getEntry'])('checks a live workspace parent before %s', async (method) => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null });
+      await expect(ledgerService[method](parameters)).rejects.toBeInstanceOf(NotFoundError);
+      expect(mockSupabaseInstance.client.from.mock.calls).toEqual([['containers']]);
+      expect(mockSupabaseInstance.getCalls()).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] }, { method: 'eq', args: ['id', CONTAINER_ID] },
+        { method: 'is', args: ['deleted_at', null] },
+      ]));
+    });
+
+    it.each(['listEntries', 'getEntry'])('stops %s on a failed parent lookup even with partial data', async (method) => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: CONTAINER_ID }, error: { message: 'PRIVATE_DATABASE_DETAIL' } });
+      await expect(ledgerService[method](parameters)).rejects.toMatchObject({ code: 'LEDGER_UNAVAILABLE', statusCode: 503 });
+      expect(mockSupabaseInstance.client.from.mock.calls).toEqual([['containers']]);
+    });
+
+    it('scopes entry detail to both container and workspace after the parent check', async () => {
+      mockSupabaseInstance.mockResponses({ data: { id: CONTAINER_ID }, error: null }, { data: { id: 'e1', contributor_id: CALLER_ID }, error: null });
+      await ledgerService.getEntry(parameters);
+      const calls = mockSupabaseInstance.getCalls();
+      const start = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'ledger_entries');
+      expect(calls.slice(start)).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] }, { method: 'eq', args: ['container_id', CONTAINER_ID] },
+        { method: 'eq', args: ['id', 'e1'] },
+      ]));
+    });
+
+    it('uses an exact count and stable order across pages', async () => {
+      mockSupabaseInstance.mockResponses({ data: { id: CONTAINER_ID }, error: null }, { data: [], count: 31, error: null });
+      await expect(ledgerService.listEntries(parameters)).resolves.toEqual({ entries: [], count: 31 });
+      expect(mockSupabaseInstance.builder.select.mock.calls.at(-1)[1]).toEqual({ count: 'exact' });
+      expect(mockSupabaseInstance.builder.order.mock.calls).toEqual([['recorded_at', { ascending: false }], ['id', { ascending: true }]]);
+      expect(mockSupabaseInstance.builder.range).toHaveBeenCalledWith(10, 19);
+    });
+
+    it.each([{ data: null, count: 0 }, { data: {}, count: 0 }, { data: [], count: -1 }, { data: [], count: '0' }, { data: [], count: 1.5 }])('rejects incomplete list data: %j', async (result) => {
+      mockSupabaseInstance.mockResponses({ data: { id: CONTAINER_ID }, error: null }, { ...result, error: null });
+      await expect(ledgerService.listEntries(parameters)).rejects.toMatchObject({ code: 'LEDGER_UNAVAILABLE', statusCode: 503 });
     });
   });
 });

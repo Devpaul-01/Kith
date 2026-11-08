@@ -45,6 +45,12 @@ const TASK = Object.freeze({
   id: TASK_ID, container_id: TASK_CONTAINER_ID, title: 'Shopping', assigned_to: MEMBER_ID,
   status: 'pending', proofs: [{ url: 'PRIVATE_STORAGE_PATH' }], admin_note: 'PRIVATE_ADMIN_NOTE',
 });
+const LEDGER_ENTRY = Object.freeze({
+  id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', container_id: TASK_CONTAINER_ID,
+  contributor_id: MEMBER_ID, contributor: { display_name: 'Adaeze' },
+  original_amount: '123.40', original_currency: 'NGN', base_amount: '123.40', status: 'confirmed',
+  note: 'Rent', proofs: [{ url: 'PRIVATE_STORAGE_PATH' }], idempotency_key: 'PRIVATE_KEY',
+});
 const MODEL = 'llama-3.3-70b-versatile';
 const CHAT_PATH = `/v1/workspaces/${WORKSPACE_ID}/agent/chat`;
 
@@ -122,7 +128,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(dashboard.getDashboardData).toHaveBeenCalledWith({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, isAdmin: false });
     const first = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(first.messages.find((message) => message.role === 'user').content).toBe('Read the dashboard.');
-    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task']);
+    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task', 'list_ledger_entries', 'get_ledger_entry']);
     expect(JSON.parse(first.messages.at(-1).content).data).toMatchObject({ member_id: MEMBER_ID, workspace_id: WORKSPACE_ID, role: 'member' });
   });
 
@@ -338,6 +344,59 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(res.status).toBe(503);
     expect(res.body.error.code).toBe('AGENT_TOOL_FAILED');
     expect(JSON.stringify(res.body)).not.toContain('PRIVATE_DATABASE_DETAIL');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['list_ledger_entries', 'get_ledger_entry'])('reads %s through the workspace and ownership checks', async (name) => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion(name, {
+      container_id: TASK_CONTAINER_ID, ...(name === 'get_ledger_entry' ? { entry_id: LEDGER_ENTRY.id } : {}),
+    }))).mockResolvedValueOnce(response(completion('The stored amount is 123.40 NGN.')));
+    const pendingRequest = postChat({ message: 'Show my ledger entry.' }).query({ workspaceId: OTHER_WORKSPACE_ID, isAdmin: true });
+    db.mockResponses({ data: { id: TASK_CONTAINER_ID }, error: null }, {
+      data: name === 'get_ledger_entry' ? LEDGER_ENTRY : [LEDGER_ENTRY], count: 1, error: null,
+    });
+    expect((await pendingRequest).status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    const result = JSON.parse(messages.at(-1).content);
+    expect(result.kind).toBe('untrusted_tool_result');
+    expect(result.data.base_currency).toBe('NGN');
+    expect(name === 'get_ledger_entry' ? result.data.entry : result.data.entries[0]).toMatchObject({
+      original_amount: '123.40', original_currency: 'NGN', base_amount: '123.40', contributor_name: 'Adaeze',
+    });
+    expect(JSON.stringify(messages)).not.toContain('PRIVATE_');
+    const calls = db.getCalls();
+    const start = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'ledger_entries');
+    expect(calls.slice(start)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+    if (name === 'list_ledger_entries') expect(calls.slice(start)).toContainEqual({ method: 'eq', args: ['contributor_id', MEMBER_ID] });
+  });
+
+  it('preserves the direct ledger-detail HTTP fields while forwarding the workspace', async () => {
+    authenticate();
+    db.mockResponses({ data: { id: TASK_CONTAINER_ID }, error: null }, { data: LEDGER_ENTRY, error: null });
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers/${TASK_CONTAINER_ID}/ledger/${LEDGER_ENTRY.id}`)
+      .set('Authorization', 'Bearer TEST_TOKEN').query({ workspaceId: OTHER_WORKSPACE_ID });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: { entry: { ...LEDGER_ENTRY, contributor: undefined, contributor_name: 'Adaeze' } } });
+    const calls = db.getCalls();
+    const start = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'ledger_entries');
+    expect(calls.slice(start)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+  });
+
+  it.each(['', `/${LEDGER_ENTRY.id}`])('rejects a ledger read with no live workspace parent: %s', async (suffix) => {
+    authenticate();
+    db.mockNextResponse({ data: null, error: null });
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers/${TASK_CONTAINER_ID}/ledger${suffix}`).set('Authorization', 'Bearer TEST_TOKEN');
+    expect(res.status).toBe(404);
+    expect(db.client.from.mock.calls).not.toContainEqual(['ledger_entries']);
+  });
+
+  it('denies another contributor entry in chat despite query-string role overrides', async () => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('get_ledger_entry', { container_id: TASK_CONTAINER_ID, entry_id: LEDGER_ENTRY.id })));
+    const pendingRequest = postChat({ message: 'Show that entry.' }).query({ isAdmin: true, callerId: OTHER_USER_ID });
+    db.mockResponses({ data: { id: TASK_CONTAINER_ID }, error: null }, { data: { ...LEDGER_ENTRY, contributor_id: OTHER_USER_ID }, error: null });
+    const res = await pendingRequest;
+    expect(res.status).toBe(403);
+    expect(JSON.stringify(res.body)).not.toContain('123.40');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 

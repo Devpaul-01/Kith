@@ -28,9 +28,9 @@ async function listEntries(req, res, next) {
 
 async function getEntry(req, res, next) {
   try {
-    const { containerId, entryId } = req.params;
+    const { workspaceId, containerId, entryId } = req.params;
     const entry = await ledgerService.getEntry({
-      containerId, entryId,
+      workspaceId, containerId, entryId,
       isAdmin: req.member.role === 'admin',
       callerId: req.member.id,
     });

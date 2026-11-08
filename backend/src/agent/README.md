@@ -221,6 +221,38 @@ pagination, field trimming, service failures, and scripted clarification and
 hostile-text cases. Actual Postgres isolation and live-model disambiguation
 and prompt-injection behavior still require integration/evaluation coverage.
 
+## Ledger entry reads
+
+`list_ledger_entries` and `get_ledger_entry` are Tier 1 reads. Members see only
+their own contributor entries; admins see all entries in the container. The
+handlers check active membership and pass the real workspace, member, and
+role. A member's filter targeting another contributor is rejected up front.
+
+Lists accept `container_id`, optional `contributor_id`, stored `status`,
+inclusive `from`/`to` timestamps on `recorded_at`, and the usual `page`
+(1–10,000) / `per_page` (1–100) arguments. Timestamps require a timezone and
+must be ordered; dates without times are rejected. Default order is newest
+first, with an ID tie-breaker. Pagination counts the visible filtered entries
+and supplies `next_page`. This is not a filtered financial-total tool; the
+model must not sum entries or convert currencies. Cycle filters are not
+supported. Entry details accept only `container_id` and `entry_id`.
+
+Resolve container and contributor names with the existing search tools and
+use list results for entry IDs. Clarify ambiguous entries; a partial page
+cannot establish uniqueness. Both tools return stored amounts verbatim and
+identify the authenticated workspace's base currency. Proof files, storage
+paths, idempotency keys, and internal recorder/confirmer fields are omitted.
+Notes remain untrusted data. No confirmation, correction, export, or write
+operation is exposed by these tools.
+
+The shared list/detail service checks the non-deleted workspace container;
+entry detail now also filters by workspace, supplied by its HTTP controller.
+Query failures, missing list arrays, and invalid exact counts raise
+`LEDGER_UNAVAILABLE` instead of reporting empty or zero results. Existing
+HTTP field/envelope contracts are retained. Unit and mocked HTTP tests cover
+scope, ownership, filters, precision, errors, and hostile content. Live
+database isolation and model evaluation remain pending.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON

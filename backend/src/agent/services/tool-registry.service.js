@@ -11,6 +11,8 @@ const { listCycles } = require('./cycle-tools.service');
 const { listCyclesArgsSchema } = require('../validators/cycle-tools.validator');
 const { listTasks, getTask } = require('./task-tools.service');
 const { listTasksArgsSchema, getTaskArgsSchema } = require('../validators/task-tools.validator');
+const { listLedgerEntries, getLedgerEntry } = require('./ledger-tools.service');
+const { listLedgerEntriesArgsSchema, getLedgerEntryArgsSchema } = require('../validators/ledger-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -84,6 +86,22 @@ const tools = Object.freeze([
     minRole: 'member',
     tier: 1,
     handler: getTask,
+  }),
+  Object.freeze({
+    name: 'list_ledger_entries',
+    description: 'List ledger entries newest first. Members see their own contributions; admins may filter by contributor_id or read all entries. Resolve names with find_container and find_member; clarify ambiguous matches. Optional status and inclusive from/to filters use recorded_at and ISO timestamps with an explicit timezone. Returns stored amounts and a filtered entry count, not financial totals; never sum or convert amounts. Use next_page to continue; null means the last page or page limit. No cycle filter, proof files, or writes.',
+    parameterSchema: listLedgerEntriesArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: listLedgerEntries,
+  }),
+  Object.freeze({
+    name: 'get_ledger_entry',
+    description: 'Read a ledger entry and its stored amounts and status. Members see only their own entries; admins see any entry in the container. Find container names with find_container and entry IDs with list_ledger_entries. Clarify ambiguous entries; a partial page cannot establish uniqueness. Amounts retain their stored currency and precision. No proofs, confirmation, correction, or other writes.',
+    parameterSchema: getLedgerEntryArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getLedgerEntry,
   }),
   Object.freeze({
     name: 'get_overdue_summary',

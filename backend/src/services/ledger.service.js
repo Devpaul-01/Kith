@@ -5,7 +5,7 @@
 // entries rule, and file verification exactly as designed.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { NotFoundError, BusinessRuleError, ConflictError, ForbiddenError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ConflictError, ForbiddenError } = require('../utils/errors');
 const { generateUploadUrl, generateDownloadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 const notification = require('./notification.service');
 const audit        = require('./audit.service');
@@ -22,7 +22,15 @@ if (!IDEMPOTENCY_ENABLED) {
   logger.warn('Ledger idempotency-key checking is explicitly DISABLED via IDEMPOTENCY_ENABLED=false.');
 }
 
-async function listEntries({ workspaceId, containerId, isAdmin, callerId, query, page, perPage, offset }) {
+async function assertWorkspaceContainer({ workspaceId, containerId }) {
+  const { data: container, error } = await supabaseAdmin.from('containers').select('id')
+    .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
+  if (error) throw new AppError('Ledger entries are unavailable. Please try again.', 503, 'LEDGER_UNAVAILABLE');
+  if (!container) throw new NotFoundError('Container not found');
+}
+
+async function listEntries({ workspaceId, containerId, isAdmin, callerId, query = {}, page, perPage, offset }) {
+  await assertWorkspaceContainer({ workspaceId, containerId });
   let dbQuery = supabaseAdmin
     .from('ledger_entries')
     .select(`
@@ -55,12 +63,14 @@ async function listEntries({ workspaceId, containerId, isAdmin, callerId, query,
     defaultDescending: true,
   });
 
-  dbQuery = dbQuery.order(safeSort, { ascending }).range(offset, offset + perPage - 1);
+  dbQuery = dbQuery.order(safeSort, { ascending }).order('id', { ascending: true }).range(offset, offset + perPage - 1);
 
   const { data, error, count } = await dbQuery;
-  if (error) throw new Error(error.message);
+  if (error || !Array.isArray(data) || !Number.isSafeInteger(count) || count < 0) {
+    throw new AppError('Ledger entries are unavailable. Please try again.', 503, 'LEDGER_UNAVAILABLE');
+  }
 
-  const entries = (data || []).map((le) => ({
+  const entries = data.map((le) => ({
     ...le,
     contributor_name:   le.contributor?.display_name,
     recorded_by_name:   le.recorded_by_member?.display_name,
@@ -70,10 +80,11 @@ async function listEntries({ workspaceId, containerId, isAdmin, callerId, query,
     confirmed_by_member: undefined,
   }));
 
-  return { entries, count: count || 0 };
+  return { entries, count };
 }
 
-async function getEntry({ containerId, entryId, isAdmin, callerId }) {
+async function getEntry({ workspaceId, containerId, entryId, isAdmin, callerId }) {
+  await assertWorkspaceContainer({ workspaceId, containerId });
   const { data: entry, error } = await supabaseAdmin
     .from('ledger_entries')
     .select(`
@@ -84,9 +95,10 @@ async function getEntry({ containerId, entryId, isAdmin, callerId }) {
     `)
     .eq('id', entryId)
     .eq('container_id', containerId)
+    .eq('workspace_id', workspaceId)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
+  if (error) throw new AppError('Ledger entries are unavailable. Please try again.', 503, 'LEDGER_UNAVAILABLE');
   if (!entry) throw new NotFoundError('Ledger entry not found');
   if (!isAdmin && entry.contributor_id !== callerId) throw new ForbiddenError('Access denied');
 
