@@ -365,6 +365,69 @@ describe('services/member.service', () => {
         containers: [],
       });
     });
+
+    it('keeps the existing paid-status calculations and non-cycle targets', async () => {
+      mockSupabaseInstance.mockResponses(
+        { data: [
+          { id: 'le-1', container_id: 'c-1', base_amount: '10.25', status: 'confirmed', confirmed_at: '2025-12-01T12:00:00Z' },
+          { id: 'le-2', container_id: 'c-1', base_amount: '5.50', status: 'resolved', confirmed_at: '2026-11-02T12:00:00Z' },
+          { id: 'le-3', container_id: 'c-2', base_amount: '99', status: 'pending', confirmed_at: null },
+          { id: 'le-4', container_id: 'c-1', base_amount: '20', status: 'disputed', confirmed_at: '2026-11-03T12:00:00Z' },
+        ], error: null },
+        { data: [{
+          container_id: 'c-1', containers: { name: 'Rent', workspace_id: WORKSPACE_ID },
+          contributor_targets: [
+            { is_current: true, cycle_id: 'cycle-1', target_amount: '999', target_currency: 'NGN' },
+            { is_current: true, cycle_id: null, target_amount: '30.00', target_currency: 'NGN' },
+          ],
+        }], error: null },
+      );
+
+      await expect(memberService.getContributionSummary({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID })).resolves.toEqual({
+        total_containers: 2, total_confirmed_count: 2, total_paid_base_currency: 15.75,
+        last_contribution_date: '2026-11-02',
+        containers: [{ container_name: 'Rent', paid_base_amount: 15.75, target_amount: '30.00', target_currency: 'NGN', status: 'pending' }],
+      });
+    });
+
+    it('scopes ledger and participation reads to the requested workspace and member', async () => {
+      mockSupabaseInstance.mockResponses({ data: [], error: null }, { data: [], error: null });
+      await memberService.getContributionSummary({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID });
+
+      const calls = mockSupabaseInstance.getCalls();
+      const participationStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_participants');
+      expect(calls.slice(0, participationStart)).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['contributor_id', MEMBER_ID] },
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] },
+      ]));
+      expect(calls.slice(participationStart)).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_member_id', MEMBER_ID] },
+        { method: 'eq', args: ['containers.workspace_id', WORKSPACE_ID] },
+        { method: 'select', args: [expect.stringContaining('containers!container_participants_container_id_fkey!inner(')] },
+      ]));
+    });
+
+    it.each(['ledger', 'participations'])('rejects a %s query error instead of returning a partial or zero summary', async (stage) => {
+      if (stage === 'participations') mockSupabaseInstance.mockNextResponse({ data: [], error: null });
+      mockSupabaseInstance.mockNextResponse({ data: [], error: { message: 'PRIVATE_DATABASE_DETAIL' } });
+
+      await expect(memberService.getContributionSummary({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID })).rejects.toMatchObject({
+        statusCode: 503, code: 'MEMBER_SUMMARY_UNAVAILABLE',
+        message: 'Member contribution summary is unavailable. Please try again.',
+      });
+      expect(mockSupabaseInstance.client.from).toHaveBeenCalledTimes(stage === 'ledger' ? 1 : 2);
+    });
+
+    it.each([
+      ['ledger', null], ['ledger', {}],
+      ['participations', null], ['participations', {}],
+    ])('rejects malformed %s data instead of treating it as empty: %j', async (stage, data) => {
+      if (stage === 'participations') mockSupabaseInstance.mockNextResponse({ data: [], error: null });
+      mockSupabaseInstance.mockNextResponse({ data, error: null });
+
+      await expect(memberService.getContributionSummary({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID }))
+        .rejects.toMatchObject({ statusCode: 503, code: 'MEMBER_SUMMARY_UNAVAILABLE' });
+    });
   });
 
   describe('getMemberEngagement — delegates to shared engagement.service (Issue M1 de-duplication)', () => {

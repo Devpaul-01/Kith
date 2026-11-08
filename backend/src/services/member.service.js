@@ -5,7 +5,7 @@
 // insert.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
 const audit = require('./audit.service');
 const notification = require('./notification.service');
 const logger = require('../utils/logger');
@@ -294,20 +294,29 @@ async function getProfileHistory({ memberId }) {
 }
 
 async function getContributionSummary({ workspaceId, memberId }) {
-  const { data: ledger } = await supabaseAdmin
+  const { data: ledger, error: ledgerError } = await supabaseAdmin
     .from('ledger_entries')
     .select('id, container_id, base_amount, status, confirmed_at')
-    .eq('contributor_id', memberId);
+    .eq('contributor_id', memberId)
+    .eq('workspace_id', workspaceId);
+
+  if (ledgerError || !Array.isArray(ledger)) {
+    throw new AppError('Member contribution summary is unavailable. Please try again.', 503, 'MEMBER_SUMMARY_UNAVAILABLE');
+  }
 
   const confirmed       = (ledger || []).filter((le) => PAID_STATUSES.includes(le.status));
   const containerIds    = [...new Set((ledger || []).map((le) => le.container_id))];
   const lastContribDate = confirmed.length ? confirmed.map((le) => le.confirmed_at).sort().pop()?.split('T')[0] : null;
 
-  const { data: participations } = await supabaseAdmin
+  const { data: participations, error: participationError } = await supabaseAdmin
     .from('container_participants')
-    .select('id, container_id, containers!container_participants_container_id_fkey(name, workspace_id), contributor_targets(target_amount, target_currency, is_current, cycle_id)')
+    .select('id, container_id, containers!container_participants_container_id_fkey!inner(name, workspace_id), contributor_targets(target_amount, target_currency, is_current, cycle_id)')
     .eq('workspace_member_id', memberId)
     .eq('containers.workspace_id', workspaceId);
+
+  if (participationError || !Array.isArray(participations)) {
+    throw new AppError('Member contribution summary is unavailable. Please try again.', 503, 'MEMBER_SUMMARY_UNAVAILABLE');
+  }
 
   const containers = (participations || []).map((p) => {
     const paidBase = (ledger || []).filter((le) => le.container_id === p.container_id && PAID_STATUSES.includes(le.status)).reduce((s, le) => s + parseFloat(le.base_amount || 0), 0);
