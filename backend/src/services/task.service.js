@@ -3,7 +3,7 @@
 // fetchTask/shapeTask preserved as internal helpers.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
 const { generateUploadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 const notification           = require('./notification.service');
 const { exportTasksCSV }     = require('./export.service');
@@ -11,8 +11,21 @@ const audit                  = require('./audit.service');
 const { AUDIT_ACTIONS }      = require('../constants/audit-actions');
 const { getSort }            = require('../utils/sorting');
 
+async function assertWorkspaceContainer({ workspaceId, containerId }) {
+  // Tasks have no workspace_id. Verify their parent before reading them.
+  const { data: container, error } = await supabaseAdmin
+    .from('containers')
+    .select('id')
+    .eq('id', containerId)
+    .eq('workspace_id', workspaceId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (error) throw new AppError('Tasks are unavailable. Please try again.', 503, 'TASKS_UNAVAILABLE');
+  if (!container) throw new NotFoundError('Container not found');
+}
+
 async function fetchTask(containerId, taskId) {
-  const { data: task } = await supabaseAdmin
+  const { data: task, error } = await supabaseAdmin
     .from('container_tasks')
     .select(
       '*, assigned_to_member:workspace_members!assigned_to(display_name), created_by_member:workspace_members!created_by(display_name)'
@@ -21,6 +34,7 @@ async function fetchTask(containerId, taskId) {
     .eq('container_id', containerId)
     .is('deleted_at', null)
     .maybeSingle();
+  if (error) throw new AppError('Tasks are unavailable. Please try again.', 503, 'TASKS_UNAVAILABLE');
   return task || null;
 }
 
@@ -34,13 +48,15 @@ function shapeTask(t) {
   };
 }
 
-async function listTasks({ containerId, isAdmin, callerId, assignedFilter, statusFilter, sortQuery }) {
+async function listTasks({ workspaceId, containerId, isAdmin, callerId, assignedFilter, statusFilter, sortQuery = {}, pagination }) {
+  await assertWorkspaceContainer({ workspaceId, containerId });
   const { field: safeSort, ascending } = getSort(sortQuery, { allowed: ['sort_order', 'due_date', 'created_at', 'status'], defaultField: 'sort_order' });
 
   let query = supabaseAdmin
     .from('container_tasks')
     .select(
-      '*, assigned_to_member:workspace_members!assigned_to(display_name), created_by_member:workspace_members!created_by(display_name)'
+      '*, assigned_to_member:workspace_members!assigned_to(display_name), created_by_member:workspace_members!created_by(display_name)',
+      pagination ? { count: 'exact' } : undefined
     )
     .eq('container_id', containerId)
     .is('deleted_at', null)
@@ -54,13 +70,24 @@ async function listTasks({ containerId, isAdmin, callerId, assignedFilter, statu
 
   if (statusFilter) query = query.eq('status', statusFilter);
 
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
+  if (pagination) {
+    query = query.order('id', { ascending: true })
+      .range(pagination.offset, pagination.offset + pagination.perPage - 1);
+  }
 
-  return (data || []).map(shapeTask);
+  const { data, error, count } = await query;
+  if (error || !Array.isArray(data)
+      || (pagination && (!Number.isSafeInteger(count) || count < 0))) {
+    throw new AppError('Tasks are unavailable. Please try again.', 503, 'TASKS_UNAVAILABLE');
+  }
+
+  const tasks = data.map(shapeTask);
+  // Existing HTTP callers retain their unpaginated task-array response.
+  return pagination ? { tasks, count } : tasks;
 }
 
-async function getTask({ containerId, taskId, isAdmin, callerId }) {
+async function getTask({ workspaceId, containerId, taskId, isAdmin, callerId }) {
+  await assertWorkspaceContainer({ workspaceId, containerId });
   const task = await fetchTask(containerId, taskId);
   if (!task) throw new NotFoundError('Task not found');
   if (!isAdmin && task.assigned_to !== callerId) throw new ForbiddenError('You can only view tasks assigned to you');

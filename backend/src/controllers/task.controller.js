@@ -18,11 +18,11 @@ const taskService = require('../services/task.service');
 
 async function listTasks(req, res, next) {
   try {
-    const { containerId }  = req.params;
+    const { workspaceId, containerId } = req.params;
     const isAdmin          = req.member.role === 'admin';
 
     const tasks = await taskService.listTasks({
-      containerId,
+      workspaceId, containerId,
       isAdmin,
       callerId: req.member.id,
       assignedFilter: getFilter(req.query, 'assigned_to'),
@@ -36,9 +36,9 @@ async function listTasks(req, res, next) {
 
 async function getTask(req, res, next) {
   try {
-    const { containerId, taskId } = req.params;
+    const { workspaceId, containerId, taskId } = req.params;
     const task = await taskService.getTask({
-      containerId, taskId,
+      workspaceId, containerId, taskId,
       isAdmin: req.member.role === 'admin',
       callerId: req.member.id,
     });

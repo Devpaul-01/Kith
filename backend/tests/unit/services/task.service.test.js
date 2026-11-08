@@ -38,6 +38,124 @@ describe('services/task.service', () => {
     audit.log.mockResolvedValue();
   });
 
+  describe('workspace-scoped task reads', () => {
+    const parameters = { workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, taskId: TASK_ID, isAdmin: false, callerId: 'caller-1' };
+    const task = { id: TASK_ID, container_id: CONTAINER_ID, title: 'Shopping', assigned_to: 'caller-1', status: 'pending', proofs: [] };
+    const parent = { data: { id: CONTAINER_ID }, error: null };
+    const pagination = { page: 2, perPage: 10, offset: 10 };
+
+    function taskQueryCalls() {
+      const calls = mockSupabaseInstance.getCalls();
+      return calls.slice(calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_tasks'));
+    }
+
+    it('keeps the legacy list array and scopes members to their own assignments', async () => {
+      mockSupabaseInstance.mockResponses(parent, {
+        data: [{ ...task, assigned_to_member: { display_name: 'Adaeze' }, created_by_member: { display_name: 'Admin' } }], error: null,
+      });
+      await expect(taskService.listTasks({ ...parameters, assignedFilter: 'someone-else', sortQuery: { sort: '-due_date' } }))
+        .resolves.toEqual([{ ...task, assigned_to_name: 'Adaeze', created_by_name: 'Admin' }]);
+      const calls = taskQueryCalls();
+      expect(calls).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['assigned_to', 'caller-1'] },
+        { method: 'eq', args: ['container_id', CONTAINER_ID] },
+        { method: 'is', args: ['deleted_at', null] },
+        { method: 'order', args: ['due_date', { ascending: false }] },
+      ]));
+      expect(calls).not.toContainEqual({ method: 'eq', args: ['assigned_to', 'someone-else'] });
+      expect(calls.some((call) => call.method === 'range')).toBe(false);
+      expect(calls.find((call) => call.method === 'select').args[1]).toBeUndefined();
+    });
+
+    it('checks the parent before a counted admin page and applies assignee/status filters', async () => {
+      mockSupabaseInstance.mockResponses(parent, { data: [task], error: null, count: 31 });
+      await expect(taskService.listTasks({ ...parameters, isAdmin: true, assignedFilter: 'caller-1', statusFilter: 'pending', pagination }))
+        .resolves.toEqual({ tasks: [{ ...task, assigned_to_name: null, created_by_name: null }], count: 31 });
+      const calls = mockSupabaseInstance.getCalls();
+      const taskStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_tasks');
+      expect(calls.slice(0, taskStart)).toEqual(expect.arrayContaining([
+        { method: 'from', args: ['containers'] },
+        { method: 'select', args: ['id'] },
+        { method: 'eq', args: ['id', CONTAINER_ID] },
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] },
+        { method: 'is', args: ['deleted_at', null] },
+      ]));
+      expect(taskQueryCalls()).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['assigned_to', 'caller-1'] },
+        { method: 'eq', args: ['status', 'pending'] },
+        { method: 'range', args: [10, 19] },
+      ]));
+      expect(taskQueryCalls().find((call) => call.method === 'select').args[1]).toEqual({ count: 'exact' });
+      expect(taskQueryCalls().filter((call) => call.method === 'order')).toEqual([
+        { method: 'order', args: ['sort_order', { ascending: true }] },
+        { method: 'order', args: ['id', { ascending: true }] },
+      ]);
+    });
+
+    it('counts only the member assignments on a paginated read', async () => {
+      mockSupabaseInstance.mockResponses(parent, { data: [], count: 0, error: null });
+      await expect(taskService.listTasks({ ...parameters, pagination, assignedFilter: 'someone-else' }))
+        .resolves.toEqual({ tasks: [], count: 0 });
+      expect(taskQueryCalls().filter((call) => call.method === 'eq' && call.args[0] === 'assigned_to'))
+        .toEqual([{ method: 'eq', args: ['assigned_to', 'caller-1'] }]);
+    });
+
+    it('returns a genuine empty legacy admin list without assignee or status filtering', async () => {
+      mockSupabaseInstance.mockResponses(parent, { data: [], error: null });
+      await expect(taskService.listTasks({ ...parameters, isAdmin: true })).resolves.toEqual([]);
+      expect(taskQueryCalls().filter((call) => call.method === 'eq')).toEqual([{ method: 'eq', args: ['container_id', CONTAINER_ID] }]);
+    });
+
+    it.each(['listTasks', 'getTask'])('does not query tasks when %s misses the workspace parent', async (method) => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null });
+      await expect(taskService[method](parameters)).rejects.toBeInstanceOf(NotFoundError);
+      expect(mockSupabaseInstance.client.from.mock.calls).toEqual([['containers']]);
+      expect(mockSupabaseInstance.getCalls()).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+    });
+
+    it.each([
+      ['listTasks', 'parent'], ['listTasks', 'task'], ['getTask', 'parent'], ['getTask', 'task'],
+    ])('rejects a %s %s-query failure without returning partial data', async (method, source) => {
+      if (source === 'task') mockSupabaseInstance.mockNextResponse(parent);
+      mockSupabaseInstance.mockNextResponse({ data: method === 'listTasks' ? [task] : task, error: { message: 'PRIVATE_DATABASE_DETAIL' } });
+      await expect(taskService[method](parameters)).rejects.toMatchObject({
+        code: 'TASKS_UNAVAILABLE', statusCode: 503, message: 'Tasks are unavailable. Please try again.',
+      });
+      expect(mockSupabaseInstance.client.from).toHaveBeenCalledTimes(source === 'parent' ? 1 : 2);
+    });
+
+    it.each([null, {}, undefined])('rejects non-array list data: %j', async (data) => {
+      mockSupabaseInstance.mockResponses(parent, { data, error: null });
+      await expect(taskService.listTasks(parameters)).rejects.toMatchObject({ code: 'TASKS_UNAVAILABLE', statusCode: 503 });
+    });
+
+    it.each([null, undefined, '0', -1, 1.5, Number.MAX_SAFE_INTEGER + 1])('rejects an unavailable/invalid exact count: %j', async (count) => {
+      mockSupabaseInstance.mockResponses(parent, { data: [], count, error: null });
+      await expect(taskService.listTasks({ ...parameters, pagination })).rejects.toMatchObject({ code: 'TASKS_UNAVAILABLE', statusCode: 503 });
+    });
+
+    it.each([[false, 'caller-1'], [true, 'someone-else'], [true, null]])('allows isAdmin=%s to read assignee=%s', async (isAdmin, assignedTo) => {
+      mockSupabaseInstance.mockResponses(parent, { data: { ...task, assigned_to: assignedTo }, error: null });
+      await expect(taskService.getTask({ ...parameters, isAdmin })).resolves.toMatchObject({ ...task, assigned_to: assignedTo });
+      expect(mockSupabaseInstance.client.from.mock.calls).toEqual([['containers'], ['container_tasks']]);
+      expect(taskQueryCalls()).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['id', TASK_ID] },
+        { method: 'eq', args: ['container_id', CONTAINER_ID] },
+        { method: 'is', args: ['deleted_at', null] },
+      ]));
+    });
+
+    it.each(['someone-else', null])('denies members a task assigned to %s', async (assignedTo) => {
+      mockSupabaseInstance.mockResponses(parent, { data: { ...task, assigned_to: assignedTo }, error: null });
+      await expect(taskService.getTask(parameters)).rejects.toBeInstanceOf(ForbiddenError);
+    });
+
+    it('returns not found for a missing, deleted, or differently contained task', async () => {
+      mockSupabaseInstance.mockResponses(parent, { data: null, error: null });
+      await expect(taskService.getTask(parameters)).rejects.toBeInstanceOf(NotFoundError);
+    });
+  });
+
   describe('updateTask — two-layer authorization (schema allows more than service does)', () => {
     it('non-admin, non-assignee -> ForbiddenError', async () => {
       mockSupabaseInstance.mockNextResponse({ data: { id: TASK_ID, assigned_to: 'someone-else', status: 'pending', title: 'X' }, error: null });
@@ -97,6 +215,20 @@ describe('services/task.service', () => {
       await taskService.updateTask({ workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, taskId: TASK_ID, data: { assigned_to: 'new-assignee' }, isAdmin: true, callerId: 'admin-1', actorDisplayName: 'Admin', actorCtx: ACTOR_CTX });
 
       expect(notification.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'task_assigned', recipientIds: ['new-assignee'] }));
+    });
+
+    it('does not update, notify, or audit after a failed task fetch even with partial data', async () => {
+      mockSupabaseInstance.mockNextResponse({
+        data: { id: TASK_ID, assigned_to: 'caller-1', status: 'pending', title: 'X' },
+        error: { message: 'PRIVATE_DATABASE_DETAIL' },
+      });
+      await expect(taskService.updateTask({
+        workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, taskId: TASK_ID,
+        data: { status: 'completed' }, isAdmin: false, callerId: 'caller-1', actorCtx: ACTOR_CTX,
+      })).rejects.toMatchObject({ code: 'TASKS_UNAVAILABLE', statusCode: 503 });
+      expect(mockSupabaseInstance.getCalls().some((call) => call.method === 'update')).toBe(false);
+      expect(notification.send).not.toHaveBeenCalled();
+      expect(audit.log).not.toHaveBeenCalled();
     });
 
     it('task not found -> NotFoundError', async () => {
