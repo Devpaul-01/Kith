@@ -153,11 +153,11 @@ async function getSummary(req, res, next) {
 
 async function listCycles(req, res, next) {
   try {
-    const { containerId } = req.params;
+    const { workspaceId, containerId } = req.params;
     const { page, perPage, offset } = getPagination(req.query);
 
     const { cycles, count } = await containerService.listCycles({
-      containerId, statusFilter: req.query['status'], page, perPage, offset,
+      workspaceId, containerId, statusFilter: req.query['status'], page, perPage, offset,
     });
 
     paginate(res, { cycles }, count, page, perPage);

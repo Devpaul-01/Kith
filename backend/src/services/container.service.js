@@ -5,7 +5,7 @@
 // RPC, and all notification/audit orchestration.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { NotFoundError, BusinessRuleError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError } = require('../utils/errors');
 const { generatePublicToken } = require('../utils/crypto');
 const { generateUploadUrl }   = require('./storage.service');
 const notification = require('./notification.service');
@@ -448,14 +448,28 @@ async function getSummary({ workspaceId, containerId, isAdmin, callerId }) {
   };
 }
 
-async function listCycles({ containerId, statusFilter, page, perPage, offset }) {
+async function listCycles({ workspaceId, containerId, statusFilter, page, perPage, offset }) {
+  // Cycles have no workspace_id of their own. Check their parent before
+  // querying them; callers still enforce the route/tool's admin permission.
+  const { data: container, error: containerError } = await supabaseAdmin
+    .from('containers')
+    .select('id')
+    .eq('id', containerId)
+    .eq('workspace_id', workspaceId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (containerError) throw new AppError('Billing cycles are unavailable. Please try again.', 503, 'CYCLES_UNAVAILABLE');
+  if (!container) throw new NotFoundError('Container not found');
+
   let query = supabaseAdmin.from('container_cycles').select('*', { count: 'exact' }).eq('container_id', containerId).order('cycle_number', { ascending: false }).range(offset, offset + perPage - 1);
   if (statusFilter) query = query.eq('status', statusFilter);
 
   const { data, error, count } = await query;
-  if (error) throw new Error(error.message);
+  if (error || !Array.isArray(data) || !Number.isSafeInteger(count) || count < 0) {
+    throw new AppError('Billing cycles are unavailable. Please try again.', 503, 'CYCLES_UNAVAILABLE');
+  }
 
-  return { cycles: data || [], count: count || 0 };
+  return { cycles: data, count };
 }
 
 async function generateOutcomeFileUploadUrl({ workspaceId, containerId, filename, contentType, fileSize }) {

@@ -404,6 +404,72 @@ describe('services/container.service', () => {
     });
   });
 
+  describe('listCycles', () => {
+    const parameters = { workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, page: 2, perPage: 10, offset: 10 };
+
+    it('checks the workspace parent before a counted, status-filtered cycle page', async () => {
+      const cycles = [{ id: 'cycle-3', cycle_number: 3, total_expected: '100.50', total_collected: '20.00' }];
+      mockSupabaseInstance.mockResponses(
+        { data: { id: CONTAINER_ID }, error: null },
+        { data: cycles, error: null, count: 31 },
+      );
+      await expect(containerService.listCycles({ ...parameters, statusFilter: 'open' })).resolves.toEqual({ cycles, count: 31 });
+
+      const calls = mockSupabaseInstance.getCalls();
+      const cycleStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_cycles');
+      expect(calls.slice(0, cycleStart)).toEqual(expect.arrayContaining([
+        { method: 'select', args: ['id'] },
+        { method: 'eq', args: ['id', CONTAINER_ID] },
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] },
+        { method: 'is', args: ['deleted_at', null] },
+      ]));
+      expect(calls.slice(cycleStart)).toEqual(expect.arrayContaining([
+        { method: 'select', args: ['*', { count: 'exact' }] },
+        { method: 'eq', args: ['container_id', CONTAINER_ID] },
+        { method: 'eq', args: ['status', 'open'] },
+        { method: 'order', args: ['cycle_number', { ascending: false }] },
+        { method: 'range', args: [10, 19] },
+      ]));
+    });
+
+    it('does not query cycles if the workspace parent is missing, deleted, or belongs elsewhere', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null });
+      await expect(containerService.listCycles(parameters)).rejects.toBeInstanceOf(NotFoundError);
+      expect(mockSupabaseInstance.client.from.mock.calls).toEqual([['containers']]);
+    });
+
+    it('returns a genuine empty page and count without adding a status filter', async () => {
+      mockSupabaseInstance.mockResponses(
+        { data: { id: CONTAINER_ID }, error: null },
+        { data: [], error: null, count: 0 },
+      );
+      await expect(containerService.listCycles(parameters)).resolves.toEqual({ cycles: [], count: 0 });
+      expect(mockSupabaseInstance.getCalls().some((call) => call.method === 'eq' && call.args[0] === 'status')).toBe(false);
+    });
+
+    it.each(['container', 'cycles'])('rejects a %s query failure without leaking database details', async (source) => {
+      if (source === 'cycles') mockSupabaseInstance.mockNextResponse({ data: { id: CONTAINER_ID }, error: null });
+      mockSupabaseInstance.mockNextResponse({ data: null, count: null, error: { message: 'PRIVATE_DATABASE_DETAIL' } });
+      await expect(containerService.listCycles(parameters)).rejects.toMatchObject({
+        code: 'CYCLES_UNAVAILABLE', statusCode: 503, message: 'Billing cycles are unavailable. Please try again.',
+      });
+      expect(mockSupabaseInstance.client.from).toHaveBeenCalledTimes(source === 'container' ? 1 : 2);
+    });
+
+    it.each([
+      { data: null, count: 0 }, { data: {}, count: 0 },
+      { data: [], count: null }, { data: [], count: '0' },
+      { data: [], count: -1 }, { data: [], count: 1.5 },
+      { data: [], count: Number.MAX_SAFE_INTEGER + 1 },
+    ])('rejects missing rows or an invalid exact count: %j', async (response) => {
+      mockSupabaseInstance.mockResponses(
+        { data: { id: CONTAINER_ID }, error: null },
+        { ...response, error: null },
+      );
+      await expect(containerService.listCycles(parameters)).rejects.toMatchObject({ code: 'CYCLES_UNAVAILABLE', statusCode: 503 });
+    });
+  });
+
   describe('getPublicContainer', () => {
     it('throws NotFoundError for an unknown public token', async () => {
       mockSupabaseInstance.mockNextResponse({ data: null, error: null });
