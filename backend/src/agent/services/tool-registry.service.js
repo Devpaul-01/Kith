@@ -5,8 +5,8 @@ const { assertAgentContext } = require('./context.service');
 const { getMyContext, getDashboard, getOverdueSummary } = require('./read-tools.service');
 const { findMember, findContainer } = require('./resolution-tools.service');
 const { entitySearchSchema } = require('../../validators/search.validator');
-const { getContainerSummary, getLedgerSummary, getMemberContributionSummary } = require('./summary-tools.service');
-const { containerSummaryArgsSchema, memberSummaryArgsSchema } = require('../validators/summary-tools.validator');
+const { getContainerSummary, getLedgerSummary, getMemberContributionSummary, getMemberEngagement } = require('./summary-tools.service');
+const { containerSummaryArgsSchema, memberSummaryArgsSchema, memberEngagementArgsSchema } = require('../validators/summary-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -72,6 +72,14 @@ const tools = Object.freeze([
     minRole: 'admin',
     tier: 1,
     handler: getOverdueSummary,
+  }),
+  Object.freeze({
+    name: 'get_member_engagement',
+    description: 'Get workspace member engagement. Admin access required. Includes non-deleted, non-proxy members, including deactivated memberships. Returns service-calculated activity dates, classifications, and contribution counts across all dates. Confirmed counts include resolved entries; pending counts include only pending entries, not proof_uploaded. No member, date, or container filters. Use get_dashboard for workspace counts of quiet/inactive members and get_overdue_summary for overdue contributions.',
+    parameterSchema: memberEngagementArgsSchema,
+    minRole: 'admin',
+    tier: 1,
+    handler: getMemberEngagement,
   }),
 ]);
 

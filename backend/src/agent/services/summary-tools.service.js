@@ -1,6 +1,6 @@
 const { ValidationError } = require('../../utils/errors');
 const { assertAgentContext } = require('./context.service');
-const { containerSummaryArgsSchema, memberSummaryArgsSchema } = require('../validators/summary-tools.validator');
+const { containerSummaryArgsSchema, memberSummaryArgsSchema, memberEngagementArgsSchema } = require('../validators/summary-tools.validator');
 
 function summaryParameters(context, args) {
   // Both handlers require active membership, even without the registry gate.
@@ -58,4 +58,25 @@ async function getMemberContributionSummary({ context, args }) {
   return memberService.getContributionSummary(parameters);
 }
 
-module.exports = { getContainerSummary, getLedgerSummary, getMemberContributionSummary };
+async function getMemberEngagement({ context, args = {} }) {
+  // The member service relies on the HTTP route's admin gate.
+  assertAgentContext(context, 'admin');
+  const parsed = memberEngagementArgsSchema.safeParse(args);
+  if (!parsed.success) throw new ValidationError('Invalid engagement arguments', null, parsed.error.issues);
+  const workspaceId = context.workspace.id;
+  const memberService = require('../../services/member.service');
+  const members = await memberService.getMemberEngagement({ workspaceId });
+
+  // The legacy service's overdue_count is a hard-coded placeholder. Expose
+  // only calculated fields, preserving their values without doing arithmetic.
+  return members.map((member) => ({
+    member_id: member.member_id,
+    display_name: member.display_name,
+    last_activity: member.last_activity,
+    confirmed_contributions_count: member.confirmed_contributions_count,
+    pending_contributions_count: member.pending_contributions_count,
+    engagement_level: member.engagement_level,
+  }));
+}
+
+module.exports = { getContainerSummary, getLedgerSummary, getMemberContributionSummary, getMemberEngagement };

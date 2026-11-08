@@ -61,7 +61,7 @@ describe('agent read loop', () => {
     expect(request.messages.map((message) => message.role)).toEqual(['system', 'user', 'assistant', 'tool']);
     expect(request.tools.map((entry) => entry.name)).toEqual([
       'get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary',
-      ...(role === 'admin' ? ['get_overdue_summary'] : []),
+      ...(role === 'admin' ? ['get_overdue_summary', 'get_member_engagement'] : []),
     ]);
     request.tools.forEach((entry) => {
       expect(entry).not.toHaveProperty('handler');

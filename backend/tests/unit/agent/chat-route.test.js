@@ -123,12 +123,39 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body).tools.map((tool) => tool.function.name)).toContain('get_overdue_summary');
   });
 
-  it('rejects a model attempt to request an admin tool for a member', async () => {
-    fetchSpy.mockResolvedValueOnce(response(toolCompletion('get_overdue_summary')));
+  it('returns engagement through the real member services for an authenticated admin', async () => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('get_member_engagement')))
+      .mockResolvedValueOnce(response(completion('Adaeze has no recorded activity.')));
+    const pendingRequest = postChat({ message: 'Show member engagement.' }, { role: 'admin' })
+      .query({ workspaceId: OTHER_WORKSPACE_ID });
+    db.mockResponses(
+      { data: [{ id: MEMBER_ID, display_name: 'Adaeze', last_active_at: null }], error: null },
+      { data: [], error: null },
+      { data: [], error: null },
+    );
+
+    const res = await pendingRequest;
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ text: 'Adaeze has no recorded activity.', modelCalls: 2, toolCalls: 2 });
+    const first = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(first.tools.map((tool) => tool.function.name)).toContain('get_member_engagement');
+    const second = JSON.parse(fetchSpy.mock.calls[1][1].body);
+    expect(JSON.parse(second.messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: [{
+      member_id: MEMBER_ID, display_name: 'Adaeze', last_activity: null,
+      confirmed_contributions_count: 0, pending_contributions_count: 0, engagement_level: 'inactive',
+    }] });
+    expect(db.getCalls()).toContainEqual({ method: 'eq', args: ['containers.workspace_id', WORKSPACE_ID] });
+  });
+
+  it.each(['get_overdue_summary', 'get_member_engagement'])('rejects a model attempt to request %s for a member', async (name) => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion(name)));
     const res = await postChat();
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe('AGENT_INVALID_RESPONSE');
     expect(dashboard.getOverdueSummaryData).not.toHaveBeenCalled();
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body).tools.map((tool) => tool.function.name)).not.toContain(name);
+    expect(db.client.from.mock.calls).not.toContainEqual(['ledger_entries']);
+    expect(db.client.from.mock.calls).not.toContainEqual(['container_tasks']);
   });
 
   it('rejects missing authentication before consulting membership or Groq', async () => {

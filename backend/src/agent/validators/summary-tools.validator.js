@@ -8,4 +8,6 @@ const memberSummaryArgsSchema = z.object({
   member_id: z.string().uuid(),
 }).strict();
 
-module.exports = { containerSummaryArgsSchema, memberSummaryArgsSchema };
+const memberEngagementArgsSchema = z.object({}).strict();
+
+module.exports = { containerSummaryArgsSchema, memberSummaryArgsSchema, memberEngagementArgsSchema };
