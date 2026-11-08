@@ -9,6 +9,8 @@ const { getContainerSummary, getLedgerSummary, getMemberContributionSummary, get
 const { containerSummaryArgsSchema, memberSummaryArgsSchema, memberEngagementArgsSchema } = require('../validators/summary-tools.validator');
 const { listCycles } = require('./cycle-tools.service');
 const { listCyclesArgsSchema } = require('../validators/cycle-tools.validator');
+const { listTasks, getTask } = require('./task-tools.service');
+const { listTasksArgsSchema, getTaskArgsSchema } = require('../validators/task-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -66,6 +68,22 @@ const tools = Object.freeze([
     minRole: 'member',
     tier: 1,
     handler: getMemberContributionSummary,
+  }),
+  Object.freeze({
+    name: 'list_tasks',
+    description: 'List a container\'s tasks in stored sort order. Members see only their own assignments; admins see all tasks and may filter by assigned_to. Find container names with find_container and assignee names with find_member; ask the user to choose ambiguous matches. Use this list to find task IDs by title and clarify duplicate titles. A partial page cannot establish that a title is unique. Supports a stored-status filter and server-generated pagination; total counts only visible tasks matching the filters. Use next_page to continue; it is null at the last page or the page limit. No task writes or proof files.',
+    parameterSchema: listTasksArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: listTasks,
+  }),
+  Object.freeze({
+    name: 'get_task',
+    description: 'Get a task\'s details and stored completion/confirmation state. Members can read only their own assignments; admins can read any task in the container. Find container names with find_container and task IDs with list_tasks. Ask the user to choose ambiguous container names or task titles. No task writes or proof files.',
+    parameterSchema: getTaskArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getTask,
   }),
   Object.freeze({
     name: 'get_overdue_summary',

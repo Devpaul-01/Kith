@@ -39,6 +39,12 @@ const CYCLE = Object.freeze({
   cycle_number: 3, cycle_start: '2026-11-01', cycle_end: '2026-11-30', status: 'open',
   total_expected: null, total_collected: '0.00', created_at: '2026-10-01T00:00:00Z', closed_at: null,
 });
+const TASK_CONTAINER_ID = '88888888-8888-4888-8888-888888888888';
+const TASK_ID = '99999999-9999-4999-8999-999999999999';
+const TASK = Object.freeze({
+  id: TASK_ID, container_id: TASK_CONTAINER_ID, title: 'Shopping', assigned_to: MEMBER_ID,
+  status: 'pending', proofs: [{ url: 'PRIVATE_STORAGE_PATH' }], admin_note: 'PRIVATE_ADMIN_NOTE',
+});
 const MODEL = 'llama-3.3-70b-versatile';
 const CHAT_PATH = `/v1/workspaces/${WORKSPACE_ID}/agent/chat`;
 
@@ -116,7 +122,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(dashboard.getDashboardData).toHaveBeenCalledWith({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, isAdmin: false });
     const first = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(first.messages.find((message) => message.role === 'user').content).toBe('Read the dashboard.');
-    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary']);
+    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task']);
     expect(JSON.parse(first.messages.at(-1).content).data).toMatchObject({ member_id: MEMBER_ID, workspace_id: WORKSPACE_ID, role: 'member' });
   });
 
@@ -219,6 +225,120 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(res.status).toBe(403);
     expect(db.client.from.mock.calls).not.toContainEqual(['containers']);
     expect(db.client.from.mock.calls).not.toContainEqual(['container_cycles']);
+  });
+
+  it.each(['member', 'admin'])('reads a counted task page through the real service for a %s', async (role) => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('list_tasks', { container_id: TASK_CONTAINER_ID, status: 'pending', page: 2, per_page: 1 })))
+      .mockResolvedValueOnce(response(completion('Shopping is pending.')));
+    const pendingRequest = postChat({ message: 'Show pending tasks.' }, { role }).query({ workspaceId: OTHER_WORKSPACE_ID, isAdmin: true });
+    db.mockResponses(
+      { data: { id: TASK_CONTAINER_ID }, error: null },
+      { data: [TASK], error: null, count: 3 },
+    );
+    const res = await pendingRequest;
+    expect(res.status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    expect(JSON.parse(messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: {
+      tasks: [{ id: TASK_ID, container_id: TASK_CONTAINER_ID, title: 'Shopping', assigned_to: MEMBER_ID, assigned_to_name: null, status: 'pending' }],
+      pagination: { page: 2, per_page: 1, total: 3, total_pages: 3, next_page: 3 },
+    } });
+    expect(JSON.stringify(messages)).not.toContain('PRIVATE_');
+    const calls = db.getCalls();
+    const parentStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'containers');
+    const taskStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_tasks');
+    expect(calls.slice(parentStart, taskStart)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+    expect(calls.slice(taskStart)).toContainEqual({ method: 'eq', args: ['container_id', TASK_CONTAINER_ID] });
+    expect(calls.slice(taskStart)).toContainEqual({ method: 'range', args: [1, 1] });
+    expect(calls.slice(taskStart)).toContainEqual({ method: 'eq', args: ['status', 'pending'] });
+    const assigneeFilters = calls.slice(taskStart).filter((call) => call.method === 'eq' && call.args[0] === 'assigned_to');
+    expect(assigneeFilters).toEqual(role === 'member' ? [{ method: 'eq', args: ['assigned_to', MEMBER_ID] }] : []);
+  });
+
+  it('returns the member task details without proof paths or internal notes in chat', async () => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('get_task', { container_id: TASK_CONTAINER_ID, task_id: TASK_ID })))
+      .mockResolvedValueOnce(response(completion('Shopping is pending.')));
+    const pendingRequest = postChat({ message: 'Show the Shopping task.' });
+    db.mockResponses({ data: { id: TASK_CONTAINER_ID }, error: null }, { data: TASK, error: null });
+    expect((await pendingRequest).status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    expect(JSON.parse(messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: { task: {
+      id: TASK_ID, container_id: TASK_CONTAINER_ID, title: 'Shopping', assigned_to: MEMBER_ID, assigned_to_name: null, status: 'pending',
+    } } });
+    expect(JSON.stringify(messages)).not.toContain('PRIVATE_');
+  });
+
+  it('preserves the task-list HTTP array, field shape, sorting, and member visibility', async () => {
+    authenticate();
+    db.mockResponses({ data: { id: TASK_CONTAINER_ID }, error: null }, { data: [TASK], error: null });
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers/${TASK_CONTAINER_ID}/tasks`)
+      .set('Authorization', 'Bearer TEST_TOKEN')
+      .query({ workspaceId: OTHER_WORKSPACE_ID, assigned_to: OTHER_USER_ID, isAdmin: true, page: 2, per_page: 1, status: 'pending', sort: '-due_date' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: { tasks: [{ ...TASK, assigned_to_name: null, created_by_name: null }] } });
+    const calls = db.getCalls();
+    const parentStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'containers');
+    const taskStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_tasks');
+    expect(calls.slice(parentStart, taskStart)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+    expect(calls.slice(taskStart)).toContainEqual({ method: 'eq', args: ['assigned_to', MEMBER_ID] });
+    expect(calls.slice(taskStart)).toContainEqual({ method: 'order', args: ['due_date', { ascending: false }] });
+    expect(calls.some((call) => call.method === 'range')).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('preserves the task-detail HTTP envelope and supplies the routed workspace', async () => {
+    authenticate();
+    db.mockResponses({ data: { id: TASK_CONTAINER_ID }, error: null }, { data: TASK, error: null });
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers/${TASK_CONTAINER_ID}/tasks/${TASK_ID}`)
+      .set('Authorization', 'Bearer TEST_TOKEN').query({ workspaceId: OTHER_WORKSPACE_ID });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: { task: { ...TASK, assigned_to_name: null, created_by_name: null } } });
+    const calls = db.getCalls();
+    const parentStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'containers');
+    const taskStart = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'container_tasks');
+    expect(calls.slice(parentStart, taskStart)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+  });
+
+  it.each(['', `/${TASK_ID}`])('rejects HTTP task reads when the workspace parent is absent: %s', async (suffix) => {
+    authenticate();
+    db.mockNextResponse({ data: null, error: null });
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers/${TASK_CONTAINER_ID}/tasks${suffix}`)
+      .set('Authorization', 'Bearer TEST_TOKEN');
+    expect(res.status).toBe(404);
+    expect(db.client.from.mock.calls).not.toContainEqual(['container_tasks']);
+  });
+
+  it.each(['chat', 'http'])('denies another member\'s task through %s without exposing it', async (source) => {
+    let pendingRequest;
+    if (source === 'chat') {
+      fetchSpy.mockResolvedValueOnce(response(toolCompletion('get_task', { container_id: TASK_CONTAINER_ID, task_id: TASK_ID })));
+      pendingRequest = postChat({ message: 'Show that task.' });
+    } else {
+      authenticate();
+      pendingRequest = request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers/${TASK_CONTAINER_ID}/tasks/${TASK_ID}`)
+        .set('Authorization', 'Bearer TEST_TOKEN').query({ isAdmin: true, callerId: OTHER_USER_ID });
+    }
+    db.mockResponses({ data: { id: TASK_CONTAINER_ID }, error: null }, { data: { ...TASK, assigned_to: OTHER_USER_ID }, error: null });
+    const res = await pendingRequest;
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(JSON.stringify(res.body)).not.toMatch(/Shopping|PRIVATE_/);
+    expect(fetchSpy).toHaveBeenCalledTimes(source === 'chat' ? 1 : 0);
+  });
+
+  it.each(['list_tasks', 'get_task'])('ends the chat turn when %s fails instead of reporting an empty result', async (name) => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion(name, {
+      container_id: TASK_CONTAINER_ID, ...(name === 'get_task' ? { task_id: TASK_ID } : {}),
+    })));
+    const pendingRequest = postChat({ message: 'Show my tasks.' });
+    db.mockResponses(
+      { data: { id: TASK_CONTAINER_ID }, error: null },
+      { data: null, error: { message: 'PRIVATE_DATABASE_DETAIL' }, count: null },
+    );
+    const res = await pendingRequest;
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('AGENT_TOOL_FAILED');
+    expect(JSON.stringify(res.body)).not.toContain('PRIVATE_DATABASE_DETAIL');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it.each(['get_overdue_summary', 'get_member_engagement', 'list_cycles'])('rejects a model attempt to request %s for a member', async (name) => {
