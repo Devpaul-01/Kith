@@ -168,6 +168,59 @@ Unit and HTTP tests cover permissions, workspace scope, filtering, pagination,
 field trimming, and scripted resolution/clarification. Real database isolation
 and live-model evaluation remain pending.
 
+## Task reads
+
+`list_tasks` and `get_task` are Tier 1 reads for active workspace members and
+admins, wrapping the existing task service. Members see only tasks assigned
+to their own authenticated membership. Admins may read all tasks in the
+container, including unassigned tasks. Both handlers check membership even
+when called directly; caller, role, and workspace cannot come from arguments.
+
+`list_tasks` accepts a required `container_id` UUID, optional `assigned_to`
+UUID and `status` (`pending`, `in_progress`, `completed`, `overdue`, or
+`cancelled`), `page` (1–10,000, default 1), and `per_page` (1–100, default 20).
+Members requesting another assignee are denied before the service is called.
+`get_task` accepts only `container_id` and `task_id` UUIDs and returns `{ task }`.
+Date, title-search, sorting, and other unsupported arguments are rejected.
+
+Use `find_container` for container names and `find_member` for an admin's
+assignee filter. Task IDs and titles come from `list_tasks`; dedicated fuzzy
+task search remains a later increment. Ask the user to choose or refine
+ambiguous names or task titles. A partial page cannot establish that a title
+is unique across the container.
+
+List results contain `tasks` in ascending stored `sort_order`, with ID as a
+stable tie-breaker. The `pagination` object supplies `page`, `per_page`,
+`total`, `total_pages`, and `next_page` through the shared pagination utility.
+Totals count only visible tasks matching the requested filters across all
+pages; the model must not count the returned rows. `next_page` is null on the
+last page or at page 10,000. Refine the filters at the page limit; an empty
+page past the end is not evidence of an empty container. Status is the stored
+value, not recalculated from the due date by the agent.
+
+Both tools expose only task/container IDs, title, description, assignee ID
+and display name, due date, status, completion timestamp and note, admin
+confirmation timestamp, and creation/update timestamps. Proof files, storage
+paths, admin notes, and internal actor/sort fields are omitted. All text
+remains in the read loop's untrusted-data envelope. Task writes, proof actions,
+and exports are unavailable through these tools.
+
+The shared list/detail service verifies that the non-deleted parent container
+belongs to the workspace before querying tasks. Both existing HTTP controllers
+now supply the routed workspace. The HTTP task list keeps its existing full
+array and field shape; only callers opting into internal pagination receive
+`{ tasks, count }`. Missing parents/tasks return `NOT_FOUND`, and a member
+reading someone else's task receives `FORBIDDEN`. Query failures, unavailable
+list rows, and invalid exact counts raise `TASKS_UNAVAILABLE` (503). The shared
+single-task fetch also rejects query errors before existing update/proof
+callers can continue. Chat maps unavailable reads to `AGENT_TOOL_FAILED` and
+preserves permission denials.
+
+Unit and HTTP tests cover workspace scope, member/admin visibility, filters,
+pagination, field trimming, service failures, and scripted clarification and
+hostile-text cases. Actual Postgres isolation and live-model disambiguation
+and prompt-injection behavior still require integration/evaluation coverage.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
