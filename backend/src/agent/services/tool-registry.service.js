@@ -5,8 +5,8 @@ const { assertAgentContext } = require('./context.service');
 const { getMyContext, getDashboard, getOverdueSummary } = require('./read-tools.service');
 const { findMember, findContainer } = require('./resolution-tools.service');
 const { entitySearchSchema } = require('../../validators/search.validator');
-const { getContainerSummary, getLedgerSummary } = require('./summary-tools.service');
-const { containerSummaryArgsSchema } = require('../validators/summary-tools.validator');
+const { getContainerSummary, getLedgerSummary, getMemberContributionSummary } = require('./summary-tools.service');
+const { containerSummaryArgsSchema, memberSummaryArgsSchema } = require('../validators/summary-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -56,6 +56,14 @@ const tools = Object.freeze([
     minRole: 'member',
     tier: 1,
     handler: getLedgerSummary,
+  }),
+  Object.freeze({
+    name: 'get_member_contribution_summary',
+    description: 'Get server-calculated contribution totals for a member in your workspace. Find names with find_member and ask the user to choose ambiguous matches. Available to members and admins. Covers all dates and cycles; confirmed totals include resolved entries. Container count is based on ledger entries; targets use current non-cycle values and their original currencies. No date, container, or cycle filtering.',
+    parameterSchema: memberSummaryArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getMemberContributionSummary,
   }),
   Object.freeze({
     name: 'get_overdue_summary',

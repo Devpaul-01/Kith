@@ -110,7 +110,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(dashboard.getDashboardData).toHaveBeenCalledWith({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, isAdmin: false });
     const first = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(first.messages.find((message) => message.role === 'user').content).toBe('Read the dashboard.');
-    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary']);
+    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary']);
     expect(JSON.parse(first.messages.at(-1).content).data).toMatchObject({ member_id: MEMBER_ID, workspace_id: WORKSPACE_ID, role: 'member' });
   });
 

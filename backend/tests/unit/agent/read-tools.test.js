@@ -41,13 +41,13 @@ describe('agent read-tool foundation', () => {
 
   it('offers members context, resolution, and their permitted dashboard', () => {
     expect(getAvailableTools(makeContext()).map((tool) => tool.name))
-      .toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary']);
+      .toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary']);
   });
 
   it('offers admins the overdue tool as well, without exposing handlers', () => {
     const available = getAvailableTools(makeContext('admin'));
     expect(available.map((tool) => tool.name))
-      .toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_overdue_summary']);
+      .toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'get_overdue_summary']);
     available.forEach((tool) => expect(tool).not.toHaveProperty('handler'));
   });
 
