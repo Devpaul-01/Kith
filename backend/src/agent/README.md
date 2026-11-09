@@ -8,6 +8,13 @@ after the existing auth and membership middleware:
 const context = { userId: req.user.id, member: req.member, workspace: req.workspace, requestId: req.requestId };
 ```
 
+The registry includes all 28 Tier 1 tool names from the architecture, with
+the role restrictions and data limits documented below. Tier 0 currently
+includes caller context and ranked member/container lookup. The remaining
+ranked task, ledger, dispute and group searches are specified in the
+[schema proposal](SEARCH_SCHEMA_PROPOSAL.md), pending a schema decision.
+Proposal approval/execution, streaming chat and voice are still pending.
+
 `find_member` and `find_container` take `{ query, limit? }`. Queries are trimmed
 and must contain 2–200 characters; limits default to 10 and range from 2 to 20.
 Workspace and actor IDs are always supplied by server context.
@@ -838,3 +845,8 @@ workspace filtering, wildcard handling, and RPC permissions are covered by
 `tests/integration/database/ranked-search.test.js`. Run that suite with
 the real Postgres/PostgREST/Redis test stack and the updated schema. Unit tests
 mock RPC results and do not prove that the SQL or indexes work.
+
+At the read-catalog checkpoint `22c7ed1` (2026-11-09), all 2,347 unit tests
+passed across 80 suites. Live database/PostgREST and model verification remain
+pending. The existing `ioredis-mock` listener warning is still present in full
+unit runs.
