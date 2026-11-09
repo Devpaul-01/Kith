@@ -354,6 +354,33 @@ HTTP read controllers use the workspace from the resolved membership and
 keep their existing response envelopes. Mocked service, tool, loop, and HTTP
 tests cover these boundaries; live database/model verification remains pending.
 
+## Group reads
+
+`list_groups({ search?, page?, per_page? })` is a Tier 1 read available to
+members and admins. It returns group metadata (ID, name, description and
+timestamps) and an exact filtered group count. Search is an escaped literal
+name substring, 2–200 characters; it does not resolve spelling errors. Groups
+are ordered by name then ID. Embedded memberships and membership counts are
+omitted from this list.
+
+`get_group({ group_id, page?, per_page? })` is **admin-only**, matching the
+existing group-detail HTTP route. It returns group metadata, a bounded page
+of membership directory fields and an exact membership count. Both the group
+and the joined memberships are scoped to the authenticated workspace. Deleted
+members are excluded; proxies and inactive memberships remain visible.
+Members are ordered by added timestamp then group-membership ID. No contact
+information, actor IDs, or financial details are exposed.
+
+Both tools use pages 1–10,000 and 1–100 rows per page (defaults 1/20), with
+`pagination.next_page` null at the last page or page limit. Group detail
+pagination describes memberships, while list pagination describes groups.
+Use the service count; never infer totals or name uniqueness from page length.
+Duplicate group names require clarification. Descriptions and relationship
+text remain in untrusted tool-result envelopes. Missing groups return
+`NOT_FOUND`; failed queries or unavailable exact counts return
+`GROUPS_UNAVAILABLE`. Internal pagination options preserve the legacy HTTP
+response shapes. Live PostgREST join/count validation remains pending.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON

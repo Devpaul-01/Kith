@@ -19,6 +19,8 @@ const { listContainers, getContainer } = require('./container-tools.service');
 const { listContainersArgsSchema, getContainerArgsSchema } = require('../validators/container-tools.validator');
 const { listMembers, getMember } = require('./member-tools.service');
 const { listMembersArgsSchema, getMemberArgsSchema } = require('../validators/member-tools.validator');
+const { listGroups, getGroup } = require('./group-tools.service');
+const { listGroupsArgsSchema, getGroupArgsSchema } = require('../validators/group-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -158,6 +160,14 @@ const tools = Object.freeze([
     handler: getUnreadCount,
   }),
   Object.freeze({
+    name: 'list_groups',
+    description: 'Browse groups in your current workspace by name, with an optional literal-name substring search. Available to members and admins. Returns group metadata and an exact filtered group count, without embedded member lists or membership counts. Use next_page to continue; null means the last page or page limit. Ask the user to choose duplicate names; a partial page cannot establish uniqueness. Admins can use get_group for paginated membership details.',
+    parameterSchema: listGroupsArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: listGroups,
+  }),
+  Object.freeze({
     name: 'get_overdue_summary',
     description: 'Get the workspace overdue contribution summary. Admin access required.',
     parameterSchema: z.object({}).strict(),
@@ -180,6 +190,14 @@ const tools = Object.freeze([
     minRole: 'admin',
     tier: 1,
     handler: listCycles,
+  }),
+  Object.freeze({
+    name: 'get_group',
+    description: 'Read group metadata and a page of group members. Admin access required, matching the group-detail HTTP route. Use an ID from list_groups and clarify duplicate group names. Members include proxies and inactive memberships but exclude deleted memberships and other workspaces. Pagination counts group members, not groups; copy the server total instead of counting rows. Ordered by membership added_at then ID; next_page is null at the last page or page limit. No contact details, actor IDs, financial data, or writes.',
+    parameterSchema: getGroupArgsSchema,
+    minRole: 'admin',
+    tier: 1,
+    handler: getGroup,
   }),
 ]);
 

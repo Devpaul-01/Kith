@@ -31,6 +31,75 @@ describe('services/group.service', () => {
     audit.log.mockResolvedValue();
   });
 
+  describe('paginated reads', () => {
+    const pagination = { page: 2, perPage: 10, offset: 10 };
+    const group = { id: GROUP_ID, name: 'Cousins', description: null, created_at: '2026-01-01', updated_at: '2026-01-01' };
+
+    it('lists metadata with workspace scope, escaped literal search, exact counts and stable paging', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [group], count: 23, error: null });
+      const result = await groupService.listGroups({ workspaceId: WORKSPACE_ID, search: '50%_family', pagination });
+      expect(result).toEqual({ groups: [group], count: 23 });
+      expect(mockSupabaseInstance.getCalls()).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] },
+        { method: 'ilike', args: ['name', '%50\\%\\_family%'] },
+        { method: 'select', args: ['id, name, description, created_at, updated_at', { count: 'exact' }] },
+        { method: 'order', args: ['name', { ascending: true }] },
+        { method: 'order', args: ['id', { ascending: true }] },
+        { method: 'range', args: [10, 19] },
+      ]));
+      expect(mockSupabaseInstance.getCalls().filter((call) => call.method === 'from')).toHaveLength(1);
+    });
+
+    it('preserves the legacy group-list member embedding without applying pagination', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [{ ...group, group_members: [{ workspace_members: { id: 'm1', display_name: 'Ada' } }] }], error: null });
+      const result = await groupService.listGroups({ workspaceId: WORKSPACE_ID });
+      expect(result).toEqual([{ ...group, group_members: undefined, member_count: 1, members: [{ id: 'm1', display_name: 'Ada' }] }]);
+      expect(mockSupabaseInstance.getCalls().filter((call) => call.method === 'range')).toHaveLength(0);
+    });
+
+    it('scopes both sides of group membership, excludes deleted members and counts independently of the page', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: group, error: null });
+      mockSupabaseInstance.mockNextResponse({ data: [{ id: 'gm1', added_at: '2026-01-01', workspace_members: { id: 'm1', display_name: 'Ada', is_active: false } }], error: null, count: 23 });
+      const result = await groupService.getGroup({ workspaceId: WORKSPACE_ID, groupId: GROUP_ID, pagination });
+      expect(result).toEqual({ group, members: [{ id: 'm1', display_name: 'Ada', is_active: false, added_at: '2026-01-01' }], count: 23 });
+      const calls = mockSupabaseInstance.getCalls();
+      expect(calls).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['id', GROUP_ID] },
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] },
+        { method: 'eq', args: ['group_id', GROUP_ID] },
+        { method: 'eq', args: ['groups.workspace_id', WORKSPACE_ID] },
+        { method: 'eq', args: ['workspace_members.workspace_id', WORKSPACE_ID] },
+        { method: 'is', args: ['workspace_members.deleted_at', null] },
+        { method: 'range', args: [10, 19] },
+      ]));
+      const selects = calls.filter((call) => call.method === 'select');
+      expect(selects[1].args).toEqual([expect.stringContaining('workspace_members!group_members_workspace_member_id_fkey!inner'), { count: 'exact' }]);
+      expect(selects.map((call) => call.args[0]).join(' ')).not.toMatch(/\*|email|admin_notes|added_by/);
+    });
+
+    it.each([null, -1, 1.5, '10', Number.MAX_SAFE_INTEGER + 1])('rejects an unavailable or invalid exact count: %j', async (count) => {
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null, count });
+      await expect(groupService.listGroups({ workspaceId: WORKSPACE_ID, pagination })).rejects.toMatchObject({ code: 'GROUPS_UNAVAILABLE' });
+      mockSupabaseInstance.mockNextResponse({ data: group, error: null });
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null, count });
+      await expect(groupService.getGroup({ workspaceId: WORKSPACE_ID, groupId: GROUP_ID, pagination })).rejects.toMatchObject({ code: 'GROUPS_UNAVAILABLE' });
+    });
+
+    it.each([{ data: null, count: 0, error: null }, { data: [], count: 0, error: { message: 'private database detail' } }])('fails closed for unsuccessful list/member queries', async (response) => {
+      mockSupabaseInstance.mockNextResponse(response);
+      await expect(groupService.listGroups({ workspaceId: WORKSPACE_ID, pagination })).rejects.toMatchObject({ code: 'GROUPS_UNAVAILABLE' });
+      mockSupabaseInstance.mockNextResponse({ data: group, error: null });
+      mockSupabaseInstance.mockNextResponse(response);
+      await expect(groupService.getGroup({ workspaceId: WORKSPACE_ID, groupId: GROUP_ID, pagination })).rejects.toMatchObject({ code: 'GROUPS_UNAVAILABLE' });
+    });
+
+    it.each([[null, 'NOT_FOUND'], [{ message: 'private detail' }, 'GROUPS_UNAVAILABLE']])('does not query memberships when the scoped group lookup fails', async (error, code) => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error });
+      await expect(groupService.getGroup({ workspaceId: WORKSPACE_ID, groupId: GROUP_ID, pagination })).rejects.toMatchObject({ code });
+      expect(mockSupabaseInstance.getCalls().filter((call) => call.method === 'from')).toEqual([{ method: 'from', args: ['groups'] }]);
+    });
+  });
+
   describe('createGroup', () => {
     it('one invalid + one valid initial member_id -> invalid silently skipped, valid one added', async () => {
       mockSupabaseInstance.mockNextResponse({ data: { id: GROUP_ID, name: 'Cousins' }, error: null });

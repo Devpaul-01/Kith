@@ -1,18 +1,21 @@
 // src/services/group.service.js
 //
-// Behavior unchanged, including the batch-validate-then-batch-upsert
-// pattern used for member additions.
+// Preserves HTTP response shapes and the batch-validate-then-batch-upsert
+// pattern. Opt-in paginated reads avoid unbounded membership joins.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { NotFoundError } = require('../utils/errors');
+const { AppError, NotFoundError } = require('../utils/errors');
 const audit = require('./audit.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const logger = require('../utils/logger');
+const { containsPattern } = require('../utils/ilike');
 
-async function listGroups({ workspaceId }) {
-  const { data: groups, error } = await supabaseAdmin
+const GROUP_COLUMNS = 'id, name, description, created_at, updated_at';
+
+async function listGroups({ workspaceId, search, pagination }) {
+  let query = supabaseAdmin
     .from('groups')
-    .select(`
+    .select(pagination ? GROUP_COLUMNS : `
       id, 
       name, 
       description, 
@@ -26,11 +29,22 @@ async function listGroups({ workspaceId }) {
           is_proxy
         )
       )
-    `)
+    `, pagination ? { count: 'exact' } : undefined)
     .eq('workspace_id', workspaceId)
     .order('name', { ascending: true });
 
-  if (error) throw new Error(error.message);
+  if (search) query = query.ilike('name', containsPattern(search));
+  if (pagination) {
+    query = query.order('id', { ascending: true })
+      .range(pagination.offset, pagination.offset + pagination.perPage - 1);
+  }
+  const { data: groups, error, count } = await query;
+  if (error || (pagination && (!Array.isArray(groups) || !Number.isSafeInteger(count) || count < 0))) {
+    throw new AppError('Groups are unavailable. Please try again.', 503, 'GROUPS_UNAVAILABLE');
+  }
+  // Agent pages contain metadata only. Embedded membership arrays may be
+  // truncated by PostgREST and cannot supply a reliable membership count.
+  if (pagination) return { groups, count };
 
   return (groups || []).map((g) => ({
     ...g,
@@ -77,10 +91,10 @@ async function createGroup({ workspaceId, name, description, memberIds = [], act
   return group;
 }
 
-async function getGroup({ workspaceId, groupId }) {
+async function getGroup({ workspaceId, groupId, pagination }) {
   const { data: group, error } = await supabaseAdmin
     .from('groups')
-    .select(`
+    .select(pagination ? GROUP_COLUMNS : `
       *,
       group_members!group_members_group_id_fkey (
         id,
@@ -100,8 +114,32 @@ async function getGroup({ workspaceId, groupId }) {
     .eq('workspace_id', workspaceId)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
+  if (error) throw new AppError('Groups are unavailable. Please try again.', 503, 'GROUPS_UNAVAILABLE');
   if (!group) throw new NotFoundError('Group not found');
+
+  if (pagination) {
+    const { data, error: membersError, count } = await supabaseAdmin
+      .from('group_members')
+      .select(`
+        id, added_at,
+        groups!group_members_group_id_fkey!inner(id),
+        workspace_members!group_members_workspace_member_id_fkey!inner(
+          id, display_name, role, is_proxy, is_active, relationship_to_head, relationship_category
+        )
+      `, { count: 'exact' })
+      .eq('group_id', groupId)
+      .eq('groups.workspace_id', workspaceId)
+      .eq('workspace_members.workspace_id', workspaceId)
+      .is('workspace_members.deleted_at', null)
+      .order('added_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(pagination.offset, pagination.offset + pagination.perPage - 1);
+
+    if (membersError || !Array.isArray(data) || !Number.isSafeInteger(count) || count < 0) {
+      throw new AppError('Group members are unavailable. Please try again.', 503, 'GROUPS_UNAVAILABLE');
+    }
+    return { group, members: data.map((row) => ({ ...row.workspace_members, added_at: row.added_at })), count };
+  }
 
   const members = (group.group_members || []).map(gm => ({
     ...gm.workspace_members,
