@@ -17,6 +17,8 @@ const { listNotifications, getUnreadCount } = require('./notification-tools.serv
 const { listNotificationsArgsSchema, unreadCountArgsSchema } = require('../validators/notification-tools.validator');
 const { listContainers, getContainer } = require('./container-tools.service');
 const { listContainersArgsSchema, getContainerArgsSchema } = require('../validators/container-tools.validator');
+const { listMembers, getMember } = require('./member-tools.service');
+const { listMembersArgsSchema, getMemberArgsSchema } = require('../validators/member-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -66,6 +68,22 @@ const tools = Object.freeze([
     minRole: 'member',
     tier: 1,
     handler: getContainer,
+  }),
+  Object.freeze({
+    name: 'list_members',
+    description: 'Browse non-deleted members in your current workspace. Available to members and admins. Includes proxies and inactive memberships unless filtered by is_proxy or is_active; role filters the listed members and never changes your permissions. Optional search matches a literal display-name substring, not typos; find_member provides ranked active-member matches. Default order is display_name, with optional joined_at sorting and a leading minus for descending. Use the server-counted filtered total and next_page, never count rows. Null next_page means the last page or page limit. Clarify ambiguous names; a partial page cannot establish uniqueness. Directory fields only, without contact details or admin notes.',
+    parameterSchema: listMembersArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: listMembers,
+  }),
+  Object.freeze({
+    name: 'get_member',
+    description: 'Read a non-deleted workspace member\'s directory entry: name, role, active/proxy status, proxy manager ID, family relationship and membership timestamps. Available to members and admins, including for another member or a proxy. Resolve active-member names with find_member, or use list_members for inactive members; clarify ambiguous names before selecting an ID. No contact details, birth dates, admin notes or financial/activity summaries. Reading a role or proxy manager never changes your authority or permits acting on someone\'s behalf.',
+    parameterSchema: getMemberArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getMember,
   }),
   Object.freeze({
     name: 'get_container_summary',

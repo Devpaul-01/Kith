@@ -55,15 +55,21 @@ async function assertNotLastActiveAdmin({ workspaceId, memberId, actionLabel }) 
   }
 }
 
-async function listMembers({ workspaceId, isAdmin, search, filterRole, filterProxy, sortQuery }) {
+const MEMBER_DIRECTORY_COLUMNS = 'id, display_name, role, is_proxy, proxy_managed_by, relationship_to_head, relationship_category, is_active, joined_at, updated_at';
+
+async function listMembers({ workspaceId, isAdmin, search, filterRole, filterProxy, filterActive, sortQuery = {}, pagination }) {
   let query = supabaseAdmin
     .from('workspace_members')
-    .select('*, users:user_id(email, country_of_residence, timezone)')
+    .select(
+      pagination ? MEMBER_DIRECTORY_COLUMNS : '*, users:user_id(email, country_of_residence, timezone)',
+      pagination ? { count: 'exact' } : undefined
+    )
     .eq('workspace_id', workspaceId)
     .is('deleted_at', null);
 
   if (filterRole  !== undefined) query = query.eq('role', filterRole);
-  if (filterProxy !== undefined) query = query.eq('is_proxy', filterProxy === 'true');
+  if (filterProxy !== undefined) query = query.eq('is_proxy', filterProxy === true || filterProxy === 'true');
+  if (filterActive !== undefined) query = query.eq('is_active', filterActive === true || filterActive === 'true');
   // Search input escaped before embedding in the ILIKE pattern (shared
   // with search.service.js via utils/ilike.js).
   if (search) query = query.ilike('display_name', containsPattern(search));
@@ -71,10 +77,20 @@ async function listMembers({ workspaceId, isAdmin, search, filterRole, filterPro
   const { field: safeSort, ascending } = getSort(sortQuery, { allowed: ['display_name', 'joined_at'], defaultField: 'display_name' });
   query = query.order(safeSort, { ascending });
 
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
+  if (pagination) {
+    query = query.order('id', { ascending: true })
+      .range(pagination.offset, pagination.offset + pagination.perPage - 1);
+  }
+  const { data, error, count } = await query;
+  if (error || !Array.isArray(data)
+      || (pagination && (!Number.isSafeInteger(count) || count < 0))) {
+    throw new AppError('Members are unavailable. Please try again.', 503, 'MEMBERS_UNAVAILABLE');
+  }
+  // Paginated directory reads do not fetch profiles or the legacy unfiltered
+  // metadata totals. Their exact count covers only the requested filters.
+  if (pagination) return { members: data, count };
 
-  const members = (data || []).map((m) => {
+  const members = data.map((m) => {
     const flat = { ...m, email: m.users?.email, country_of_residence: m.users?.country_of_residence, timezone: m.users?.timezone, users: undefined };
     if (!isAdmin) {
       const { admin_notes, last_active_at, contribution_streak_months, ...limited } = flat;
@@ -126,17 +142,18 @@ async function createMember({ workspaceId, data, actorCtx }) {
   return member;
 }
 
-async function getMember({ workspaceId, memberId, isAdmin }) {
+async function getMember({ workspaceId, memberId, isAdmin, metadataOnly = false }) {
   const { data, error } = await supabaseAdmin
     .from('workspace_members')
-    .select('*, users:user_id(email, country_of_residence, timezone, bio)')
+    .select(metadataOnly ? MEMBER_DIRECTORY_COLUMNS : '*, users:user_id(email, country_of_residence, timezone, bio)')
     .eq('id', memberId)
     .eq('workspace_id', workspaceId)
     .is('deleted_at', null)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
+  if (error) throw new AppError('Members are unavailable. Please try again.', 503, 'MEMBERS_UNAVAILABLE');
   if (!data) throw new NotFoundError('Member not found');
+  if (metadataOnly) return data;
 
   const member = { ...data, email: data.users?.email, country_of_residence: data.users?.country_of_residence, timezone: data.users?.timezone, bio: data.users?.bio, users: undefined };
   if (!isAdmin) delete member.admin_notes;

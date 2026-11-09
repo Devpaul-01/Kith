@@ -68,7 +68,7 @@ describe('services/member.service', () => {
       expect(result.members[0]).toHaveProperty('admin_notes', 'secret');
     });
 
-    it('filterProxy: "true" (string) matches; anything else evaluates false (current documented behavior)', async () => {
+    it('accepts the existing HTTP string proxy filter', async () => {
       mockSupabaseInstance.mockNextResponse({ data: [], error: null });
       mockSupabaseInstance.mockNextResponse({ data: [], error: null });
 
@@ -102,6 +102,79 @@ describe('services/member.service', () => {
       const result = await memberService.listMembers({ workspaceId: WORKSPACE_ID, isAdmin: true, search: null, filterRole: undefined, filterProxy: undefined, sortQuery: {} });
 
       expect(result.meta).toEqual({ total: 3, admins_count: 1, proxy_count: 1, active_count: 2 });
+    });
+  });
+
+  describe('member directory reads', () => {
+    const pagination = { page: 2, perPage: 10, offset: 10 };
+
+    it('counts the filtered workspace directory without loading profiles or legacy metadata totals', async () => {
+      const rows = [{ id: MEMBER_ID, display_name: 'Ada', role: 'member', is_proxy: true, is_active: false }];
+      mockSupabaseInstance.mockNextResponse({ data: rows, count: 31, error: null });
+      await expect(memberService.listMembers({
+        workspaceId: WORKSPACE_ID, isAdmin: false, filterRole: 'member', filterProxy: true, filterActive: false,
+        search: '50%_x', sortQuery: { sort: '-joined_at' }, pagination,
+      })).resolves.toEqual({ members: rows, count: 31 });
+      const calls = mockSupabaseInstance.getCalls();
+      expect(calls).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] }, { method: 'is', args: ['deleted_at', null] },
+        { method: 'eq', args: ['role', 'member'] }, { method: 'eq', args: ['is_proxy', true] },
+        { method: 'eq', args: ['is_active', false] }, { method: 'range', args: [10, 19] },
+        { method: 'ilike', args: ['display_name', '%50\\%\\_x%'] },
+      ]));
+      expect(mockSupabaseInstance.builder.order.mock.calls).toEqual([['joined_at', { ascending: false }], ['id', { ascending: true }]]);
+      const [columns, options] = mockSupabaseInstance.builder.select.mock.calls[0];
+      expect(columns).not.toMatch(/\*|users|user_id|email|date_of_birth|admin_notes|last_active_at|contribution_streak/);
+      expect(options).toEqual({ count: 'exact' });
+      expect(mockSupabaseInstance.client.from.mock.calls).toEqual([['workspace_members']]);
+    });
+
+    it.each([true, false])('applies explicit boolean proxy/active filters: %s', async (value) => {
+      mockSupabaseInstance.mockNextResponse({ data: [], count: 0, error: null });
+      await memberService.listMembers({ workspaceId: WORKSPACE_ID, isAdmin: false, filterProxy: value, filterActive: value, pagination });
+      expect(mockSupabaseInstance.getCalls()).toContainEqual({ method: 'eq', args: ['is_proxy', value] });
+      expect(mockSupabaseInstance.getCalls()).toContainEqual({ method: 'eq', args: ['is_active', value] });
+    });
+
+    it('does not silently exclude inactive members or proxies when filters are omitted', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [], count: 0, error: null });
+      await memberService.listMembers({ workspaceId: WORKSPACE_ID, isAdmin: false, pagination });
+      const filters = mockSupabaseInstance.getCalls().filter((call) => call.method === 'eq').map((call) => call.args[0]);
+      expect(filters).not.toContain('is_active');
+      expect(filters).not.toContain('is_proxy');
+    });
+
+    it.each([null, undefined, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('rejects an unavailable exact directory count: %j', async (count) => {
+      mockSupabaseInstance.mockNextResponse({ data: [], count, error: null });
+      await expect(memberService.listMembers({ workspaceId: WORKSPACE_ID, isAdmin: false, pagination }))
+        .rejects.toMatchObject({ code: 'MEMBERS_UNAVAILABLE', statusCode: 503 });
+    });
+
+    it.each([{ data: null, count: 0, error: null }, { data: [], count: 0, error: { message: 'PRIVATE_DATABASE_FAILURE' } }])('rejects missing rows or database failures', async (response) => {
+      mockSupabaseInstance.mockNextResponse(response);
+      const error = await memberService.listMembers({ workspaceId: WORKSPACE_ID, isAdmin: false, pagination }).catch((err) => err);
+      expect(error).toMatchObject({ code: 'MEMBERS_UNAVAILABLE', statusCode: 503 });
+      expect(error.message).not.toContain('PRIVATE_');
+    });
+
+    it('reads a non-deleted member in the workspace without selecting private profile fields', async () => {
+      const row = { id: MEMBER_ID, display_name: 'Ada', is_proxy: true, is_active: false };
+      mockSupabaseInstance.mockNextResponse({ data: row, error: null });
+      await expect(memberService.getMember({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, isAdmin: false, metadataOnly: true }))
+        .resolves.toEqual(row);
+      expect(mockSupabaseInstance.getCalls()).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] }, { method: 'eq', args: ['id', MEMBER_ID] },
+        { method: 'is', args: ['deleted_at', null] },
+      ]));
+      expect(mockSupabaseInstance.builder.select.mock.calls[0][0]).not.toMatch(/users|email|date_of_birth|admin_notes|last_active_at|contribution_streak/);
+      expect(mockSupabaseInstance.client.from).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps missing members distinct from failed lookups', async () => {
+      mockSupabaseInstance.mockResponses({ data: null, error: null }, { data: null, error: { message: 'PRIVATE_DATABASE_FAILURE' } });
+      const args = { workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, isAdmin: false, metadataOnly: true };
+      await expect(memberService.getMember(args)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(memberService.getMember(args)).rejects.toMatchObject({ code: 'MEMBERS_UNAVAILABLE', statusCode: 503 });
     });
   });
 

@@ -95,6 +95,46 @@ handlers and real domain services with mocked Supabase responses, plus
 scripted resolution/clarification turns. Actual database isolation and
 live-model numerical accuracy still need integration/evaluation coverage.
 
+## Member directory
+
+`list_members` and `get_member` are Tier 1 directory reads available to active
+members and admins, including when reading another member or a proxy. Both
+handlers check the caller's membership and pass the real workspace and role
+to the existing member service. A role returned by a tool or used as a list
+filter never grants the caller that role.
+
+Lists accept optional `role` (`member` or `admin`), boolean `is_proxy` and
+`is_active`, and a trimmed 2–200 character `search` string. Search uses the
+service's escaped literal display-name substring matching. Use `find_member`
+for ranked active-member matches, including typos. Inactive members remain
+reachable through `list_members`; deleted memberships are always excluded.
+When no status filters are supplied, both active/inactive and proxy/non-proxy
+members are included.
+
+Sort by `display_name` (the default) or `joined_at`, with a leading `-` for
+descending order and an ID tie-breaker. `page` is bounded to 1–10,000 and
+`per_page` to 1–100 (defaults: 1 and 20). The service supplies an exact total
+for all matching rows, independent of the current page. Use `next_page` to
+continue; null means the last page or the page limit. The model must not
+count rows or infer that a name on a partial page is unique.
+
+`get_member` accepts only `member_id`, a resolved UUID. Both tools return
+display name, role, proxy/active flags, proxy manager ID, family relationship,
+and membership timestamps. Contact details, birth dates, user-account IDs,
+admin notes, storage URLs, and financial/activity fields are omitted even
+for admins. Reading a proxy or its manager does not authorize acting on
+their behalf. Resolve ambiguous names through clarification; all text stays
+inside the untrusted-data envelope.
+
+The service uses internal paginated directory lists and a `metadataOnly`
+detail view to avoid profile joins and unrelated aggregate reads. Existing
+HTTP list/detail callers keep their response shapes and role trimming.
+Failed base queries, missing list rows, and unavailable exact counts raise
+`MEMBERS_UNAVAILABLE`; missing targets remain `NOT_FOUND`. Chat maps failed
+reads to `AGENT_TOOL_FAILED`. Unit and mocked HTTP tests cover these boundaries,
+filters, pagination, clarification, and hostile text. Live database/model
+validation remains pending.
+
 ## Member contribution summaries
 
 `get_member_contribution_summary` is a Tier 1 read accepting only

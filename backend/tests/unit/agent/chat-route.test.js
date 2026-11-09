@@ -128,7 +128,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(dashboard.getDashboardData).toHaveBeenCalledWith({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, isAdmin: false });
     const first = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(first.messages.find((message) => message.role === 'user').content).toBe('Read the dashboard.');
-    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'list_containers', 'get_container', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task', 'list_ledger_entries', 'get_ledger_entry', 'list_notifications', 'get_unread_count']);
+    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'list_containers', 'get_container', 'list_members', 'get_member', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task', 'list_ledger_entries', 'get_ledger_entry', 'list_notifications', 'get_unread_count']);
     expect(JSON.parse(first.messages.at(-1).content).data).toMatchObject({ member_id: MEMBER_ID, workspace_id: WORKSPACE_ID, role: 'member' });
   });
 
@@ -186,6 +186,62 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
   it('stops chat on an unavailable container count rather than describing an empty workspace', async () => {
     fetchSpy.mockResolvedValueOnce(response(toolCompletion('list_containers')));
     const pending = postChat({ message: 'List containers.' });
+    db.mockNextResponse({ data: [], count: null, error: null });
+    const res = await pending;
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('AGENT_TOOL_FAILED');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['member', 'admin'])('lists directory fields for a %s without exposing private profiles', async (role) => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('list_members', { role: 'member', is_proxy: true, is_active: false, page: 2, per_page: 1 })))
+      .mockResolvedValueOnce(response(completion('Grandma Adaeze is an inactive proxy member.')));
+    const pending = postChat({ message: 'Show inactive proxy members.' }, { role }).query({ workspace_id: OTHER_WORKSPACE_ID });
+    db.mockNextResponse({ data: [{ id: OTHER_USER_ID, display_name: 'Grandma Adaeze', role: 'member', is_proxy: true, is_active: false, admin_notes: 'PRIVATE_NOTES', email: 'PRIVATE_EMAIL', date_of_birth: 'PRIVATE_DATE' }], count: 3, error: null });
+    const res = await pending;
+    expect(res.status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    expect(JSON.parse(messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: {
+      members: [{ id: OTHER_USER_ID, display_name: 'Grandma Adaeze', role: 'member', is_proxy: true, is_active: false }],
+      pagination: { page: 2, per_page: 1, total: 3, total_pages: 3, next_page: 3 },
+    } });
+    expect(JSON.stringify(messages)).not.toContain('PRIVATE_');
+    const calls = db.getCalls();
+    const starts = calls.map((call, index) => call.method === 'from' && call.args[0] === 'workspace_members' ? index : -1).filter((index) => index >= 0);
+    const toolCalls = calls.slice(starts.at(-1));
+    expect(toolCalls).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+    expect(toolCalls).toContainEqual({ method: 'eq', args: ['is_active', false] });
+    expect(toolCalls).toContainEqual({ method: 'range', args: [1, 1] });
+    expect(toolCalls.find((call) => call.method === 'select').args[0]).not.toMatch(/users|admin_notes|email|date_of_birth/);
+  });
+
+  it.each(['member', 'admin'])('reads another member through the directory-only service view for a %s', async (role) => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('get_member', { member_id: OTHER_USER_ID })))
+      .mockResolvedValueOnce(response(completion('Adaeze is a member.')));
+    const pending = postChat({ message: 'Describe Adaeze.' }, { role });
+    db.mockNextResponse({ data: { id: OTHER_USER_ID, display_name: 'Adaeze', role: 'member', admin_notes: 'PRIVATE_NOTES', users: { email: 'PRIVATE_EMAIL' }, last_active_at: 'PRIVATE_ACTIVITY' }, error: null });
+    const res = await pending;
+    expect(res.status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    expect(JSON.parse(messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: { member: { id: OTHER_USER_ID, display_name: 'Adaeze', role: 'member' } } });
+    expect(JSON.stringify(messages)).not.toContain('PRIVATE_');
+    const calls = db.getCalls();
+    expect(calls).toContainEqual({ method: 'eq', args: ['id', OTHER_USER_ID] });
+    const selects = calls.filter((call) => call.method === 'select');
+    expect(selects.at(-1).args[0]).not.toMatch(/users|admin_notes|email|date_of_birth/);
+  });
+
+  it('keeps the existing member detail HTTP contract and role trimming', async () => {
+    authenticate();
+    db.mockNextResponse({ data: { id: OTHER_USER_ID, display_name: 'Adaeze', admin_notes: 'PRIVATE_NOTES', users: { email: 'ada@example.test' } }, error: null });
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/members/${OTHER_USER_ID}`).set('Authorization', 'Bearer TEST_TOKEN');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: { member: { id: OTHER_USER_ID, display_name: 'Adaeze', email: 'ada@example.test' } } });
+  });
+
+  it('fails unavailable directory counts before the model can describe an empty workspace', async () => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('list_members')));
+    const pending = postChat({ message: 'List members.' });
     db.mockNextResponse({ data: [], count: null, error: null });
     const res = await pending;
     expect(res.status).toBe(503);

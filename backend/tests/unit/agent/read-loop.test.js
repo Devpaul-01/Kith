@@ -60,7 +60,7 @@ describe('agent read loop', () => {
     const request = provider.chat.mock.calls[0][0];
     expect(request.messages.map((message) => message.role)).toEqual(['system', 'user', 'assistant', 'tool']);
     expect(request.tools.map((entry) => entry.name)).toEqual([
-      'get_my_context', 'find_member', 'find_container', 'get_dashboard', 'list_containers', 'get_container', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary',
+      'get_my_context', 'find_member', 'find_container', 'get_dashboard', 'list_containers', 'get_container', 'list_members', 'get_member', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary',
       'list_tasks', 'get_task',
       'list_ledger_entries', 'get_ledger_entry',
       'list_notifications', 'get_unread_count',
