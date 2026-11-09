@@ -28,6 +28,103 @@ describe('services/milestone.service', () => {
     jest.clearAllMocks();
   });
 
+  describe('bounded metadata reads', () => {
+    const C1 = '11111111-1111-4111-8111-111111111111';
+    const C2 = '22222222-2222-4222-8222-222222222222';
+    const M1 = '33333333-3333-4333-8333-333333333333';
+    const M2 = '44444444-4444-4444-8444-444444444444';
+    const container = { id: C1, name: 'Family reunion', completed_at: '2026-11-01T12:00:00.000Z', outcome_details: 'A good day' };
+    const milestone = { id: M1, title: 'Graduation', milestone_date: '2026-11-02', description: 'Graduated' };
+
+    it('merges metadata with lookahead and advances only the source represented on the page', async () => {
+      mockSupabaseInstance.mockResponses({ data: [container], error: null }, { data: [milestone], error: null });
+      const result = await milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, limit: 1, metadataOnly: true });
+      expect(result).toEqual({ items: [{ type: 'milestone', date: milestone.milestone_date, title: milestone.title, description: milestone.description,
+        reference_id: M1, reference_type: 'milestone' }], has_more: true,
+      next_cursor: { before_container: null, before_milestone: { date: milestone.milestone_date, id: M1 } } });
+      const calls = mockSupabaseInstance.getCalls();
+      expect(calls.filter((call) => call.method === 'limit').map((call) => call.args[0])).toEqual([2, 2]);
+      expect(calls.filter((call) => call.method === 'select').map((call) => call.args[0]).join(' ')).not.toMatch(/photos|outcome_files|\*|public_token/);
+      expect(calls.filter((call) => call.method === 'eq' && call.args[0] === 'workspace_id')).toHaveLength(2);
+      expect(calls.filter((call) => call.method === 'is' && call.args[0] === 'deleted_at')).toHaveLength(2);
+    });
+
+    it('retains the incoming cursor when a fetched source has no returned item', async () => {
+      const cursor = { before_container: { date: '2026-11-09T00:00:00.000Z', id: C2 }, before_milestone: { date: '2026-11-09', id: M2 } };
+      mockSupabaseInstance.mockResponses({ data: [container], error: null }, { data: [{ ...milestone, milestone_date: '2026-10-01' }], error: null });
+      const result = await milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, limit: 1, cursor, metadataOnly: true });
+      expect(result.next_cursor).toEqual({ before_container: { date: container.completed_at, id: C1 }, before_milestone: cursor.before_milestone });
+      expect(mockSupabaseInstance.getCalls()).toEqual(expect.arrayContaining([
+        { method: 'or', args: [`completed_at.lt.${cursor.before_container.date},and(completed_at.eq.${cursor.before_container.date},id.gt.${C2})`] },
+        { method: 'or', args: [`milestone_date.lt.${cursor.before_milestone.date},and(milestone_date.eq.${cursor.before_milestone.date},id.gt.${M2})`] },
+      ]));
+    });
+
+    it('continues through milestones sharing a date instead of skipping the remaining same-day row', async () => {
+      mockSupabaseInstance.mockResponses({ data: [], error: null }, { data: [milestone, { ...milestone, id: M2 }], error: null });
+      const first = await milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, limit: 1, metadataOnly: true });
+      expect(first.next_cursor.before_milestone).toEqual({ date: milestone.milestone_date, id: M1 });
+      mockSupabaseInstance.mockResponses({ data: [], error: null }, { data: [{ ...milestone, id: M2 }], error: null });
+      const second = await milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, limit: 1, cursor: first.next_cursor, metadataOnly: true });
+      expect(second.items[0].reference_id).toBe(M2);
+      expect(second.has_more).toBe(false);
+      expect(second.next_cursor).toBeNull();
+      expect(mockSupabaseInstance.getCalls()).toContainEqual({ method: 'or', args: [`milestone_date.lt.${milestone.milestone_date},and(milestone_date.eq.${milestone.milestone_date},id.gt.${M1})`] });
+    });
+
+    it('preserves database order for completions within the same millisecond', async () => {
+      mockSupabaseInstance.mockResponses({ data: [
+        { ...container, id: C2, completed_at: '2026-11-01T12:00:00.123900Z' },
+        { ...container, id: C1, completed_at: '2026-11-01T12:00:00.123100Z' },
+      ], error: null }, { data: [], error: null });
+      const result = await milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, limit: 2, metadataOnly: true });
+      expect(result.items.map((item) => item.reference_id)).toEqual([C2, C1]);
+      expect(result.has_more).toBe(false);
+    });
+
+    it('uses deterministic source order at equal instants and preserves the ID cursor for equal completion timestamps', async () => {
+      const date = '2026-11-02T00:00:00.000Z';
+      mockSupabaseInstance.mockResponses({ data: [{ ...container, completed_at: date }, { ...container, id: C2, completed_at: date }], error: null },
+        { data: [milestone], error: null });
+      const result = await milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, limit: 1, metadataOnly: true });
+      expect(result.items[0].reference_id).toBe(C1);
+      expect(result.next_cursor).toEqual({ before_container: { date, id: C1 }, before_milestone: null });
+      expect(mockSupabaseInstance.getCalls().filter((call) => call.method === 'order' && call.args[0] === 'id')).toHaveLength(2);
+    });
+
+    it('uses lookahead to distinguish an exactly full final page from more results', async () => {
+      mockSupabaseInstance.mockResponses({ data: [container], error: null }, { data: [], error: null });
+      await expect(milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, limit: 1, metadataOnly: true })).resolves.toMatchObject({ has_more: false, next_cursor: null });
+      mockSupabaseInstance.mockResponses({ data: [container, { ...container, id: C2 }], error: null }, { data: [], error: null });
+      await expect(milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, limit: 1, metadataOnly: true })).resolves.toHaveProperty('has_more', true);
+    });
+
+    it.each([0, 1])('does not return a partial timeline when source %i is unavailable', async (index) => {
+      const responses = [{ data: [], error: null }, { data: [], error: null }];
+      responses[index] = { data: null, error: { message: 'private database details' } };
+      mockSupabaseInstance.mockResponses(...responses);
+      await expect(milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, metadataOnly: true })).rejects.toMatchObject({ code: 'TIMELINE_UNAVAILABLE' });
+    });
+
+    it('rejects missing source rows and invalid stored dates', async () => {
+      mockSupabaseInstance.mockResponses({ data: null, error: null }, { data: [], error: null });
+      await expect(milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, metadataOnly: true })).rejects.toMatchObject({ code: 'TIMELINE_UNAVAILABLE' });
+      mockSupabaseInstance.mockResponses({ data: [{ ...container, completed_at: null }], error: null }, { data: [], error: null });
+      await expect(milestoneService.getTimeline({ workspaceId: WORKSPACE_ID, metadataOnly: true })).rejects.toMatchObject({ code: 'TIMELINE_UNAVAILABLE' });
+    });
+
+    it('reads milestone metadata with workspace/deletion scope and excludes file/actor fields', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: M1, title: 'Graduation' }, error: null });
+      await milestoneService.getMilestone({ workspaceId: WORKSPACE_ID, milestoneId: M1, metadataOnly: true });
+      expect(mockSupabaseInstance.builder.select.mock.calls[0][0]).not.toMatch(/\*|photos|created_by|workspace_id|deleted_at/);
+      expect(mockSupabaseInstance.getCalls()).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['id', M1] }, { method: 'eq', args: ['workspace_id', WORKSPACE_ID] }, { method: 'is', args: ['deleted_at', null] },
+      ]));
+      mockSupabaseInstance.mockNextResponse({ data: null, error: { message: 'private details' } });
+      await expect(milestoneService.getMilestone({ workspaceId: WORKSPACE_ID, milestoneId: M1, metadataOnly: true })).rejects.toMatchObject({ code: 'MILESTONES_UNAVAILABLE' });
+    });
+  });
+
   describe('getTimeline — per-source cursor pagination (Issue M11)', () => {
     it('merges completed containers and milestones sorted by date descending', async () => {
       mockSupabaseInstance.mockNextResponse({ data: [{ id: 'c1', name: 'Party', completed_at: '2026-01-05', outcome_details: null, outcome_files: [] }], error: null });

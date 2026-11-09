@@ -29,6 +29,8 @@ const { getAuditLog } = require('./audit-tools.service');
 const { getAuditLogArgsSchema } = require('../validators/audit-tools.validator');
 const { listParticipants, getTargetHistory, getCycleTargets } = require('./participant-tools.service');
 const { listParticipantsArgsSchema, targetReadArgsSchema } = require('../validators/participant-tools.validator');
+const { getTimeline, getMilestone } = require('./milestone-tools.service');
+const { getTimelineArgsSchema, getMilestoneArgsSchema } = require('../validators/milestone-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -182,6 +184,22 @@ const tools = Object.freeze([
     minRole: 'member',
     tier: 1,
     handler: getDispute,
+  }),
+  Object.freeze({
+    name: 'get_timeline',
+    description: 'Browse workspace milestones and dated container completions, newest first. Available to members and admins. Returns metadata and a service-generated cursor, without files or total counts. To continue, copy the complete next_cursor object into cursor, preserving both sources; a null source cursor means that source has not yet advanced. Stop when has_more is false and next_cursor is null. The date-and-ID cursors preserve events sharing a date. Do not count rows to infer workspace totals. Use reference_id and reference_type for get_milestone or get_container; clarify duplicate titles.',
+    parameterSchema: getTimelineArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getTimeline,
+  }),
+  Object.freeze({
+    name: 'get_milestone',
+    description: 'Read a non-deleted workspace milestone\'s title, description, date, type and timestamps. Available to members and admins. Obtain its ID from get_timeline or the user, and clarify duplicate titles before selecting an ID. No photos, storage paths, actor account data or milestone writes.',
+    parameterSchema: getMilestoneArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getMilestone,
   }),
   Object.freeze({
     name: 'get_overdue_summary',

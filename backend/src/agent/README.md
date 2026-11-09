@@ -483,6 +483,48 @@ Unit coverage verifies role/scoping branches, monetary preservation, count
 failures, duplicate-name clarification and exclusion of writes. Live PostgREST
 join/count validation remains pending.
 
+## Timeline and milestone reads
+
+`get_timeline({ limit?, cursor? })` and `get_milestone({ milestone_id })` are
+available to active members and admins. Both use the authenticated workspace
+and exclude deleted records. Timeline items contain milestone metadata and
+dated container completions; file paths/photos are excluded. The timeline
+limit defaults to 20 and ranges from 1 to 100. It provides continuation and
+has no workspace total count.
+
+To continue, copy the complete returned `next_cursor` object into `cursor`:
+
+```json
+{
+  "limit": 20,
+  "cursor": {
+    "before_container": { "date": "2026-11-01T12:00:00.000Z", "id": "11111111-1111-4111-8111-111111111111" },
+    "before_milestone": null
+  }
+}
+```
+
+Both source keys are required when a cursor is supplied. Container cursor
+dates are ISO timestamps with explicit timezones; milestone cursor dates are
+`YYYY-MM-DD`. IDs are UUIDs. Null source cursors mean that source has not
+advanced. Sources are ordered by descending date and ascending ID; merged
+items preserve source ordering, including sub-millisecond completion dates.
+Container completions precede milestones at equal instants. Each source uses
+one lookahead row, and cursors advance only past items actually returned.
+Date-and-ID cursors prevent same-date events from being skipped. At the end,
+`has_more` is false and `next_cursor` is null.
+
+Milestone details contain title, description, date, type and timestamps.
+Use timeline `reference_type`/`reference_id` to choose `get_milestone` or
+`get_container`, and clarify duplicate titles. User text stays untrusted.
+Strict cursor schemas prevent raw filter expressions from reaching the query.
+Failed timeline reads return `TIMELINE_UNAVAILABLE`; detail read failures
+return `MILESTONES_UNAVAILABLE`, and missing milestones return `NOT_FOUND`.
+The internal metadata path preserves legacy HTTP timeline cursor/response
+shapes. Unit tests cover role checks, fields, duplicate-title clarification,
+same-date continuation, source exhaustion and hostile text. Live pagination
+validation remains pending.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON

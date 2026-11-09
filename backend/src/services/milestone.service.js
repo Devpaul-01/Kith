@@ -10,10 +10,55 @@
 // client has them from a previous response.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { NotFoundError }      = require('../utils/errors');
+const { AppError, NotFoundError } = require('../utils/errors');
 const { generateUploadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 
-async function getTimeline({ workspaceId, limit, before, beforeContainer, beforeMilestone }) {
+async function getTimelinePage({ workspaceId, limit, cursor }) {
+  const safeLimit = Math.min(100, Math.max(1, parseInt(limit) || 20));
+  const beforeContainer = cursor?.before_container;
+  const beforeMilestone = cursor?.before_milestone;
+  let cQuery = supabaseAdmin.from('containers')
+    .select('id, name, completed_at, outcome_details')
+    .eq('workspace_id', workspaceId).eq('status', 'completed').is('deleted_at', null)
+    .not('completed_at', 'is', null)
+    .order('completed_at', { ascending: false }).order('id', { ascending: true }).limit(safeLimit + 1);
+  let mQuery = supabaseAdmin.from('milestones')
+    .select('id, title, description, milestone_date')
+    .eq('workspace_id', workspaceId).is('deleted_at', null)
+    .order('milestone_date', { ascending: false }).order('id', { ascending: true }).limit(safeLimit + 1);
+
+  // Agent validators restrict cursor values to timestamps/dates and UUIDs;
+  // they cannot carry PostgREST filter syntax. IDs preserve same-date rows.
+  if (beforeContainer) cQuery = cQuery.or(`completed_at.lt.${beforeContainer.date},and(completed_at.eq.${beforeContainer.date},id.gt.${beforeContainer.id})`);
+  if (beforeMilestone) mQuery = mQuery.or(`milestone_date.lt.${beforeMilestone.date},and(milestone_date.eq.${beforeMilestone.date},id.gt.${beforeMilestone.id})`);
+  const [containerResponse, milestoneResponse] = await Promise.all([cQuery, mQuery]);
+  if ([containerResponse, milestoneResponse].some((response) => response.error || !Array.isArray(response.data))) {
+    throw new AppError('Timeline is unavailable. Please try again.', 503, 'TIMELINE_UNAVAILABLE');
+  }
+  const candidates = [
+    ...containerResponse.data.map((row) => ({ type: 'container_completed', date: row.completed_at,
+      title: row.name, description: row.outcome_details, reference_id: row.id, reference_type: 'container' })),
+    ...milestoneResponse.data.map((row) => ({ type: 'milestone', date: row.milestone_date,
+      title: row.title, description: row.description, reference_id: row.id, reference_type: 'milestone' })),
+  ];
+  if (candidates.some((row) => !Number.isFinite(Date.parse(row.date)))) {
+    throw new AppError('Timeline dates are unavailable. Please try again.', 503, 'TIMELINE_UNAVAILABLE');
+  }
+  // Keep database order within a source, including sub-millisecond timestamps.
+  // Container completions precede milestones when their instants are equal.
+  const items = candidates.sort((a, b) => Date.parse(b.date) - Date.parse(a.date)
+    || (a.reference_type === b.reference_type ? 0 : a.reference_type === 'container' ? -1 : 1)).slice(0, safeLimit);
+  const hasMore = candidates.length > items.length;
+  const lastContainer = items.filter((row) => row.reference_type === 'container').at(-1);
+  const lastMilestone = items.filter((row) => row.reference_type === 'milestone').at(-1);
+  return { items, has_more: hasMore, next_cursor: hasMore ? {
+    before_container: lastContainer ? { date: lastContainer.date, id: lastContainer.reference_id } : beforeContainer || null,
+    before_milestone: lastMilestone ? { date: lastMilestone.date, id: lastMilestone.reference_id } : beforeMilestone || null,
+  } : null };
+}
+
+async function getTimeline({ workspaceId, limit, before, beforeContainer, beforeMilestone, cursor, metadataOnly = false }) {
+  if (metadataOnly) return getTimelinePage({ workspaceId, limit, cursor });
   const safeLimit = Math.min(100, parseInt(limit) || 50);
 
   const resolvedBeforeContainer = beforeContainer || before;
@@ -83,16 +128,16 @@ async function createMilestone({ workspaceId, title, milestone_date, description
   return milestone;
 }
 
-async function getMilestone({ workspaceId, milestoneId }) {
+async function getMilestone({ workspaceId, milestoneId, metadataOnly = false }) {
   const { data: milestone, error } = await supabaseAdmin
     .from('milestones')
-    .select('*')
+    .select(metadataOnly ? 'id, title, description, milestone_date, milestone_type, created_at, updated_at' : '*')
     .eq('id', milestoneId)
     .eq('workspace_id', workspaceId)
     .is('deleted_at', null)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
+  if (error) throw new AppError('Milestones are unavailable. Please try again.', 503, 'MILESTONES_UNAVAILABLE');
   if (!milestone) throw new NotFoundError('Milestone not found');
 
   return milestone;
