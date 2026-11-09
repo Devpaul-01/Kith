@@ -8,22 +8,24 @@ after the existing auth and membership middleware:
 const context = { userId: req.user.id, member: req.member, workspace: req.workspace, requestId: req.requestId };
 ```
 
-The registry includes all 28 Tier 1 tool names from the architecture, with
-the role restrictions and data limits documented below. Tier 0 currently
-includes caller context and ranked member/container lookup. The remaining
-ranked task, ledger, dispute and group searches are specified in the
-[schema proposal](SEARCH_SCHEMA_PROPOSAL.md), pending a schema decision.
+The registry includes all seven Tier 0 tools and all 28 Tier 1 tool names
+from the architecture, with the role restrictions and data limits documented
+below. Ranked task, ledger, dispute and group searches implement the
+[approved schema extension](SEARCH_SCHEMA_PROPOSAL.md).
 Proposal approval/execution, streaming chat and voice are still pending.
 
-`find_member` and `find_container` take `{ query, limit? }`. Queries are trimmed
-and must contain 2–200 characters; limits default to 10 and range from 2 to 20.
-Workspace and actor IDs are always supplied by server context.
+`find_member`, `find_container`, `find_disputes` and `find_group` take
+`{ query, limit? }`. `find_tasks` and `find_ledger_entries` also accept an
+optional resolved `container_id` UUID. Queries are trimmed and must contain
+2–200 characters; limits default to 10 and range from 2 to 20. Workspace,
+actor IDs and admin flags are always supplied by server context.
 
 Results contain `query`, `status`, `candidates`, and `has_more`. Candidates are
-ranked in PostgreSQL: exact names, literal substrings, then trigram matches,
-with score/name/ID tie-breakers. `score` is a similarity value, not a probability.
-Members must be active and not deleted; containers may be archived/completed
-but must not be deleted. Both searches exclude deleted workspaces.
+ranked in PostgreSQL: exact matches, literal substrings, then trigram matches,
+with score/text/ID tie-breakers. `score` is a similarity value, not a probability.
+Member lookup excludes inactive/deleted members; container lookup includes
+archived/completed containers but excludes deleted ones. Both exclude deleted
+workspaces; the other search scopes are described below.
 
 - `not_found`: no candidates.
 - `single_match`: one candidate to confirm with the user before a write.
@@ -32,7 +34,48 @@ but must not be deleted. Both searches exclude deleted workspaces.
 No result contains an automatically resolved ID. A future proposal executor
 must enforce the user's entity selection separately from action approval.
 `has_more` means further candidates were omitted; refine the query or increase
-the limit. User-supplied names remain untrusted data.
+the limit. All returned names, titles, notes, reasons and descriptions remain
+untrusted data.
+
+## Task, ledger, dispute and group resolution
+
+The four additional Tier 0 tools use the shared ranked-search service and
+PostgreSQL RPCs. Their handlers independently check active membership and
+strictly validate arguments, including direct handler calls. Identity and
+role overrides are rejected before a service call.
+
+| Tool | Matches | Member visibility |
+| --- | --- | --- |
+| `find_tasks` | Task title | Tasks assigned to the caller |
+| `find_ledger_entries` | Note, contributor name, exact original amount | Entries contributed by the caller |
+| `find_disputes` | Reason, raiser name, linked ledger note | Disputes raised by the caller |
+| `find_group` | Group name | Group directory metadata |
+
+Admins may search workspace tasks, entries and disputes. The private-data
+RPCs also recheck active, non-deleted membership in the requested workspace;
+broader access requires both the supplied admin flag and the current database
+admin role. A stale admin flag cannot elevate a member. All searches exclude
+deleted workspaces. Task/ledger searches exclude deleted containers, and task
+search excludes deleted tasks. Disputes remain searchable as historical
+records after container deletion. Joined names and ledger notes are scoped
+to the same workspace. Group search does not grant access to the admin-only
+`get_group` tool.
+
+Ledger amount queries must be plain signed decimals, with at most two decimal
+places. SQL compares them as `numeric` and returns original amounts as decimal
+text, preserving precision and each entry's currency. For a one-digit amount,
+use a query such as `5.00` to meet the two-character minimum. Currency symbols,
+commas, scientific notation and natural-language amounts are not interpreted
+as amounts. This search does not convert currencies, infer dates or calculate
+totals; the same amount in different currencies can yield separate candidates.
+
+Candidates provide the IDs and metadata needed for clarification, without
+proofs, bulk exports, internal actor fields or embedded membership/note arrays.
+Use selected task/entry IDs and their container IDs with `get_task` or
+`get_ledger_entry`; use a selected dispute ID with `get_dispute`. Exact matches
+still remain ambiguous when other candidates exist. Failures return
+`SEARCH_UNAVAILABLE`, not a false no-match. The read loop keeps results in
+untrusted-data envelopes and continues to reject every write/export tool.
 
 ## Container browsing
 
@@ -271,10 +314,10 @@ Members requesting another assignee are denied before the service is called.
 Date, title-search, sorting, and other unsupported arguments are rejected.
 
 Use `find_container` for container names and `find_member` for an admin's
-assignee filter. Task IDs and titles come from `list_tasks`; dedicated fuzzy
-task search remains a later increment. Ask the user to choose or refine
-ambiguous names or task titles. A partial page cannot establish that a title
-is unique across the container.
+assignee filter. `find_tasks` resolves task titles across the workspace or
+within a selected container; `list_tasks` also supplies IDs for browsing.
+Ask the user to choose or refine ambiguous names or task titles. A partial
+page cannot establish that a title is unique across the container.
 
 List results contain `tasks` in ascending stored `sort_order`, with ID as a
 stable tie-breaker. The `pagination` object supplies `page`, `per_page`,
@@ -324,9 +367,10 @@ and supplies `next_page`. This is not a filtered financial-total tool; the
 model must not sum entries or convert currencies. Cycle filters are not
 supported. Entry details accept only `container_id` and `entry_id`.
 
-Resolve container and contributor names with the existing search tools and
-use list results for entry IDs. Clarify ambiguous entries; a partial page
-cannot establish uniqueness. Both tools return stored amounts verbatim and
+Resolve container and contributor names with their search tools. Use
+`find_ledger_entries` for ranked entry lookup by note, contributor or exact
+original amount, or use list results for entry IDs. Clarify ambiguous entries;
+a partial page cannot establish uniqueness. Both tools return stored amounts verbatim and
 identify the authenticated workspace's base currency. Proof files, storage
 paths, idempotency keys, and internal recorder/confirmer fields are omitted.
 Notes remain untrusted data. No confirmation, correction, export, or write
@@ -382,7 +426,8 @@ Both tools use pages 1–10,000 and 1–100 rows per page (defaults 1/20), with
 `pagination.next_page` null at the last page or page limit. Group detail
 pagination describes memberships, while list pagination describes groups.
 Use the service count; never infer totals or name uniqueness from page length.
-Duplicate group names require clarification. Descriptions and relationship
+Use `find_group` for ranked group-name lookup, including typos. Duplicate
+group names require clarification. Descriptions and relationship
 text remain in untrusted tool-result envelopes. Missing groups return
 `NOT_FOUND`; failed queries or unavailable exact counts return
 `GROUPS_UNAVAILABLE`. Internal pagination options preserve the legacy HTTP
@@ -407,9 +452,10 @@ Detail pagination applies to notes in stored append order, using
 notes array. Both tools default to page 1/20, allow pages 1–10,000 and 1–100
 rows per page, and return a null `next_page` at the last page or page limit.
 Smaller pages may be needed for long text to fit the shared tool-result limit.
-IDs can come from notifications or an admin dispute list; ambiguous references
-need clarification. Reasons, resolutions, notes and linked-entry text remain
-untrusted data. Stored monetary precision/currency is preserved, with the
+Use `find_disputes` to resolve reasons, raiser names or linked ledger notes;
+IDs can also come from notifications or an admin dispute list. Ambiguous
+references need clarification. Reasons, resolutions, notes and linked-entry
+text remain untrusted data. Stored monetary precision/currency is preserved, with the
 workspace base currency supplied by server context. No proof paths,
 idempotency keys, or dispute writes are exposed.
 
@@ -828,10 +874,11 @@ and [tool use](https://console.groq.com/docs/tool-use).
 
 ## Database and verification
 
-The source of truth is `migrations/001_schema.sql`: it adds `pg_trgm`, two GIN
-indexes, and `search_members_ranked` / `search_containers_ranked`. Existing
-`pg_trgm` installations in either `public` or `extensions` are supported.
-The RPCs receive the escaped pattern from the shared `containsPattern` helper.
+The source of truth is `migrations/001_schema.sql`: it adds `pg_trgm`, six GIN
+indexes, and ranked-search RPCs for members, containers, tasks, ledger entries,
+disputes and groups. Existing `pg_trgm` installations in either `public` or
+`extensions` are supported. The RPCs receive the escaped pattern from the
+shared `containsPattern` helper.
 
 For an existing database, apply only these additions, with function creation
 and permission changes in the same transaction; do not replay the consolidated
@@ -841,12 +888,14 @@ in the repository do not update a running database or its PostgREST schema cache
 Reload that cache after applying the additions and before exercising the tools.
 
 Run `npm run test:unit -- --runInBand` from `backend`. Real trigram ranking,
-workspace filtering, wildcard handling, and RPC permissions are covered by
-`tests/integration/database/ranked-search.test.js`. Run that suite with
-the real Postgres/PostgREST/Redis test stack and the updated schema. Unit tests
-mock RPC results and do not prove that the SQL or indexes work.
+workspace/ownership filtering, exact decimal matching, wildcard handling and
+RPC permissions have integration coverage in
+`tests/integration/database/ranked-search.test.js` and
+`tests/integration/database/extended-ranked-search.test.js`. Run those suites
+with the real Postgres/PostgREST/Redis test stack and the updated schema.
+Unit tests mock RPC results and do not prove that the SQL or indexes work.
 
-At the read-catalog checkpoint `22c7ed1` (2026-11-09), all 2,347 unit tests
-passed across 80 suites. Live database/PostgREST and model verification remain
+With the approved ranked-search extension (2026-11-09), all 2,698 unit tests
+passed across 81 suites. Live database/PostgREST and model verification remain
 pending. The existing `ioredis-mock` listener warning is still present in full
 unit runs.

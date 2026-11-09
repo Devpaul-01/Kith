@@ -131,13 +131,20 @@ describe('ranked entity search RPCs with Postgres', () => {
     const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL || 'postgres://postgres:test@localhost:54322/kith_test' });
     try {
       const { rows: functions } = await pool.query(`
-        SELECT p.oid, p.prosecdef, p.proacl FROM pg_proc p
+        SELECT p.oid, p.prosecdef, p.provolatile, p.proconfig, p.proacl FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = 'public' AND p.proname IN ('search_members_ranked', 'search_containers_ranked')
+        WHERE n.nspname = 'public' AND p.proname IN (
+          'search_members_ranked', 'search_containers_ranked', 'search_tasks_ranked',
+          'search_ledger_entries_ranked', 'search_disputes_ranked', 'search_groups_ranked'
+        )
       `);
-      expect(functions).toHaveLength(2);
+      expect(functions).toHaveLength(6);
       for (const fn of functions) {
         expect(fn.prosecdef).toBe(false);
+        expect(fn.provolatile).toBe('s');
+        expect(fn.proconfig).toEqual(expect.arrayContaining([
+          'search_path=pg_catalog, public, extensions, pg_temp', 'pg_trgm.word_similarity_threshold=0.3',
+        ]));
         expect(fn.proacl).not.toBeNull();
         const { rows: publicGrants } = await pool.query('SELECT * FROM aclexplode($1::aclitem[]) WHERE grantee = 0', [fn.proacl]);
         expect(publicGrants).toEqual([]);
@@ -146,12 +153,20 @@ describe('ranked entity search RPCs with Postgres', () => {
           FROM pg_roles WHERE rolname IN ('anon', 'authenticated')
         `, [fn.oid]);
         browserGrants.forEach((role) => expect(role.can_execute).toBe(false));
+        const { rows: serviceGrants } = await pool.query(`
+          SELECT has_function_privilege(oid, $1::oid, 'EXECUTE') AS can_execute
+          FROM pg_roles WHERE rolname = 'service_role'
+        `, [fn.oid]);
+        serviceGrants.forEach((role) => expect(role.can_execute).toBe(true));
       }
       const { rows: indexes } = await pool.query(`
         SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'
-        AND indexname IN ('idx_workspace_members_display_name_trgm', 'idx_containers_name_trgm')
+        AND indexname IN (
+          'idx_workspace_members_display_name_trgm', 'idx_containers_name_trgm', 'idx_tasks_title_trgm',
+          'idx_ledger_note_trgm', 'idx_disputes_reason_trgm', 'idx_groups_name_trgm'
+        )
       `);
-      expect(indexes).toHaveLength(2);
+      expect(indexes).toHaveLength(6);
       indexes.forEach((index) => expect(index.indexdef).toMatch(/USING gin/));
     } finally {
       await pool.end();

@@ -10,4 +10,13 @@ const entitySearchRequestSchema = entitySearchSchema.extend({
   workspaceId: z.string().uuid(),
 });
 
-module.exports = { entitySearchSchema, entitySearchRequestSchema };
+const containerEntitySearchSchema = entitySearchSchema.extend({ container_id: z.string().uuid().optional() });
+const callerEntitySearchRequestSchema = entitySearchRequestSchema.extend({
+  callerId: z.string().uuid(), isAdmin: z.boolean(),
+});
+const callerContainerSearchRequestSchema = callerEntitySearchRequestSchema.extend({ containerId: z.string().uuid().optional() });
+
+module.exports = {
+  entitySearchSchema, entitySearchRequestSchema, containerEntitySearchSchema,
+  callerEntitySearchRequestSchema, callerContainerSearchRequestSchema,
+};

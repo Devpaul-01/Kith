@@ -3,8 +3,8 @@ const { ValidationError, NotFoundError, BusinessRuleError } = require('../../uti
 const logger = require('../../utils/logger');
 const { assertAgentContext } = require('./context.service');
 const { getMyContext, getDashboard, getOverdueSummary } = require('./read-tools.service');
-const { findMember, findContainer } = require('./resolution-tools.service');
-const { entitySearchSchema } = require('../../validators/search.validator');
+const { findMember, findContainer, findTasks, findLedgerEntries, findDisputes, findGroup } = require('./resolution-tools.service');
+const { entitySearchSchema, containerEntitySearchSchema } = require('../../validators/search.validator');
 const { getContainerSummary, getLedgerSummary, getMemberContributionSummary, getMemberEngagement } = require('./summary-tools.service');
 const { containerSummaryArgsSchema, memberSummaryArgsSchema, memberEngagementArgsSchema } = require('../validators/summary-tools.validator');
 const { listCycles } = require('./cycle-tools.service');
@@ -56,6 +56,38 @@ const tools = Object.freeze([
     minRole: 'member',
     tier: 0,
     handler: findContainer,
+  }),
+  Object.freeze({
+    name: 'find_tasks',
+    description: 'Find ranked task candidates by title in your current workspace, optionally within a resolved container_id. Members see their own assignments; admins see workspace tasks. Deleted tasks and containers are excluded. Results are candidates: ask the user to choose ambiguous matches and confirm any single match before a write. Use the returned task ID and container ID with get_task. If has_more is true, narrow the query or increase the limit. Scores are text similarities, not proof of identity.',
+    parameterSchema: containerEntitySearchSchema,
+    minRole: 'member',
+    tier: 0,
+    handler: findTasks,
+  }),
+  Object.freeze({
+    name: 'find_ledger_entries',
+    description: 'Find ranked ledger candidates by note, contributor name or an exact original amount, optionally within container_id. Members see only their own contributions; admins see workspace entries. A plain signed decimal query is compared exactly in the database; amounts are returned as stored decimal text in their original currency. No currency conversion, summation or date inference. Different currencies may match the same amount. Ask the user to choose ambiguous entries and confirm a single match before a write. Use returned entry/container IDs with get_ledger_entry. If has_more is true, narrow the query or increase the limit. No proof files or writes.',
+    parameterSchema: containerEntitySearchSchema,
+    minRole: 'member',
+    tier: 0,
+    handler: findLedgerEntries,
+  }),
+  Object.freeze({
+    name: 'find_disputes',
+    description: 'Find ranked dispute candidates by reason, raiser name or linked ledger note. Members see only disputes they raised; admins see workspace disputes. Historical disputes may reference deleted containers. Ask the user to choose ambiguous matches and confirm any single match before a write. Use the selected ID with get_dispute. If has_more is true, narrow the query or increase the limit. No note arrays, proofs, resolution or other writes.',
+    parameterSchema: entitySearchSchema,
+    minRole: 'member',
+    tier: 0,
+    handler: findDisputes,
+  }),
+  Object.freeze({
+    name: 'find_group',
+    description: 'Find ranked group candidates by name in your workspace. Available to members and admins; returns directory metadata without membership lists. Group-detail reads still require admin access. Ask the user to choose ambiguous matches and confirm a single match before a write. If has_more is true, narrow the query or increase the limit. Scores are text similarities, not identity guarantees.',
+    parameterSchema: entitySearchSchema,
+    minRole: 'member',
+    tier: 0,
+    handler: findGroup,
   }),
   Object.freeze({
     name: 'get_dashboard',
@@ -123,7 +155,7 @@ const tools = Object.freeze([
   }),
   Object.freeze({
     name: 'list_tasks',
-    description: 'List a container\'s tasks in stored sort order. Members see only their own assignments; admins see all tasks and may filter by assigned_to. Find container names with find_container and assignee names with find_member; ask the user to choose ambiguous matches. Use this list to find task IDs by title and clarify duplicate titles. A partial page cannot establish that a title is unique. Supports a stored-status filter and server-generated pagination; total counts only visible tasks matching the filters. Use next_page to continue; it is null at the last page or the page limit. No task writes or proof files.',
+    description: 'List a container\'s tasks in stored sort order. Members see only their own assignments; admins see all tasks and may filter by assigned_to. Find container names with find_container, assignee names with find_member and task titles with find_tasks; ask the user to choose ambiguous matches. A partial page cannot establish that a title is unique. Supports a stored-status filter and server-generated pagination; total counts only visible tasks matching the filters. Use next_page to continue; it is null at the last page or the page limit. No task writes or proof files.',
     parameterSchema: listTasksArgsSchema,
     minRole: 'member',
     tier: 1,
@@ -131,7 +163,7 @@ const tools = Object.freeze([
   }),
   Object.freeze({
     name: 'get_task',
-    description: 'Get a task\'s details and stored completion/confirmation state. Members can read only their own assignments; admins can read any task in the container. Find container names with find_container and task IDs with list_tasks. Ask the user to choose ambiguous container names or task titles. No task writes or proof files.',
+    description: 'Get a task\'s details and stored completion/confirmation state. Members can read only their own assignments; admins can read any task in the container. Resolve titles with find_tasks and copy the selected task/container IDs, or browse list_tasks. Ask the user to choose ambiguous matches. No task writes or proof files.',
     parameterSchema: getTaskArgsSchema,
     minRole: 'member',
     tier: 1,
@@ -147,7 +179,7 @@ const tools = Object.freeze([
   }),
   Object.freeze({
     name: 'get_ledger_entry',
-    description: 'Read a ledger entry and its stored amounts and status. Members see only their own entries; admins see any entry in the container. Find container names with find_container and entry IDs with list_ledger_entries. Clarify ambiguous entries; a partial page cannot establish uniqueness. Amounts retain their stored currency and precision. No proofs, confirmation, correction, or other writes.',
+    description: 'Read a ledger entry and its stored amounts and status. Members see only their own entries; admins see any entry in the container. Resolve entries with find_ledger_entries and copy the selected entry/container IDs, or browse list_ledger_entries. Clarify ambiguous entries; a partial page cannot establish uniqueness. Amounts retain their stored currency and precision. No proofs, confirmation, correction, or other writes.',
     parameterSchema: getLedgerEntryArgsSchema,
     minRole: 'member',
     tier: 1,
@@ -171,7 +203,7 @@ const tools = Object.freeze([
   }),
   Object.freeze({
     name: 'list_groups',
-    description: 'Browse groups in your current workspace by name, with an optional literal-name substring search. Available to members and admins. Returns group metadata and an exact filtered group count, without embedded member lists or membership counts. Use next_page to continue; null means the last page or page limit. Ask the user to choose duplicate names; a partial page cannot establish uniqueness. Admins can use get_group for paginated membership details.',
+    description: 'Browse groups in your current workspace by name, with an optional literal-name substring search. Available to members and admins. Returns group metadata and an exact filtered group count, without embedded member lists or membership counts. Use find_group for ranked name lookup including typos. Use next_page to continue; null means the last page or page limit. Ask the user to choose duplicate names; a partial page cannot establish uniqueness. Admins can use get_group for paginated membership details.',
     parameterSchema: listGroupsArgsSchema,
     minRole: 'member',
     tier: 1,
@@ -179,7 +211,7 @@ const tools = Object.freeze([
   }),
   Object.freeze({
     name: 'get_dispute',
-    description: 'Read a dispute by its ID, its linked ledger entry and a page of notes. Members can read only disputes they raised; admins can read any dispute in the current workspace. Page and per_page apply to notes in stored append order; notes_pagination contains the server note count and next_page. Use a supplied dispute ID or an ID from your notifications; admins may use list_disputes. Clarify ambiguous references. Stored amounts keep their currency and precision; never total or convert them. No proof files, private metadata, or dispute writes.',
+    description: 'Read a dispute by its ID, its linked ledger entry and a page of notes. Members can read only disputes they raised; admins can read any dispute in the current workspace. Page and per_page apply to notes in stored append order; notes_pagination contains the server note count and next_page. Resolve references with find_disputes or use an ID from your notifications; admins may use list_disputes. Clarify ambiguous references. Stored amounts keep their currency and precision; never total or convert them. No proof files, private metadata, or dispute writes.',
     parameterSchema: getDisputeArgsSchema,
     minRole: 'member',
     tier: 1,

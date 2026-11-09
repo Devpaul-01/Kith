@@ -6,7 +6,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { containsPattern } = require('../utils/ilike');
 const { AppError, ValidationError } = require('../utils/errors');
-const { entitySearchRequestSchema } = require('../validators/search.validator');
+const { entitySearchRequestSchema, callerEntitySearchRequestSchema, callerContainerSearchRequestSchema } = require('../validators/search.validator');
 const logger = require('../utils/logger');
 
 /**
@@ -56,12 +56,12 @@ async function searchWorkspace({ workspaceId, query, limit = 10 }) {
 }
 
 /**
- * Shared adapter for the ranked member/container RPCs. All results are
+ * Shared adapter for the ranked entity RPCs. All results are
  * candidates: single_match still needs user confirmation before a write.
  * Scores are database similarities, not probabilities or proof of identity.
  */
-async function findCandidates(params, rpcName, shapeCandidate) {
-  const parsed = entitySearchRequestSchema.safeParse(params);
+async function findCandidates(params, rpcName, shapeCandidate, { requestSchema = entitySearchRequestSchema, rpcScope = () => ({}) } = {}) {
+  const parsed = requestSchema.safeParse(params);
   if (!parsed.success) {
     throw new ValidationError('Invalid entity search', null, parsed.error.issues);
   }
@@ -74,8 +74,9 @@ async function findCandidates(params, rpcName, shapeCandidate) {
       p_query: query,
       p_pattern: containsPattern(query),
       p_limit: limit + 1,
+      ...rpcScope(parsed.data),
     });
-    if (error || !Array.isArray(data)) {
+    if (error || !Array.isArray(data) || data.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) {
       logger.error('Ranked entity search failed', { workspaceId, rpcName, error: error?.message || 'Invalid RPC result' });
       throw new AppError('Entity search is unavailable. Please try again.', 503, 'SEARCH_UNAVAILABLE');
     }
@@ -110,4 +111,35 @@ async function findContainers(params) {
   }));
 }
 
-module.exports = { searchWorkspace, findMembers, findContainers };
+const callerRpcScope = ({ callerId, isAdmin }) => ({ p_caller_id: callerId, p_is_admin: isAdmin });
+const containerCallerRpcScope = (params) => ({ ...callerRpcScope(params), p_container_id: params.containerId ?? null });
+
+async function findTasks(params) {
+  return findCandidates(params, 'search_tasks_ranked', (row) => ({
+    id: row.id, container_id: row.container_id, title: row.title, assigned_to: row.assigned_to,
+    status: row.status, due_date: row.due_date, match_type: row.match_type, score: row.score,
+  }), { requestSchema: callerContainerSearchRequestSchema, rpcScope: containerCallerRpcScope });
+}
+
+async function findLedgerEntries(params) {
+  return findCandidates(params, 'search_ledger_entries_ranked', (row) => ({
+    id: row.id, container_id: row.container_id, contributor_id: row.contributor_id, contributor_name: row.contributor_name,
+    note: row.note, original_amount: row.original_amount, original_currency: row.original_currency,
+    entry_type: row.entry_type, status: row.status, recorded_at: row.recorded_at, match_type: row.match_type, score: row.score,
+  }), { requestSchema: callerContainerSearchRequestSchema, rpcScope: containerCallerRpcScope });
+}
+
+async function findDisputes(params) {
+  return findCandidates(params, 'search_disputes_ranked', (row) => ({
+    id: row.id, ledger_entry_id: row.ledger_entry_id, raised_by: row.raised_by, raised_by_name: row.raised_by_name,
+    reason: row.reason, status: row.status, raised_at: row.raised_at, match_type: row.match_type, score: row.score,
+  }), { requestSchema: callerEntitySearchRequestSchema, rpcScope: callerRpcScope });
+}
+
+async function findGroups(params) {
+  return findCandidates(params, 'search_groups_ranked', (row) => ({
+    id: row.id, name: row.name, description: row.description, created_at: row.created_at, match_type: row.match_type, score: row.score,
+  }));
+}
+
+module.exports = { searchWorkspace, findMembers, findContainers, findTasks, findLedgerEntries, findDisputes, findGroups };

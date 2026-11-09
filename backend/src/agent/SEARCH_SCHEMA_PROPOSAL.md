@@ -1,9 +1,11 @@
-# Ranked search extension proposal
+# Approved ranked search extension
 
-Status: ready for a schema decision; not applied to `migrations/001_schema.sql`.
+Status: approved by the user and implemented in `migrations/001_schema.sql`
+and the backend (2026-11-09). No running database has been updated; real
+Postgres/PostgREST integration validation is pending.
 
-The remaining Tier 0 tools need the same ranked PostgreSQL search already
-used by `find_member` and `find_container`. This proposal adds four read-only
+The four added Tier 0 tools use the same ranked PostgreSQL search already
+used by `find_member` and `find_container`. This extension adds four read-only
 RPCs and four indexes to the consolidated schema. It reuses the installed
 `pg_trgm` extension, `search.service.js`, `containsPattern()`, and the existing
 candidate/disambiguation contract. It introduces no tables or dependencies.
@@ -36,7 +38,7 @@ actual `admin` role on that membership. Missing/inactive/mismatched membership
 returns no candidates. This is an explicit query boundary; it does not rely
 on RLS.
 
-Proposed signatures:
+Implemented signatures:
 
 ```sql
 search_tasks_ranked(
@@ -103,8 +105,8 @@ no-match result. No export or write action is added by this extension.
 
 ## Indexes and insertion point
 
-Add these indexes with the new functions after the `disputes` table and its
-indexes, where all referenced tables exist:
+These indexes and the new functions are placed after the `disputes` table
+and its indexes, where all referenced tables exist:
 
 ```sql
 CREATE INDEX idx_tasks_title_trgm ON public.container_tasks
@@ -121,20 +123,26 @@ CREATE INDEX idx_groups_name_trgm ON public.groups
 ```
 
 Contributor/raiser names reuse the existing member-name trigram index where
-the planner can use it; no duplicate member index is proposed. The consolidated
+the planner can use it; no duplicate member index is added. The consolidated
 schema remains the sole schema source, with no incremental migration runner.
 
-## Implementation and validation after the decision
+## Implementation and validation
 
-Extend `search.service.js` without changing existing search method contracts,
-add strict tool/request validators, and register the four Tier 0 handlers.
+`search.service.js` is extended without changing existing search method
+contracts, with strict tool/request validators and four Tier 0 handlers.
 Unit tests cover role/context rejection, the real caller passed to each RPC,
 amount preservation, field trimming, ambiguous results, lookahead, query
 failures and hostile text. Existing chat/provider tool-list tests are updated.
 
-Add real database cases beside `tests/integration/database/ranked-search.test.js`
-for typo ranking, literal wildcard escaping, exact decimal matching, other
+Real database cases in `tests/integration/database/extended-ranked-search.test.js`
+cover typo ranking, literal wildcard escaping, exact decimal matching, other
 workspaces, private ownership boundaries, stale admin flags, deleted records,
 optional container filters, RPC grants and bounded results. These integration
 tests require the local Postgres/Redis/PostgREST stack and remain pending until
 that stack is available; unit mocks cannot verify SQL authorization or plans.
+Function ACL and index coverage is extended in `ranked-search.test.js`.
+
+For an existing database, apply only the new definitions and indexes from the
+consolidated file. Create functions and restrict their permissions in the same
+transaction, then reload the PostgREST schema cache. Replaying the entire
+consolidated schema against an existing database is not an upgrade procedure.

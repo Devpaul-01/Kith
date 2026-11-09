@@ -702,6 +702,206 @@ CREATE INDEX idx_disputes_workspace ON public.disputes USING btree (workspace_id
 
 CREATE UNIQUE INDEX idx_disputes_one_open_per_entry ON public.disputes USING btree (ledger_entry_id) WHERE (status = 'open'::text);
 
+-- Ranked task, ledger, dispute and group resolution. Keep these after all
+-- referenced tables. The backend supplies the real caller and escaped pattern;
+-- private searches also check current membership before returning candidates.
+CREATE INDEX idx_tasks_title_trgm ON public.container_tasks
+    USING gin (title gin_trgm_ops) WHERE (deleted_at IS NULL);
+CREATE INDEX idx_ledger_note_trgm ON public.ledger_entries
+    USING gin (note gin_trgm_ops) WHERE (note IS NOT NULL);
+CREATE INDEX idx_disputes_reason_trgm ON public.disputes USING gin (reason gin_trgm_ops);
+CREATE INDEX idx_groups_name_trgm ON public.groups USING gin (name gin_trgm_ops);
+
+CREATE FUNCTION public.search_tasks_ranked(
+    p_workspace_id uuid, p_caller_id uuid, p_is_admin boolean,
+    p_query text, p_pattern text, p_limit integer DEFAULT 11, p_container_id uuid DEFAULT NULL
+) RETURNS TABLE (id uuid, container_id uuid, title text, assigned_to uuid, status text, due_date date, match_type text, score real)
+    LANGUAGE sql STABLE SECURITY INVOKER
+    SET search_path TO pg_catalog, public, extensions, pg_temp
+    SET pg_trgm.word_similarity_threshold TO '0.3'
+    AS $$
+    WITH actor AS (
+        SELECT m.id, (coalesce(p_is_admin, false) AND m.role = 'admin') AS is_admin
+        FROM public.workspace_members m
+        JOIN public.workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL
+        WHERE m.id = p_caller_id AND m.workspace_id = p_workspace_id
+          AND m.is_active = true AND m.deleted_at IS NULL AND m.role IN ('member', 'admin')
+    ), matches AS (
+        SELECT t.id, t.container_id, t.title, t.assigned_to, t.status, t.due_date,
+            CASE WHEN lower(t.title) = lower(p_query) THEN 'exact'
+                 WHEN t.title ILIKE p_pattern ESCAPE E'\\' THEN 'substring'
+                 ELSE 'fuzzy' END AS match_type,
+            greatest(similarity(p_query, t.title), word_similarity(p_query, t.title)) AS score
+        FROM public.container_tasks t
+        JOIN public.containers c ON c.id = t.container_id
+        CROSS JOIN actor a
+        WHERE c.workspace_id = p_workspace_id AND c.deleted_at IS NULL AND t.deleted_at IS NULL
+          AND (a.is_admin OR t.assigned_to = a.id)
+          AND (p_container_id IS NULL OR t.container_id = p_container_id)
+          AND char_length(p_query) BETWEEN 2 AND 200
+          AND (t.title ILIKE p_pattern ESCAPE E'\\'
+               OR (char_length(p_query) >= 3 AND t.title %> p_query))
+    )
+    SELECT m.id, m.container_id, m.title, m.assigned_to, m.status, m.due_date, m.match_type, m.score
+    FROM matches m
+    ORDER BY CASE m.match_type WHEN 'exact' THEN 0 WHEN 'substring' THEN 1 ELSE 2 END,
+             m.score DESC, lower(m.title) COLLATE "C", m.id
+    LIMIT least(21, greatest(2, coalesce(p_limit, 11)));
+$$;
+
+CREATE FUNCTION public.search_ledger_entries_ranked(
+    p_workspace_id uuid, p_caller_id uuid, p_is_admin boolean,
+    p_query text, p_pattern text, p_limit integer DEFAULT 11, p_container_id uuid DEFAULT NULL
+) RETURNS TABLE (
+    id uuid, container_id uuid, contributor_id uuid, contributor_name text, note text,
+    original_amount text, original_currency text, entry_type text, status text,
+    recorded_at timestamp with time zone, match_type text, score real
+)
+    LANGUAGE sql STABLE SECURITY INVOKER
+    SET search_path TO pg_catalog, public, extensions, pg_temp
+    SET pg_trgm.word_similarity_threshold TO '0.3'
+    AS $$
+    WITH actor AS (
+        SELECT m.id, (coalesce(p_is_admin, false) AND m.role = 'admin') AS is_admin
+        FROM public.workspace_members m
+        JOIN public.workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL
+        WHERE m.id = p_caller_id AND m.workspace_id = p_workspace_id
+          AND m.is_active = true AND m.deleted_at IS NULL AND m.role IN ('member', 'admin')
+    ), query_amount AS (
+        -- Cast only a bounded, plain signed decimal. Currency interpretation,
+        -- conversion and natural-language amount inference are not performed.
+        SELECT CASE WHEN char_length(p_query) BETWEEN 2 AND 200
+                         AND p_query ~ '^[+-]?[0-9]+([.][0-9]{1,2})?$'
+                    THEN p_query::numeric ELSE NULL END AS amount
+    ), matches AS (
+        SELECT e.id, e.container_id, e.contributor_id, contributor.display_name AS contributor_name,
+            e.note, e.original_amount::text AS original_amount, e.original_currency,
+            e.entry_type, e.status, e.recorded_at,
+            CASE WHEN e.original_amount = q.amount OR lower(e.note) = lower(p_query)
+                           OR lower(contributor.display_name) = lower(p_query) THEN 'exact'
+                 WHEN e.note ILIKE p_pattern ESCAPE E'\\'
+                           OR contributor.display_name ILIKE p_pattern ESCAPE E'\\' THEN 'substring'
+                 ELSE 'fuzzy' END AS match_type,
+            greatest(similarity(p_query, e.note), word_similarity(p_query, e.note),
+                     similarity(p_query, contributor.display_name), word_similarity(p_query, contributor.display_name),
+                     0::real) AS score
+        FROM public.ledger_entries e
+        JOIN public.containers c ON c.id = e.container_id
+        LEFT JOIN public.workspace_members contributor
+          ON contributor.id = e.contributor_id AND contributor.workspace_id = p_workspace_id
+        CROSS JOIN actor a CROSS JOIN query_amount q
+        WHERE e.workspace_id = p_workspace_id AND c.workspace_id = p_workspace_id AND c.deleted_at IS NULL
+          AND (a.is_admin OR e.contributor_id = a.id)
+          AND (p_container_id IS NULL OR e.container_id = p_container_id)
+          AND char_length(p_query) BETWEEN 2 AND 200
+          AND (e.original_amount = q.amount
+               OR e.note ILIKE p_pattern ESCAPE E'\\'
+               OR contributor.display_name ILIKE p_pattern ESCAPE E'\\'
+               OR (char_length(p_query) >= 3 AND (e.note %> p_query OR contributor.display_name %> p_query)))
+    )
+    SELECT m.id, m.container_id, m.contributor_id, m.contributor_name, m.note,
+           m.original_amount, m.original_currency, m.entry_type, m.status, m.recorded_at, m.match_type, m.score
+    FROM matches m
+    ORDER BY CASE m.match_type WHEN 'exact' THEN 0 WHEN 'substring' THEN 1 ELSE 2 END,
+             m.score DESC, lower(coalesce(m.note, '')) COLLATE "C", m.id
+    LIMIT least(21, greatest(2, coalesce(p_limit, 11)));
+$$;
+
+CREATE FUNCTION public.search_disputes_ranked(
+    p_workspace_id uuid, p_caller_id uuid, p_is_admin boolean,
+    p_query text, p_pattern text, p_limit integer DEFAULT 11
+) RETURNS TABLE (
+    id uuid, ledger_entry_id uuid, raised_by uuid, raised_by_name text, reason text,
+    status text, raised_at timestamp with time zone, match_type text, score real
+)
+    LANGUAGE sql STABLE SECURITY INVOKER
+    SET search_path TO pg_catalog, public, extensions, pg_temp
+    SET pg_trgm.word_similarity_threshold TO '0.3'
+    AS $$
+    WITH actor AS (
+        SELECT m.id, (coalesce(p_is_admin, false) AND m.role = 'admin') AS is_admin
+        FROM public.workspace_members m
+        JOIN public.workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL
+        WHERE m.id = p_caller_id AND m.workspace_id = p_workspace_id
+          AND m.is_active = true AND m.deleted_at IS NULL AND m.role IN ('member', 'admin')
+    ), matches AS (
+        SELECT d.id, d.ledger_entry_id, d.raised_by, raiser.display_name AS raised_by_name,
+            d.reason, d.status, d.raised_at,
+            CASE WHEN lower(d.reason) = lower(p_query) OR lower(raiser.display_name) = lower(p_query)
+                           OR lower(e.note) = lower(p_query) THEN 'exact'
+                 WHEN d.reason ILIKE p_pattern ESCAPE E'\\' OR raiser.display_name ILIKE p_pattern ESCAPE E'\\'
+                           OR e.note ILIKE p_pattern ESCAPE E'\\' THEN 'substring'
+                 ELSE 'fuzzy' END AS match_type,
+            greatest(similarity(p_query, d.reason), word_similarity(p_query, d.reason),
+                     similarity(p_query, raiser.display_name), word_similarity(p_query, raiser.display_name),
+                     similarity(p_query, e.note), word_similarity(p_query, e.note), 0::real) AS score
+        FROM public.disputes d
+        LEFT JOIN public.workspace_members raiser
+          ON raiser.id = d.raised_by AND raiser.workspace_id = p_workspace_id
+        LEFT JOIN public.ledger_entries e
+          ON e.id = d.ledger_entry_id AND e.workspace_id = p_workspace_id
+        CROSS JOIN actor a
+        WHERE d.workspace_id = p_workspace_id AND (a.is_admin OR d.raised_by = a.id)
+          AND char_length(p_query) BETWEEN 2 AND 200
+          AND (d.reason ILIKE p_pattern ESCAPE E'\\' OR raiser.display_name ILIKE p_pattern ESCAPE E'\\'
+               OR e.note ILIKE p_pattern ESCAPE E'\\'
+               OR (char_length(p_query) >= 3 AND (d.reason %> p_query OR raiser.display_name %> p_query OR e.note %> p_query)))
+    )
+    SELECT m.id, m.ledger_entry_id, m.raised_by, m.raised_by_name, m.reason, m.status, m.raised_at, m.match_type, m.score
+    FROM matches m
+    ORDER BY CASE m.match_type WHEN 'exact' THEN 0 WHEN 'substring' THEN 1 ELSE 2 END,
+             m.score DESC, lower(m.reason) COLLATE "C", m.id
+    LIMIT least(21, greatest(2, coalesce(p_limit, 11)));
+$$;
+
+CREATE FUNCTION public.search_groups_ranked(
+    p_workspace_id uuid, p_query text, p_pattern text, p_limit integer DEFAULT 11
+) RETURNS TABLE (id uuid, name text, description text, created_at timestamp with time zone, match_type text, score real)
+    LANGUAGE sql STABLE SECURITY INVOKER
+    SET search_path TO pg_catalog, public, extensions, pg_temp
+    SET pg_trgm.word_similarity_threshold TO '0.3'
+    AS $$
+    WITH matches AS (
+        SELECT g.id, g.name, g.description, g.created_at,
+            CASE WHEN lower(g.name) = lower(p_query) THEN 'exact'
+                 WHEN g.name ILIKE p_pattern ESCAPE E'\\' THEN 'substring'
+                 ELSE 'fuzzy' END AS match_type,
+            greatest(similarity(p_query, g.name), word_similarity(p_query, g.name)) AS score
+        FROM public.groups g
+        WHERE g.workspace_id = p_workspace_id AND char_length(p_query) BETWEEN 2 AND 200
+          AND EXISTS (SELECT 1 FROM public.workspaces w WHERE w.id = p_workspace_id AND w.deleted_at IS NULL)
+          AND (g.name ILIKE p_pattern ESCAPE E'\\' OR (char_length(p_query) >= 3 AND g.name %> p_query))
+    )
+    SELECT m.id, m.name, m.description, m.created_at, m.match_type, m.score
+    FROM matches m
+    ORDER BY CASE m.match_type WHEN 'exact' THEN 0 WHEN 'substring' THEN 1 ELSE 2 END,
+             m.score DESC, lower(m.name) COLLATE "C", m.id
+    LIMIT least(21, greatest(2, coalesce(p_limit, 11)));
+$$;
+
+REVOKE EXECUTE ON FUNCTION
+    public.search_tasks_ranked(uuid, uuid, boolean, text, text, integer, uuid),
+    public.search_ledger_entries_ranked(uuid, uuid, boolean, text, text, integer, uuid),
+    public.search_disputes_ranked(uuid, uuid, boolean, text, text, integer),
+    public.search_groups_ranked(uuid, text, text, integer) FROM PUBLIC;
+
+DO $$
+DECLARE browser_role text;
+BEGIN
+    FOR browser_role IN SELECT rolname FROM pg_roles WHERE rolname IN ('anon', 'authenticated') LOOP
+        EXECUTE format('REVOKE EXECUTE ON FUNCTION public.search_tasks_ranked(uuid, uuid, boolean, text, text, integer, uuid), public.search_ledger_entries_ranked(uuid, uuid, boolean, text, text, integer, uuid), public.search_disputes_ranked(uuid, uuid, boolean, text, text, integer), public.search_groups_ranked(uuid, text, text, integer) FROM %I', browser_role);
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        GRANT USAGE ON SCHEMA extensions TO service_role;
+        GRANT EXECUTE ON FUNCTION
+            public.search_tasks_ranked(uuid, uuid, boolean, text, text, integer, uuid),
+            public.search_ledger_entries_ranked(uuid, uuid, boolean, text, text, integer, uuid),
+            public.search_disputes_ranked(uuid, uuid, boolean, text, text, integer),
+            public.search_groups_ranked(uuid, text, text, integer) TO service_role;
+    END IF;
+END;
+$$;
+
 -- =====================================================================
 -- NOTIFICATIONS
 -- =====================================================================
