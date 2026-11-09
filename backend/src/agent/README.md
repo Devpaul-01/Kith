@@ -441,6 +441,48 @@ Unit coverage verifies role checks, field trimming, filtering, expiry states,
 count failures and prompt-injection handling. Live join/count validation is
 still pending.
 
+## Participant and target reads
+
+`list_participants({ container_id, page?, per_page? })`,
+`get_target_history({ container_id, participant_id, page?, per_page? })` and
+`get_cycle_targets({ container_id, participant_id, page?, per_page? })` are
+all admin-only, matching the nested participant HTTP routes. Each handler
+enforces that gate before calling the participant service, which trusts its
+caller. Model arguments cannot supply identity, role or internal service
+options. Container and participant lookups verify the authenticated workspace
+and exclude deleted containers/memberships; proxies and inactive memberships
+remain visible.
+
+The participant list includes directory/tracking fields and the stored current
+non-cycle target, ordered by added timestamp then participant ID. The exact
+count describes visible participants. Only current targets for that page are
+fetched; missing targets have no invented zero amount. Participant notes and
+internal actor/public-visibility fields are excluded.
+
+Target history includes cycle and non-cycle versions, original amount/currency,
+current and supersession state, and setter directory IDs/names. It is ordered
+by newest set timestamp then target ID; its count describes matching versions.
+Use the participant **record ID** from `list_participants`, not the distinct
+`workspace_member_id`. Duplicate names require clarification.
+
+Cycle-target pages are ordered by cycle number and include every returned
+cycle, with its current stored target or `null`. Their exact count describes
+cycles. They return stored schedule and original-currency target fields only.
+The legacy service compares base-currency payments to original-currency
+targets and sums an unbounded ledger query; those payment totals and
+classifications are omitted from agent results. A null target does not establish
+skipped/paid/overdue participant status. Existing summary tools retain their
+documented financial scopes.
+
+Defaults are page 1/20, with pages 1–10,000 and 1–100 rows per page. All results
+include bounded `next_page` continuation. Failed reads, invalid counts or
+duplicate/mismatched current targets return `PARTICIPANTS_UNAVAILABLE`;
+missing scoped resources return `NOT_FOUND`. Untrusted labels/setter names
+stay in tool-result envelopes. Opt-in pagination preserves legacy HTTP behavior.
+Unit coverage verifies role/scoping branches, monetary preservation, count
+failures, duplicate-name clarification and exclusion of writes. Live PostgREST
+join/count validation remains pending.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON

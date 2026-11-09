@@ -27,6 +27,8 @@ const { listInvites } = require('./invite-tools.service');
 const { listInvitesArgsSchema } = require('../validators/invite-tools.validator');
 const { getAuditLog } = require('./audit-tools.service');
 const { getAuditLogArgsSchema } = require('../validators/audit-tools.validator');
+const { listParticipants, getTargetHistory, getCycleTargets } = require('./participant-tools.service');
+const { listParticipantsArgsSchema, targetReadArgsSchema } = require('../validators/participant-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -236,6 +238,30 @@ const tools = Object.freeze([
     minRole: 'admin',
     tier: 1,
     handler: getAuditLog,
+  }),
+  Object.freeze({
+    name: 'list_participants',
+    description: 'List a container\'s participants and their stored current non-cycle targets. Admin access required. Excludes deleted containers and deleted memberships; proxies and inactive memberships remain visible. Resolve container names with find_container and clarify ambiguous names. Use participant record IDs for target-history and cycle-target reads; workspace_member_id is a different ID. A partial page cannot establish unique names. Ordered by added_at then ID with an exact participant count and next_page. Target amounts retain their original currency; never sum, convert or infer payments. No notes, files or participant writes.',
+    parameterSchema: listParticipantsArgsSchema,
+    minRole: 'admin',
+    tier: 1,
+    handler: listParticipants,
+  }),
+  Object.freeze({
+    name: 'get_target_history',
+    description: 'Read a participant\'s stored target history, including cycle and non-cycle targets and superseded versions, newest set_at first. Admin access required. Use the participant record ID from list_participants, not a workspace member ID, and clarify duplicate names. Returns exact history pagination and stored amounts/currencies without summing them. Current flags and supersession timestamps are stored state. No target changes or financial totals.',
+    parameterSchema: targetReadArgsSchema,
+    minRole: 'admin',
+    tier: 1,
+    handler: getTargetHistory,
+  }),
+  Object.freeze({
+    name: 'get_cycle_targets',
+    description: 'Read a participant\'s current stored target for each billing cycle, ordered by cycle number. Admin access required. Resolve the container with find_container and use a participant record ID from list_participants; clarify duplicate names. Pagination counts billing cycles, including cycles with a null target. Stored cycle status describes the billing schedule. Target amount/currency is an original-currency setting; do not infer paid, partial, overdue or skipped-member status, compare currencies or compute payment totals. Returns schedule and targets only; use existing summary tools for their supported financial summaries. No target or cycle changes.',
+    parameterSchema: targetReadArgsSchema,
+    minRole: 'admin',
+    tier: 1,
+    handler: getCycleTargets,
   }),
 ]);
 

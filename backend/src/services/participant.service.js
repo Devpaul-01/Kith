@@ -4,13 +4,120 @@
 // set_contributor_target_atomic RPC usage.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const audit = require('./audit.service');
 const logger = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { PAID_STATUSES } = require('../constants/ledger-status');
 
-async function listParticipants({ containerId }) {
+const PARTICIPANT_COLUMNS = 'id, container_id, workspace_member_id, role, money_enabled, tasks_enabled, added_at';
+const PARTICIPANT_MEMBER_JOIN = 'workspace_members!container_participants_workspace_member_id_fkey!inner(display_name, is_proxy, role, is_active)';
+const participantDirectory = (row) => ({ ...row,
+  display_name: row.workspace_members?.display_name, is_proxy: row.workspace_members?.is_proxy,
+  member_role: row.workspace_members?.role, is_active: row.workspace_members?.is_active,
+  workspace_members: undefined, containers: undefined,
+});
+function assertReadResult({ data, error, count }, requireCount = false) {
+  if (error || !Array.isArray(data) || (requireCount && (!Number.isSafeInteger(count) || count < 0))) {
+    throw new AppError('Participants and targets are unavailable. Please try again.', 503, 'PARTICIPANTS_UNAVAILABLE');
+  }
+}
+
+async function assertReadContainer({ workspaceId, containerId }) {
+  const { data, error } = await supabaseAdmin.from('containers').select('id')
+    .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle();
+  if (error) throw new AppError('Participants are unavailable. Please try again.', 503, 'PARTICIPANTS_UNAVAILABLE');
+  if (!data) throw new NotFoundError('Container not found');
+}
+
+async function getReadParticipant({ workspaceId, containerId, participantId }) {
+  const { data, error } = await supabaseAdmin.from('container_participants')
+    .select(`${PARTICIPANT_COLUMNS}, containers!container_participants_container_id_fkey!inner(id), ${PARTICIPANT_MEMBER_JOIN}`)
+    .eq('id', participantId).eq('container_id', containerId)
+    .eq('containers.workspace_id', workspaceId).is('containers.deleted_at', null)
+    .eq('workspace_members.workspace_id', workspaceId).is('workspace_members.deleted_at', null)
+    .maybeSingle();
+  if (error) throw new AppError('Participant is unavailable. Please try again.', 503, 'PARTICIPANTS_UNAVAILABLE');
+  if (!data) throw new NotFoundError('Participant not found');
+  return participantDirectory(data);
+}
+
+async function listParticipantsPage({ workspaceId, containerId, pagination }) {
+  await assertReadContainer({ workspaceId, containerId });
+  const response = await supabaseAdmin.from('container_participants')
+    .select(`${PARTICIPANT_COLUMNS}, ${PARTICIPANT_MEMBER_JOIN}`, { count: 'exact' })
+    .eq('container_id', containerId)
+    .eq('workspace_members.workspace_id', workspaceId).is('workspace_members.deleted_at', null)
+    .order('added_at', { ascending: true }).order('id', { ascending: true })
+    .range(pagination.offset, pagination.offset + pagination.perPage - 1);
+  assertReadResult(response, true);
+  const participants = response.data.map(participantDirectory);
+  const participantById = new Map(participants.map((row) => [row.id, row]));
+  const targetByParticipant = new Map();
+  if (participants.length) {
+    const targets = await supabaseAdmin.from('contributor_targets')
+      .select('id, container_participant_id, workspace_member_id, target_amount, target_currency, due_date')
+      .eq('container_id', containerId).in('container_participant_id', participants.map((row) => row.id))
+      .in('workspace_member_id', participants.map((row) => row.workspace_member_id))
+      .eq('is_current', true).is('cycle_id', null).limit(participants.length + 1);
+    assertReadResult(targets);
+    for (const target of targets.data) {
+      const participant = participantById.get(target.container_participant_id);
+      if (!participant || participant.workspace_member_id !== target.workspace_member_id || targetByParticipant.has(participant.id)) {
+        throw new AppError('Participant targets are unavailable. Please try again.', 503, 'PARTICIPANTS_UNAVAILABLE');
+      }
+      targetByParticipant.set(participant.id, target);
+    }
+  }
+  return { participants: participants.map((row) => {
+    const target = targetByParticipant.get(row.id);
+    return { ...row, target_id: target?.id, target_amount: target?.target_amount, target_currency: target?.target_currency, due_date: target?.due_date };
+  }), count: response.count };
+}
+
+async function getTargetHistoryPage({ workspaceId, containerId, participantId, pagination }) {
+  const participant = await getReadParticipant({ workspaceId, containerId, participantId });
+  const response = await supabaseAdmin.from('contributor_targets')
+    .select('id, cycle_id, target_amount, target_currency, due_date, is_current, superseded_by, superseded_at, set_by, set_at, set_by_member:workspace_members!set_by(display_name)', { count: 'exact' })
+    .eq('container_participant_id', participantId).eq('container_id', containerId)
+    .eq('workspace_member_id', participant.workspace_member_id).eq('set_by_member.workspace_id', workspaceId)
+    .order('set_at', { ascending: false }).order('id', { ascending: true })
+    .range(pagination.offset, pagination.offset + pagination.perPage - 1);
+  assertReadResult(response, true);
+  return { history: response.data.map((target) => ({ ...target, set_by_name: target.set_by_member?.display_name, set_by_member: undefined })), count: response.count };
+}
+
+async function getCycleTargetsPage({ workspaceId, containerId, participantId, pagination }) {
+  const participant = await getReadParticipant({ workspaceId, containerId, participantId });
+  const response = await supabaseAdmin.from('container_cycles')
+    .select('id, cycle_number, cycle_start, cycle_end, status', { count: 'exact' })
+    .eq('container_id', containerId).order('cycle_number', { ascending: true }).order('id', { ascending: true })
+    .range(pagination.offset, pagination.offset + pagination.perPage - 1);
+  assertReadResult(response, true);
+  const cycleIds = response.data.map((cycle) => cycle.id);
+  const targetByCycle = new Map();
+  if (cycleIds.length) {
+    const targets = await supabaseAdmin.from('contributor_targets')
+      .select('id, cycle_id, target_amount, target_currency, due_date, set_at')
+      .eq('container_participant_id', participantId).eq('container_id', containerId)
+      .eq('workspace_member_id', participant.workspace_member_id).eq('is_current', true)
+      .in('cycle_id', cycleIds).limit(cycleIds.length + 1);
+    assertReadResult(targets);
+    for (const target of targets.data) {
+      if (!cycleIds.includes(target.cycle_id) || targetByCycle.has(target.cycle_id)) {
+        throw new AppError('Cycle targets are unavailable. Please try again.', 503, 'PARTICIPANTS_UNAVAILABLE');
+      }
+      targetByCycle.set(target.cycle_id, target);
+    }
+  }
+  return { participant, cycle_targets: response.data.map((cycle) => {
+    const target = targetByCycle.get(cycle.id);
+    return { cycle, target: target ? { id: target.id, amount: target.target_amount, currency: target.target_currency, due_date: target.due_date, set_at: target.set_at } : null };
+  }), count: response.count };
+}
+
+async function listParticipants({ workspaceId, containerId, pagination }) {
+  if (pagination) return listParticipantsPage({ workspaceId, containerId, pagination });
   const { data, error } = await supabaseAdmin
     .from('container_participants')
     .select(`
@@ -265,7 +372,8 @@ async function setTarget({ containerId, participantId, amount, currency, due_dat
   return { target: rpcResult.new_target, previous_target: rpcResult.previous_target };
 }
 
-async function getTargetHistory({ participantId }) {
+async function getTargetHistory({ workspaceId, containerId, participantId, pagination }) {
+  if (pagination) return getTargetHistoryPage({ workspaceId, containerId, participantId, pagination });
   const { data, error } = await supabaseAdmin
     .from('contributor_targets')
     .select('*, set_by_member:workspace_members!set_by(display_name)')
@@ -277,7 +385,11 @@ async function getTargetHistory({ participantId }) {
   return (data || []).map((t) => ({ ...t, set_by_name: t.set_by_member?.display_name, set_by_member: undefined }));
 }
 
-async function getCycleTargets({ containerId, participantId }) {
+async function getCycleTargets({ workspaceId, containerId, participantId, pagination }) {
+  // Paginated agent reads expose stored scheduling/target data only. The
+  // legacy payment classification compares base amounts to original-currency
+  // targets and sums an unbounded ledger query; it is unsuitable for narration.
+  if (pagination) return getCycleTargetsPage({ workspaceId, containerId, participantId, pagination });
   const { data: participant } = await supabaseAdmin
     .from('container_participants')
     .select('*, workspace_members!container_participants_workspace_member_id_fkey(display_name)')
