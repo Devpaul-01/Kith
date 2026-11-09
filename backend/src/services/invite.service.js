@@ -4,7 +4,7 @@
 // uniform-200-response-shape pattern for previewInvite.
 
 const { supabaseAdmin }  = require('../config/supabase');
-const { NotFoundError, ConflictError, BusinessRuleError } = require('../utils/errors');
+const { AppError, NotFoundError, ConflictError, BusinessRuleError } = require('../utils/errors');
 const { generateToken }  = require('../utils/crypto');
 const notification       = require('./notification.service');
 const audit              = require('./audit.service');
@@ -133,16 +133,33 @@ async function acceptInvite({ token, userId, actorCtx }) {
   return { workspace, member };
 }
 
-async function listInvites({ workspaceId }) {
-  const { data, error } = await supabaseAdmin
+async function listInvites({ workspaceId, statusFilter, pagination }) {
+  const asOf = new Date(Date.now()).toISOString();
+  let query = supabaseAdmin
     .from('invite_links')
-    .select('*, created_by_member:workspace_members!created_by(display_name)')
+    .select(`${pagination ? 'id, created_by, created_at, expires_at, used_at' : '*'}, created_by_member:workspace_members!created_by(display_name)`, pagination ? { count: 'exact' } : undefined)
     .eq('workspace_id', workspaceId)
+    .eq('created_by_member.workspace_id', workspaceId)
     .order('created_at', { ascending: false });
 
-  if (error) throw new Error(error.message);
+  if (statusFilter === 'used') query = query.not('used_at', 'is', null);
+  if (statusFilter === 'available') query = query.is('used_at', null).gte('expires_at', asOf);
+  if (statusFilter === 'expired') query = query.is('used_at', null).lt('expires_at', asOf);
+  if (pagination) query = query.order('id', { ascending: true }).range(pagination.offset, pagination.offset + pagination.perPage - 1);
+  const { data, error, count } = await query;
+  if (error || (pagination && (!Array.isArray(data) || !Number.isSafeInteger(count) || count < 0))) {
+    throw new AppError('Invites are unavailable. Please try again.', 503, 'INVITES_UNAVAILABLE');
+  }
 
-  return (data || []).map((i) => ({ ...i, created_by_name: i.created_by_member?.display_name, created_by_member: undefined }));
+  const invites = (data || []).map((i) => {
+    if (pagination && !Number.isFinite(Date.parse(i.expires_at))) {
+      throw new AppError('Invite expiry is unavailable. Please try again.', 503, 'INVITES_UNAVAILABLE');
+    }
+    return { ...i, created_by_name: i.created_by_member?.display_name, created_by_member: undefined,
+      ...(pagination ? { status: i.used_at ? 'used' : Date.parse(i.expires_at) < Date.parse(asOf) ? 'expired' : 'available' } : {}),
+    };
+  });
+  return pagination ? { invites, count, asOf } : invites;
 }
 
 async function revokeInvite({ workspaceId, inviteId }) {

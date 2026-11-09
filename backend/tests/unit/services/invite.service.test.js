@@ -200,6 +200,11 @@ describe('services/invite.service', () => {
   });
 
   describe('listInvites', () => {
+    const asOf = '2026-11-09T12:00:00.000Z';
+    const pagination = { page: 2, perPage: 10, offset: 10 };
+    beforeEach(() => { jest.spyOn(Date, 'now').mockReturnValue(Date.parse(asOf)); });
+    afterEach(() => { jest.restoreAllMocks(); });
+
     it('flattens created_by_name from the joined member', async () => {
       mockSupabaseInstance.mockNextResponse({ data: [{ id: 'inv-1', created_by_member: { display_name: 'Admin Bob' } }], error: null });
 
@@ -207,6 +212,55 @@ describe('services/invite.service', () => {
 
       expect(result[0].created_by_name).toBe('Admin Bob');
       expect(result[0].created_by_member).toBeUndefined();
+    });
+
+    it('selects invite metadata, scopes the inviter, and provides exact paging with a service timestamp', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [{ id: 'i1', expires_at: '2026-11-10T00:00:00Z', used_at: null }], error: null, count: 31 });
+      const result = await inviteService.listInvites({ workspaceId: WORKSPACE_ID, pagination });
+      expect(result).toMatchObject({ invites: [{ id: 'i1', status: 'available' }], count: 31, asOf });
+      const calls = mockSupabaseInstance.getCalls();
+      const selection = calls.find((call) => call.method === 'select');
+      expect(selection.args[0]).not.toMatch(/\*|\btoken\b|used_by_user_id/);
+      expect(selection.args[1]).toEqual({ count: 'exact' });
+      expect(calls).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] },
+        { method: 'eq', args: ['created_by_member.workspace_id', WORKSPACE_ID] },
+        { method: 'order', args: ['id', { ascending: true }] },
+        { method: 'range', args: [10, 19] },
+      ]));
+    });
+
+    it('classifies invites using one time snapshot, with used taking precedence over expiry', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [
+        { id: 'future', expires_at: '2026-11-10T00:00:00Z', used_at: null },
+        { id: 'past', expires_at: '2026-11-08T00:00:00Z', used_at: null },
+        { id: 'used', expires_at: '2026-11-08T00:00:00Z', used_at: '2026-11-07T00:00:00Z' },
+        { id: 'boundary', expires_at: asOf, used_at: null },
+      ], count: 4, error: null });
+      const result = await inviteService.listInvites({ workspaceId: WORKSPACE_ID, pagination });
+      expect(result.invites.map((invite) => invite.status)).toEqual(['available', 'expired', 'used', 'available']);
+      expect(result.asOf).toBe(asOf);
+    });
+
+    it.each([
+      ['available', [{ method: 'is', args: ['used_at', null] }, { method: 'gte', args: ['expires_at', asOf] }]],
+      ['expired', [{ method: 'is', args: ['used_at', null] }, { method: 'lt', args: ['expires_at', asOf] }]],
+      ['used', [{ method: 'not', args: ['used_at', 'is', null] }]],
+    ])('applies %s filters before counting and paging', async (statusFilter, expectedCalls) => {
+      mockSupabaseInstance.mockNextResponse({ data: [], count: 0, error: null });
+      await inviteService.listInvites({ workspaceId: WORKSPACE_ID, statusFilter, pagination });
+      expect(mockSupabaseInstance.getCalls()).toEqual(expect.arrayContaining(expectedCalls));
+    });
+
+    it.each([null, undefined, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('fails closed for unavailable or invalid invite counts: %j', async (count) => {
+      mockSupabaseInstance.mockNextResponse({ data: [], count, error: null });
+      await expect(inviteService.listInvites({ workspaceId: WORKSPACE_ID, pagination })).rejects.toMatchObject({ code: 'INVITES_UNAVAILABLE' });
+    });
+
+    it.each([{ data: null, count: 0, error: null }, { data: [], count: 0, error: { message: 'private database details' } },
+      { data: [{ expires_at: 'invalid-date' }], count: 1, error: null }])('does not invent an empty list or an invite validity state', async (response) => {
+      mockSupabaseInstance.mockNextResponse(response);
+      await expect(inviteService.listInvites({ workspaceId: WORKSPACE_ID, pagination })).rejects.toMatchObject({ code: 'INVITES_UNAVAILABLE' });
     });
   });
 });

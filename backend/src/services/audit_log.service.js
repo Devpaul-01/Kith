@@ -10,7 +10,7 @@
 // the CSV export from drifting out of sync.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { getPagination } = require('../utils/pagination');
+const { AppError } = require('../utils/errors');
 
 function applyAuditLogFilters(query, { action, actor_member_id, from, to }) {
   if (action)          query = query.eq('action', action);
@@ -24,26 +24,30 @@ function applyAuditLogFilters(query, { action, actor_member_id, from, to }) {
  * Paginated audit log for a workspace, with actor display names resolved.
  * @returns {Promise<{entries: Array, count: number, page: number, perPage: number}>}
  */
-async function getAuditLog({ workspaceId, filters, page, perPage, offset }) {
+async function getAuditLog({ workspaceId, filters = {}, page, perPage, offset, summaryOnly = false }) {
   let query = supabaseAdmin
     .from('audit_log')
-    .select('*, actor_member:workspace_members!actor_member_id(display_name)', { count: 'exact' })
+    .select(`${summaryOnly ? 'id, action, actor_member_id, target_type, target_id, created_at' : '*'}, actor_member:workspace_members!actor_member_id(display_name)`, { count: 'exact' })
     .eq('workspace_id', workspaceId)
+    .eq('actor_member.workspace_id', workspaceId)
     .order('created_at', { ascending: false })
+    .order('id', { ascending: true })
     .range(offset, offset + perPage - 1);
 
   query = applyAuditLogFilters(query, filters);
 
   const { data, error, count } = await query;
-  if (error) throw new Error(error.message);
+  if (error || !Array.isArray(data) || !Number.isSafeInteger(count) || count < 0) {
+    throw new AppError('Audit log is unavailable. Please try again.', 503, 'AUDIT_LOG_UNAVAILABLE');
+  }
 
-  const entries = (data || []).map((e) => ({
+  const entries = data.map((e) => ({
     ...e,
-    actor_name:   e.actor_member?.display_name || 'System',
+    actor_name: summaryOnly ? e.actor_member?.display_name ?? null : e.actor_member?.display_name || 'System',
     actor_member: undefined,
   }));
 
-  return { entries, count: count || 0, page, perPage };
+  return { entries, count, page, perPage };
 }
 
 /**

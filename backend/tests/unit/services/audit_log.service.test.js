@@ -63,20 +63,53 @@ describe('services/audit_log.service', () => {
       expect(calls.some((c) => c.method === 'eq' && c.args[0] === 'action')).toBe(false);
     });
 
-    it('throws a plain Error when the query errors', async () => {
+    it('returns a typed unavailable error when the query fails', async () => {
       mockSupabaseInstance.mockNextResponse({ data: null, error: { message: 'query failed' }, count: 0 });
 
       await expect(
         getAuditLog({ workspaceId: WORKSPACE_ID, filters: {}, page: 1, perPage: 20, offset: 0 })
-      ).rejects.toThrow('query failed');
+      ).rejects.toMatchObject({ code: 'AUDIT_LOG_UNAVAILABLE', statusCode: 503 });
     });
 
-    it('defaults count to 0 when the response omits it', async () => {
+    it('fails closed when the exact count is unavailable', async () => {
       mockSupabaseInstance.mockNextResponse({ data: [], error: null });
 
-      const result = await getAuditLog({ workspaceId: WORKSPACE_ID, filters: {}, page: 1, perPage: 20, offset: 0 });
+      await expect(getAuditLog({ workspaceId: WORKSPACE_ID, filters: {}, page: 1, perPage: 20, offset: 0 }))
+        .rejects.toMatchObject({ code: 'AUDIT_LOG_UNAVAILABLE' });
+    });
 
-      expect(result.count).toBe(0);
+    it('selects only event fields for summaries and scopes embedded actors without attributing missing names to System', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [
+        { id: 'a1', actor_member_id: 'm1', actor_member: { display_name: 'Ada' } },
+        { id: 'a2', actor_member_id: 'm2', actor_member: null },
+        { id: 'a3', actor_member_id: null, actor_member: null },
+      ], count: 30, error: null });
+      const result = await getAuditLog({ workspaceId: WORKSPACE_ID, page: 2, perPage: 10, offset: 10, summaryOnly: true });
+      expect(result.entries.map((entry) => entry.actor_name)).toEqual(['Ada', null, null]);
+      expect(result.count).toBe(30);
+      const calls = mockSupabaseInstance.getCalls();
+      const selection = calls.find((call) => call.method === 'select');
+      expect(selection.args[0]).not.toMatch(/\*|metadata|actor_user_id|ip_address|user_agent/);
+      expect(selection.args[1]).toEqual({ count: 'exact' });
+      expect(calls).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] },
+        { method: 'eq', args: ['actor_member.workspace_id', WORKSPACE_ID] },
+        { method: 'order', args: ['created_at', { ascending: false }] },
+        { method: 'order', args: ['id', { ascending: true }] },
+        { method: 'range', args: [10, 19] },
+      ]));
+    });
+
+    it.each([null, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('rejects invalid counts rather than inventing totals: %j', async (count) => {
+      mockSupabaseInstance.mockNextResponse({ data: [], error: null, count });
+      await expect(getAuditLog({ workspaceId: WORKSPACE_ID, page: 1, perPage: 20, offset: 0, summaryOnly: true }))
+        .rejects.toMatchObject({ code: 'AUDIT_LOG_UNAVAILABLE' });
+    });
+
+    it('does not interpret a missing row array as an empty audit log', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null, count: 0 });
+      await expect(getAuditLog({ workspaceId: WORKSPACE_ID, page: 1, perPage: 20, offset: 0, summaryOnly: true }))
+        .rejects.toMatchObject({ code: 'AUDIT_LOG_UNAVAILABLE' });
     });
   });
 

@@ -23,6 +23,10 @@ const { listGroups, getGroup } = require('./group-tools.service');
 const { listGroupsArgsSchema, getGroupArgsSchema } = require('../validators/group-tools.validator');
 const { listDisputes, getDispute } = require('./dispute-tools.service');
 const { listDisputesArgsSchema, getDisputeArgsSchema } = require('../validators/dispute-tools.validator');
+const { listInvites } = require('./invite-tools.service');
+const { listInvitesArgsSchema } = require('../validators/invite-tools.validator');
+const { getAuditLog } = require('./audit-tools.service');
+const { getAuditLogArgsSchema } = require('../validators/audit-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -216,6 +220,22 @@ const tools = Object.freeze([
     minRole: 'admin',
     tier: 1,
     handler: listDisputes,
+  }),
+  Object.freeze({
+    name: 'list_invites',
+    description: 'List workspace invites newest first. Admin access required. Optionally filter available, used or expired invites; status is determined by the service at as_of, and used takes precedence over expiry. Revoked invites are deleted and absent. Returns metadata, stored timestamps and an exact filtered count, without tokens, invitation URLs or user account IDs. Use next_page to continue; null means the last page or page limit. No creation, acceptance, revocation or sending of invites.',
+    parameterSchema: listInvitesArgsSchema,
+    minRole: 'admin',
+    tier: 1,
+    handler: listInvites,
+  }),
+  Object.freeze({
+    name: 'get_audit_log',
+    description: 'Read a page of workspace audit events, newest first. Admin access required. Filter by a known action, actor_member_id, or inclusive from/to ISO timestamps with explicit timezones. Resolve actor names with find_member or list_members and clarify ambiguous names. The actor filter never changes your identity. Returns event, actor, target and timestamp fields plus an exact filtered count. A missing actor name does not identify a different person. Use next_page to continue; null means the last page or page limit. No raw metadata, IP addresses, user agents, account IDs or CSV/bulk export.',
+    parameterSchema: getAuditLogArgsSchema,
+    minRole: 'admin',
+    tier: 1,
+    handler: getAuditLog,
   }),
 ]);
 

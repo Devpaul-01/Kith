@@ -64,7 +64,7 @@ describe('agent read loop', () => {
       'list_tasks', 'get_task',
       'list_ledger_entries', 'get_ledger_entry',
       'list_notifications', 'get_unread_count', 'list_groups', 'get_dispute',
-      ...(role === 'admin' ? ['get_overdue_summary', 'get_member_engagement', 'list_cycles', 'get_group', 'list_disputes'] : []),
+      ...(role === 'admin' ? ['get_overdue_summary', 'get_member_engagement', 'list_cycles', 'get_group', 'list_disputes', 'list_invites', 'get_audit_log'] : []),
     ]);
     request.tools.forEach((entry) => {
       expect(entry).not.toHaveProperty('handler');

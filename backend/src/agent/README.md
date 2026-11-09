@@ -411,6 +411,36 @@ shapes. Failed queries, invalid list counts or malformed notes fail with
 `DISPUTES_UNAVAILABLE`. Unit coverage includes the ownership and workspace
 boundaries; live PostgREST join validation remains pending.
 
+## Invite and audit reads
+
+`list_invites({ status?, page?, per_page? })` is admin-only. It returns invite
+IDs, inviter directory names/IDs, stored timestamps, service-evaluated status
+and an exact filtered count. Optional status is `available`, `used` or
+`expired`. The service uses one `as_of` timestamp for filtering and status;
+used takes precedence over expiry, and the expiry boundary matches the
+existing preview service. Revoked invites are deleted and absent from results.
+Invite tokens, URLs and recipient account IDs are excluded. This read cannot
+create, accept, revoke or send an invite.
+
+`get_audit_log({ action?, actor_member_id?, from?, to?, page?, per_page? })`
+is admin-only. Action filters come from the frozen `AUDIT_ACTIONS` catalog;
+actor filtering uses a resolved membership ID and never changes the caller.
+Date bounds are inclusive ISO timestamps with explicit timezones. Results
+contain only event IDs/actions, actor membership IDs/names, target types/IDs
+and timestamps. An unavailable actor display name is `null`; it must not be
+used to infer a person or attribute an event to System. Raw audit metadata,
+account IDs, IP addresses and user-agent fields are excluded. CSV export
+remains outside the registry.
+
+Both tools use newest timestamp then ID ordering, default page 1/20, pages
+1–10,000 and 1–100 rows per page. Exact counts cover the requested filters;
+`next_page` is null at the last page or page limit. Service failures and invalid
+counts return `INVITES_UNAVAILABLE` or `AUDIT_LOG_UNAVAILABLE`. Names remain
+untrusted data. Internal service options retain legacy HTTP response shapes.
+Unit coverage verifies role checks, field trimming, filtering, expiry states,
+count failures and prompt-injection handling. Live join/count validation is
+still pending.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON

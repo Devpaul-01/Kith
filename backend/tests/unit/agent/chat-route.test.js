@@ -572,7 +572,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(calls.slice(start)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
   });
 
-  it.each(['get_overdue_summary', 'get_member_engagement', 'list_cycles', 'get_group', 'list_disputes'])('rejects a model attempt to request %s for a member', async (name) => {
+  it.each(['get_overdue_summary', 'get_member_engagement', 'list_cycles', 'get_group', 'list_disputes', 'list_invites', 'get_audit_log'])('rejects a model attempt to request %s for a member', async (name) => {
     fetchSpy.mockResolvedValueOnce(response(toolCompletion(name)));
     const res = await postChat();
     expect(res.status).toBe(502);
