@@ -7,7 +7,14 @@
 // mark-all-as-read.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { NotFoundError } = require('../utils/errors');
+const { AppError, NotFoundError } = require('../utils/errors');
+
+function unreadQuery({ memberId, workspaceId }) {
+  let query = supabaseAdmin.from('notifications').select('*', { count: 'exact', head: true })
+    .eq('recipient_id', memberId).eq('is_read', false);
+  if (workspaceId) query = query.eq('workspace_id', workspaceId);
+  return query;
+}
 
 async function listNotifications({ memberId, page, perPage, offset, isRead, workspaceId }) {
   let query = supabaseAdmin
@@ -15,29 +22,35 @@ async function listNotifications({ memberId, page, perPage, offset, isRead, work
     .select('*', { count: 'exact' })
     .eq('recipient_id', memberId)
     .order('created_at', { ascending: false })
+    .order('id', { ascending: true })
     .range(offset, offset + perPage - 1);
 
-  if (isRead     !== undefined) query = query.eq('is_read', isRead === 'true');
+  if (isRead     !== undefined) query = query.eq('is_read', isRead === true || isRead === 'true');
   if (workspaceId)              query = query.eq('workspace_id', workspaceId);
 
-  const [{ data: notifications, count }, { count: unreadCount }] = await Promise.all([
+  const [{ data: notifications, count, error }, { count: unreadCount, error: unreadError }] = await Promise.all([
     query,
-    supabaseAdmin.from('notifications').select('*', { count: 'exact', head: true }).eq('recipient_id', memberId).eq('is_read', false),
+    unreadQuery({ memberId, workspaceId }),
   ]);
+  if (error || unreadError || !Array.isArray(notifications)
+      || !Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(unreadCount) || unreadCount < 0) {
+    throw new AppError('Notifications are unavailable. Please try again.', 503, 'NOTIFICATIONS_UNAVAILABLE');
+  }
 
   return {
-    notifications: notifications || [],
-    unread_count:  unreadCount || 0,
-    count:         count || 0,
+    notifications,
+    unread_count: unreadCount,
+    count,
   };
 }
 
-async function getUnreadCount({ memberId }) {
-  const { count, error } = await supabaseAdmin
-    .from('notifications').select('*', { count: 'exact', head: true }).eq('recipient_id', memberId).eq('is_read', false);
+async function getUnreadCount({ memberId, workspaceId }) {
+  const { count, error } = await unreadQuery({ memberId, workspaceId });
 
-  if (error) throw new Error(error.message);
-  return count || 0;
+  if (error || !Number.isSafeInteger(count) || count < 0) {
+    throw new AppError('Notifications are unavailable. Please try again.', 503, 'NOTIFICATIONS_UNAVAILABLE');
+  }
+  return count;
 }
 
 async function markAsRead({ notificationId, memberId }) {

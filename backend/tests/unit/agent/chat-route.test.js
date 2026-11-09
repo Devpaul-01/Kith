@@ -128,7 +128,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(dashboard.getDashboardData).toHaveBeenCalledWith({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, isAdmin: false });
     const first = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(first.messages.find((message) => message.role === 'user').content).toBe('Read the dashboard.');
-    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task', 'list_ledger_entries', 'get_ledger_entry']);
+    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task', 'list_ledger_entries', 'get_ledger_entry', 'list_notifications', 'get_unread_count']);
     expect(JSON.parse(first.messages.at(-1).content).data).toMatchObject({ member_id: MEMBER_ID, workspace_id: WORKSPACE_ID, role: 'member' });
   });
 
@@ -398,6 +398,61 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(res.status).toBe(403);
     expect(JSON.stringify(res.body)).not.toContain('123.40');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['member', 'admin'])('keeps the %s notification inbox scoped to the authenticated recipient and workspace', async (role) => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('list_notifications', { is_read: false })))
+      .mockResolvedValueOnce(response(completion('You have 3 unread notifications.')));
+    const pendingRequest = postChat({ message: 'Show my unread notifications.' }, { role }).query({ workspace_id: OTHER_WORKSPACE_ID, recipient_id: OTHER_USER_ID });
+    db.mockResponses({ data: [{ id: TASK_ID, title: 'Shopping', body: 'Task assigned', dedup_key: 'PRIVATE_KEY' }], error: null, count: 1 }, { count: 3, error: null });
+    expect((await pendingRequest).status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    expect(JSON.parse(messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: {
+      notifications: [{ id: TASK_ID, title: 'Shopping', body: 'Task assigned' }], unread_count: 3,
+      pagination: { page: 1, per_page: 20, total: 1, total_pages: 1, next_page: null },
+    } });
+    const calls = db.getCalls();
+    const start = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'notifications');
+    const scopes = calls.slice(start).filter((call) => call.method === 'eq');
+    expect(scopes.filter((call) => call.args[0] === 'recipient_id')).toEqual(Array(2).fill({ method: 'eq', args: ['recipient_id', MEMBER_ID] }));
+    expect(scopes.filter((call) => call.args[0] === 'workspace_id')).toEqual(Array(2).fill({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] }));
+  });
+
+  it('returns a verified unread count through the agent', async () => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('get_unread_count'))).mockResolvedValueOnce(response(completion('You have 0 unread notifications.')));
+    const pendingRequest = postChat({ message: 'How many unread notifications?' });
+    db.mockNextResponse({ count: 0, error: null });
+    expect((await pendingRequest).status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    expect(JSON.parse(messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: { unread_count: 0 } });
+  });
+
+  it('does not narrate a zero unread count after a failed query', async () => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('get_unread_count')));
+    const pendingRequest = postChat({ message: 'How many unread notifications?' });
+    db.mockNextResponse({ count: null, error: { message: 'PRIVATE_DATABASE_DETAIL' } });
+    const res = await pendingRequest;
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('AGENT_TOOL_FAILED');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['', '/count'])('uses the resolved membership workspace for the existing notification route: %s', async (suffix) => {
+    db.client.auth.getUser.mockResolvedValue({ data: { user: { id: USER_ID } }, error: null });
+    db.mockResponses(
+      { data: { id: USER_ID, deleted_at: null }, error: null },
+      { data: [{ id: MEMBER_ID, workspace_id: WORKSPACE_ID, role: 'member' }], error: null },
+    );
+    if (!suffix) db.mockNextResponse({ data: [], count: 0, error: null });
+    db.mockNextResponse({ count: 0, error: null });
+    const res = await request(app).get(`/v1/notifications${suffix}`).set('Authorization', 'Bearer TEST_TOKEN');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(suffix ? { data: { unread_count: 0 } } : {
+      data: { notifications: [], unread_count: 0 }, meta: { pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } },
+    });
+    const calls = db.getCalls();
+    const start = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'notifications');
+    expect(calls.slice(start)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
   });
 
   it.each(['get_overdue_summary', 'get_member_engagement', 'list_cycles'])('rejects a model attempt to request %s for a member', async (name) => {

@@ -253,6 +253,27 @@ HTTP field/envelope contracts are retained. Unit and mocked HTTP tests cover
 scope, ownership, filters, precision, errors, and hostile content. Live
 database isolation and model evaluation remain pending.
 
+## Notification reads
+
+`list_notifications` and `get_unread_count` read only the caller's own inbox
+in the authenticated workspace, including for admins. Both handlers check
+membership, reject recipient/workspace overrides, and wrap the existing
+notification inbox service. Listing accepts optional boolean `is_read`,
+`page` (1–10,000), and `per_page` (1–100). Counting accepts only `{}`.
+
+Lists return permitted notification text/reference fields and read timestamps,
+omitting delivery internals and deduplication keys. Results include filtered
+pagination with `next_page`; `unread_count` covers all unread notifications in
+this workspace, independent of the list filter or page. Reading does not mark
+anything as read. Notification titles/bodies remain untrusted tool content.
+
+The inbox service now applies the same recipient/workspace scope to the list
+and unread counter, uses stable creation-date/ID ordering, and rejects query
+failures or unavailable counts with `NOTIFICATIONS_UNAVAILABLE`. Existing
+HTTP read controllers use the workspace from the resolved membership and
+keep their existing response envelopes. Mocked service, tool, loop, and HTTP
+tests cover these boundaries; live database/model verification remains pending.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON

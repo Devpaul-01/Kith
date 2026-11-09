@@ -16,7 +16,7 @@ async function listNotifications(req, res, next) {
     const { notifications, unread_count, count } = await inboxService.listNotifications({
       memberId, page, perPage, offset,
       isRead: req.query.is_read,
-      workspaceId: req.query.workspace_id,
+      workspaceId: req.member.workspaceId,
     });
 
     paginate(res, { notifications, unread_count }, count, page, perPage);
@@ -25,7 +25,7 @@ async function listNotifications(req, res, next) {
 
 async function getUnreadCount(req, res, next) {
   try {
-    const count = await inboxService.getUnreadCount({ memberId: req.member.id });
+    const count = await inboxService.getUnreadCount({ memberId: req.member.id, workspaceId: req.member.workspaceId });
     success(res, { unread_count: count });
   } catch (err) { next(err); }
 }

@@ -56,18 +56,49 @@ describe('services/notification_inbox.service', () => {
   });
 
   describe('getUnreadCount', () => {
-    it('returns 0 when count is null', async () => {
+    it('rejects an unavailable count instead of treating it as zero', async () => {
       mockSupabaseInstance.mockNextResponse({ count: null, error: null });
-
-      const result = await getUnreadCount({ memberId: MEMBER_ID });
-
-      expect(result).toBe(0);
+      await expect(getUnreadCount({ memberId: MEMBER_ID })).rejects.toMatchObject({ code: 'NOTIFICATIONS_UNAVAILABLE', statusCode: 503 });
     });
 
     it('throws on query error', async () => {
       mockSupabaseInstance.mockNextResponse({ count: null, error: { message: 'db error' } });
 
-      await expect(getUnreadCount({ memberId: MEMBER_ID })).rejects.toThrow('db error');
+      await expect(getUnreadCount({ memberId: MEMBER_ID })).rejects.toMatchObject({ code: 'NOTIFICATIONS_UNAVAILABLE', message: 'Notifications are unavailable. Please try again.' });
+    });
+  });
+
+  describe('notification read boundaries', () => {
+    it('scopes both the list and unread count to the same recipient/workspace, regardless of list filter', async () => {
+      mockSupabaseInstance.mockResponses({ data: [], count: 31, error: null }, { count: 5, error: null });
+      const result = await listNotifications({ memberId: MEMBER_ID, workspaceId: 'ws-1', page: 2, perPage: 10, offset: 10, isRead: true });
+      expect(result).toEqual({ notifications: [], count: 31, unread_count: 5 });
+      const calls = mockSupabaseInstance.getCalls();
+      const starts = calls.map((call, index) => call.method === 'from' ? index : -1).filter((index) => index >= 0);
+      for (const segment of [calls.slice(starts[0], starts[1]), calls.slice(starts[1])]) {
+        expect(segment).toContainEqual({ method: 'eq', args: ['recipient_id', MEMBER_ID] });
+        expect(segment).toContainEqual({ method: 'eq', args: ['workspace_id', 'ws-1'] });
+      }
+      expect(calls.slice(starts[1])).toContainEqual({ method: 'eq', args: ['is_read', false] });
+      expect(mockSupabaseInstance.builder.order.mock.calls).toEqual([['created_at', { ascending: false }], ['id', { ascending: true }]]);
+      expect(mockSupabaseInstance.builder.range).toHaveBeenCalledWith(10, 19);
+    });
+
+    it('returns a verified zero unread count in the requested workspace', async () => {
+      mockSupabaseInstance.mockNextResponse({ count: 0, error: null });
+      await expect(getUnreadCount({ memberId: MEMBER_ID, workspaceId: 'ws-1' })).resolves.toBe(0);
+      expect(mockSupabaseInstance.builder.eq.mock.calls).toEqual([['recipient_id', MEMBER_ID], ['is_read', false], ['workspace_id', 'ws-1']]);
+    });
+
+    it.each([
+      [{ data: null, count: 0 }, { count: 0 }], [{ data: [], count: null }, { count: 0 }],
+      [{ data: [], count: 0 }, { count: null }], [{ data: [], count: '0' }, { count: 0 }],
+      [{ data: [], count: 0 }, { count: -1 }], [{ data: [], count: 0, error: { message: 'PRIVATE' } }, { count: 0 }],
+      [{ data: [], count: 0 }, { count: 0, error: { message: 'PRIVATE' } }],
+    ])('rejects unavailable list/count data: %j %j', async (page, unread) => {
+      mockSupabaseInstance.mockResponses(page, unread);
+      await expect(listNotifications({ memberId: MEMBER_ID, page: 1, perPage: 20, offset: 0 }))
+        .rejects.toMatchObject({ code: 'NOTIFICATIONS_UNAVAILABLE', statusCode: 503 });
     });
   });
 
