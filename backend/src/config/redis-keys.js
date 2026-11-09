@@ -11,6 +11,8 @@ const TTL = {
   DASHBOARD_CACHE_SECONDS:       30,     // workspace dashboard aggregation (see services/dashboard.service.js)
   OVERDUE_SUMMARY_CACHE_SECONDS: 60,     // overdue-contributions aggregation (admin only, changes less often)
   AGENT_BUDGET_RETENTION_SECONDS: 60 * 60, // retain the previous window for in-flight reconciliation
+  AGENT_CONVERSATION_SECONDS:    30 * 60, // sliding expiry after a completed turn
+  AGENT_CONVERSATION_LEASE_SECONDS: 10 * 60, // abandoned turns cannot lock a conversation forever
 };
 
 const lastSeenKey   = (userId) => `kith:lastseen:${userId}`;
@@ -26,5 +28,8 @@ const membershipKey = (workspaceId, userId) => `kith:membership:${workspaceId}:$
 const dashboardKey      = (workspaceId, isAdmin) => `kith:dashboard:v2:${workspaceId}:${isAdmin ? 'admin' : 'member'}`;
 const overdueSummaryKey = (workspaceId) => `kith:overdue-summary:v2:${workspaceId}`;
 const agentBudgetKey = (workspaceId, period, windowStartMs) => `kith:agent-budget:v1:${workspaceId}:${period}:${windowStartMs}`;
+// The scope hashes the authenticated user, membership, workspace and role.
+// Data and lease keys share a Redis Cluster hash slot for atomic updates.
+const agentConversationKey = (scope, conversationId) => `kith:agent-conversation:v1:{${scope}:${conversationId}}`;
 
-module.exports = { TTL, lastSeenKey, membershipKey, dashboardKey, overdueSummaryKey, agentBudgetKey };
+module.exports = { TTL, lastSeenKey, membershipKey, dashboardKey, overdueSummaryKey, agentBudgetKey, agentConversationKey };

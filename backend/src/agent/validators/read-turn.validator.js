@@ -16,6 +16,12 @@ const readTurnInputSchema = z.object({
   message: z.string().max(READ_TURN_LIMITS.messageChars).trim().min(1),
 }).strict();
 
+// Omit for a stateless turn; null starts a conversation; a UUID resumes it.
+// The client never supplies the stored messages or the conversation's owner.
+const chatInputSchema = readTurnInputSchema.extend({
+  conversation_id: z.string().uuid().nullable().optional(),
+});
+
 const providerToolCallSchema = z.object({
   id: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
   name: z.string().min(1).max(64).regex(/^[a-z][a-z0-9_]*$/),
@@ -31,4 +37,4 @@ const readProviderReplySchema = z.object({
   message: 'A provider reply must contain text or tool calls',
 });
 
-module.exports = { READ_TURN_LIMITS, readTurnInputSchema, readProviderReplySchema, providerToolCallSchema };
+module.exports = { READ_TURN_LIMITS, readTurnInputSchema, chatInputSchema, readProviderReplySchema, providerToolCallSchema };

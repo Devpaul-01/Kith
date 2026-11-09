@@ -277,7 +277,8 @@ tests cover these boundaries; live database/model verification remains pending.
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
-body containing only a nonempty `message` (up to 8,000 characters):
+body containing a nonempty `message` (up to 8,000 characters), with an optional
+`conversation_id` as described below:
 
 ```json
 { "message": "Show my workspace dashboard." }
@@ -298,8 +299,8 @@ API envelope. For example, after a dashboard read:
 
 `modelCalls` and `toolCalls` are server-counted turn metrics; the initial
 context read is included in `toolCalls`. Successful replies use
-`Cache-Control: no-store`. Each request starts a fresh conversation. Streaming
-and server-owned conversation memory remain later increments of the architecture.
+`Cache-Control: no-store`. Omitting `conversation_id` keeps the existing
+stateless behavior and response shape. Streaming remains a later increment.
 
 The route inherits `requireAuth` → `loadDbUser` → `requireMembership` from the
 workspace router. Context comes exclusively from those middleware results.
@@ -337,6 +338,64 @@ with mocked external services. Throttling tests exercise the memory fallback;
 shared Redis enforcement and deployed Supabase/Groq behavior still need live
 integration verification.
 
+## Conversation continuity
+
+Conversation history is opt-in and owned by the server:
+
+```json
+{ "message": "Show the rent summary.", "conversation_id": null }
+```
+
+A successful first reply includes `data.conversation_id`, a server-generated
+UUID. Send that ID with a follow-up to resume the conversation:
+
+```json
+{ "message": "The London one.", "conversation_id": "<returned-uuid>" }
+```
+
+Send `null` again to start over, or omit the field for a stateless request.
+Client-supplied messages/history, tool results, roles, and identity overrides
+remain rejected. The response contains only text, turn metrics, and the ID;
+the saved transcript is never returned. The ID is not sent to the model.
+
+Redis stores at most eight completed turns, with a 30-minute idle expiry
+refreshed after a successful turn. The active conversation retains the existing
+128 KiB message limit; old turns are removed as complete exchanges when room
+is needed. This is short-term context, not durable chat history. Stored data
+is bound to the authenticated user, membership, workspace, and role. An ID
+cannot carry admin history into a member request or cross workspace/user
+boundaries. Every request still traverses the existing auth/membership chain.
+
+The loop rebuilds the system instruction and reads current context on every
+turn. It uses old exchanges to interpret clarifications and instructs the
+model to refresh workspace facts through tools. Historical tool messages keep
+their untrusted-data envelopes; their call IDs are remapped to avoid collisions
+with new calls. Strict stored-message validation rejects system/developer
+messages, broken tool exchanges, oversized records, and unsupported tools.
+Conversation history never authorizes a write or approves a proposal.
+
+Atomic Redis scripts acquire a turn lease and save a completed transcript only
+while that lease still belongs to the request. Concurrent requests receive
+409 `AGENT_CONVERSATION_BUSY` before a model call. The lease expires after ten
+minutes; a late request cannot overwrite or release a newer request's lease.
+A lost lease or transcript expiry during a turn returns 409
+`AGENT_CONVERSATION_CONFLICT`. Failed turns retain the previous transcript;
+failed first turns discard their unpublished record when cleanup is available.
+
+Unknown, expired, or differently scoped IDs return the same 404
+`AGENT_CONVERSATION_NOT_FOUND`. Redis failure or corrupt history returns 503
+`AGENT_CONVERSATION_UNAVAILABLE`; history is never silently replaced with an
+empty conversation. Redis commands have a one-second deadline. An already
+submitted command may complete after that deadline; leases and records still
+expire. A persistence failure can occur after provider usage has been charged.
+Stateless requests remain available under the existing Redis-outage behavior.
+
+Unit tests cover real Lua scripts with ioredis-mock, storage failures, scope
+changes, lease races, history limits, clarification turns, and the real HTTP
+composition with mocked transports. Actual Redis expiry/atomicity and live
+model follow-up, prompt-injection, and numerical-fidelity evaluations remain
+integration/evaluation work.
+
 ## Internal read loop
 
 `runReadTurn({ data: { message }, context, provider })` in
@@ -345,6 +404,12 @@ supplies the authenticated context and the provider. Client data accepts only
 a text message; conversation history, roles, tool results, and workspace IDs
 are rejected. Each invocation starts with `get_my_context` and keeps its
 messages and authenticated identity local to that invocation.
+
+`runReadTurnWithHistory` is the internal stateful variant. It accepts validated
+server-owned history separately from client `data` and returns `{ reply,
+history }` to the conversation service for storage. Neither interface accepts
+history in the client's message object. Current tool/model-call limits apply
+per turn, excluding the exchanges restored from previous turns.
 
 The injected provider implements:
 
@@ -458,7 +523,7 @@ failure behavior still need integration coverage. `chat-outage.test.js` runs
 real request middleware with mocked stalled/reconnecting Redis transports,
 checking successful chat and continued membership denial during outages.
 
-Streaming and server-owned conversation memory remain subsequent increments.
+Streaming remains a subsequent increment.
 
 ## Groq adapter
 

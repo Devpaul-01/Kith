@@ -1,10 +1,10 @@
 const { success } = require('../../utils/response');
-const { readTurnInputSchema } = require('../validators/read-turn.validator');
+const { chatInputSchema } = require('../validators/read-turn.validator');
 const { runChatTurn } = require('../services/chat.service');
 
 async function chat(req, res, next) {
   try {
-    const data = readTurnInputSchema.parse(req.body);
+    const data = chatInputSchema.parse(req.body);
     const result = await runChatTurn({
       data,
       context: { userId: req.user.id, member: req.member, workspace: req.workspace, requestId: req.requestId },
