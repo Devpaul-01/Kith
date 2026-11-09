@@ -128,8 +128,69 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(dashboard.getDashboardData).toHaveBeenCalledWith({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, isAdmin: false });
     const first = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(first.messages.find((message) => message.role === 'user').content).toBe('Read the dashboard.');
-    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task', 'list_ledger_entries', 'get_ledger_entry', 'list_notifications', 'get_unread_count']);
+    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'list_containers', 'get_container', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task', 'list_ledger_entries', 'get_ledger_entry', 'list_notifications', 'get_unread_count']);
     expect(JSON.parse(first.messages.at(-1).content).data).toMatchObject({ member_id: MEMBER_ID, workspace_id: WORKSPACE_ID, role: 'member' });
+  });
+
+  it.each(['member', 'admin'])('lists container metadata for a %s without fetching financial joins', async (role) => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('list_containers', { type: 'recurring', status: 'active', sort: '-name', page: 2, per_page: 1 })))
+      .mockResolvedValueOnce(response(completion('The next container is Rent.')));
+    const pending = postChat({ message: 'List recurring containers.' }, { role }).query({ workspace_id: OTHER_WORKSPACE_ID });
+    db.mockNextResponse({ data: [{ id: TASK_CONTAINER_ID, name: 'Rent', status: 'active', public_token: 'PRIVATE_PUBLIC_TOKEN', total_confirmed_base: 'PRIVATE_AMOUNT' }], count: 3, error: null });
+    const res = await pending;
+    expect(res.status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    expect(JSON.parse(messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: {
+      containers: [{ id: TASK_CONTAINER_ID, name: 'Rent', status: 'active' }],
+      pagination: { page: 2, per_page: 1, total: 3, total_pages: 3, next_page: 3 },
+    } });
+    expect(JSON.stringify(messages)).not.toContain('PRIVATE_');
+    const calls = db.getCalls();
+    const start = calls.findIndex((call) => call.method === 'from' && call.args[0] === 'containers');
+    expect(calls.slice(start)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+    expect(calls.slice(start)).toContainEqual({ method: 'range', args: [1, 1] });
+    expect(calls.slice(start).find((call) => call.method === 'select').args[0]).not.toMatch(/ledger_entries|container_participants|public_token/);
+  });
+
+  it.each(['member', 'admin'])('reads container details for a %s through the metadata-only service path', async (role) => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('get_container', { container_id: TASK_CONTAINER_ID })))
+      .mockResolvedValueOnce(response(completion('Rent has a stored budget target of 123.40 NGN.')));
+    const pending = postChat({ message: 'Describe Rent.' }, { role });
+    db.mockNextResponse({ data: { id: TASK_CONTAINER_ID, name: 'Rent', container_type: 'recurring', budget_target: '123.40', budget_currency: 'NGN', public_token: 'PRIVATE_TOKEN', outcome_files: ['PRIVATE_PATH'] }, error: null });
+    const res = await pending;
+    expect(res.status).toBe(200);
+    const messages = JSON.parse(fetchSpy.mock.calls[1][1].body).messages;
+    expect(JSON.parse(messages.at(-1).content)).toEqual({ kind: 'untrusted_tool_result', data: { container: {
+      id: TASK_CONTAINER_ID, name: 'Rent', container_type: 'recurring', budget_target: '123.40', budget_currency: 'NGN',
+    } } });
+    expect(JSON.stringify(messages)).not.toContain('PRIVATE_');
+    expect(db.client.from.mock.calls).not.toContainEqual(['container_cycles']);
+    expect(db.client.from.mock.calls).not.toContainEqual(['container_participants']);
+    expect(db.getCalls()).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+  });
+
+  it('keeps the existing container-list HTTP envelope and ignores a member\'s deleted flag', async () => {
+    authenticate();
+    db.mockNextResponse({ data: [{ id: TASK_CONTAINER_ID, name: 'Rent', status: 'active', container_participants: [], ledger_entries: [] }], error: null });
+    const res = await request(app).get(`/v1/workspaces/${WORKSPACE_ID}/containers`).set('Authorization', 'Bearer TEST_TOKEN')
+      .query({ include_deleted: 'true', page: 2, per_page: 1 });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: {
+      containers: [{ id: TASK_CONTAINER_ID, name: 'Rent', status: 'active', participant_count: 0, total_confirmed_base: 0 }], meta: { total: 1, active_count: 1 },
+    } });
+    expect(db.builder.range).not.toHaveBeenCalled();
+    const start = db.getCalls().findIndex((call) => call.method === 'from' && call.args[0] === 'containers');
+    expect(db.getCalls().slice(start)).toContainEqual({ method: 'is', args: ['deleted_at', null] });
+  });
+
+  it('stops chat on an unavailable container count rather than describing an empty workspace', async () => {
+    fetchSpy.mockResolvedValueOnce(response(toolCompletion('list_containers')));
+    const pending = postChat({ message: 'List containers.' });
+    db.mockNextResponse({ data: [], count: null, error: null });
+    const res = await pending;
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('AGENT_TOOL_FAILED');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it('permits an admin to read the overdue summary in the routed workspace', async () => {

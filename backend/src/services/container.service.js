@@ -16,10 +16,18 @@ const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 const { getSort } = require('../utils/sorting');
 const { PAID_STATUSES } = require('../constants/ledger-status');
 
-async function listContainers({ workspaceId, typeFilter, statusFilter, sortQuery, includeDeleted }) {
+// Metadata reads do not need public-link tokens, files, participant records,
+// or embedded ledger rows. The legacy HTTP views keep their existing shape.
+const CONTAINER_LIST_COLUMNS = 'id, name, subtitle, container_type, status, enable_money, enable_tasks, event_date, recurrence_cadence, recurrence_start, recurrence_end, created_at, updated_at, completed_at';
+const CONTAINER_METADATA_COLUMNS = `${CONTAINER_LIST_COLUMNS}, description, event_type, event_type_category, budget_target, budget_currency, recurrence_days, carry_forward_unpaid, auto_generate_cycles, outcome_details, converted_from_id`;
+
+async function listContainers({ workspaceId, typeFilter, statusFilter, sortQuery = {}, includeDeleted, pagination }) {
   let query = supabaseAdmin
     .from('containers')
-    .select('*, container_participants(id), ledger_entries(base_amount, status)')
+    .select(
+      pagination ? CONTAINER_LIST_COLUMNS : '*, container_participants(id), ledger_entries(base_amount, status)',
+      pagination ? { count: 'exact' } : undefined
+    )
     .eq('workspace_id', workspaceId);
 
   // includeDeleted is only ever true for an admin's explicit "show deleted"
@@ -33,10 +41,18 @@ async function listContainers({ workspaceId, typeFilter, statusFilter, sortQuery
   const { field: safeSort, ascending } = getSort(sortQuery, { allowed: ['created_at', 'name', 'event_date'], defaultField: 'created_at' });
   query = query.order(safeSort, { ascending });
 
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
+  if (pagination) {
+    query = query.order('id', { ascending: true })
+      .range(pagination.offset, pagination.offset + pagination.perPage - 1);
+  }
+  const { data, error, count } = await query;
+  if (error || !Array.isArray(data)
+      || (pagination && (!Number.isSafeInteger(count) || count < 0))) {
+    throw new AppError('Containers are unavailable. Please try again.', 503, 'CONTAINERS_UNAVAILABLE');
+  }
+  if (pagination) return { containers: data, count };
 
-  const containers = (data || []).map((c) => {
+  const containers = data.map((c) => {
     const participants       = c.container_participants || [];
     const ledger             = c.ledger_entries        || [];
     const totalConfirmedBase = ledger
@@ -103,10 +119,10 @@ async function createContainer({ workspaceId, data, actorMemberId, actorCtx }) {
   return container;
 }
 
-async function getContainer({ workspaceId, containerId, callerMemberId }) {
+async function getContainer({ workspaceId, containerId, callerMemberId, metadataOnly = false }) {
   const { data: container, error } = await supabaseAdmin
     .from('containers')
-    .select(`
+    .select(metadataOnly ? CONTAINER_METADATA_COLUMNS : `
       id, workspace_id, name, subtitle, description,
       container_type, status, enable_money, enable_tasks,
       event_date, event_type, event_type_category,
@@ -123,8 +139,9 @@ async function getContainer({ workspaceId, containerId, callerMemberId }) {
     .is('deleted_at', null)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
+  if (error) throw new AppError('Containers are unavailable. Please try again.', 503, 'CONTAINERS_UNAVAILABLE');
   if (!container) throw new NotFoundError('Container not found');
+  if (metadataOnly) return { container };
 
   const participantCount = (container.container_participants || []).length;
 

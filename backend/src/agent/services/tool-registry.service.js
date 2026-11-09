@@ -15,6 +15,8 @@ const { listLedgerEntries, getLedgerEntry } = require('./ledger-tools.service');
 const { listLedgerEntriesArgsSchema, getLedgerEntryArgsSchema } = require('../validators/ledger-tools.validator');
 const { listNotifications, getUnreadCount } = require('./notification-tools.service');
 const { listNotificationsArgsSchema, unreadCountArgsSchema } = require('../validators/notification-tools.validator');
+const { listContainers, getContainer } = require('./container-tools.service');
+const { listContainersArgsSchema, getContainerArgsSchema } = require('../validators/container-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -48,6 +50,22 @@ const tools = Object.freeze([
     minRole: 'member',
     tier: 1,
     handler: getDashboard,
+  }),
+  Object.freeze({
+    name: 'list_containers',
+    description: 'List non-deleted containers in your current workspace, with optional type and stored-status filters. Available to members and admins. Default order is oldest creation first; sort may use created_at, name, or event_date, with a leading minus for descending order. Returns basic metadata and a server-counted filtered total, not financial totals. Use next_page to continue; null means the last page or page limit. Use find_container for name searches and get_container for details. Clarify ambiguous names; a partial page cannot establish uniqueness.',
+    parameterSchema: listContainersArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: listContainers,
+  }),
+  Object.freeze({
+    name: 'get_container',
+    description: 'Read a non-deleted container\'s description, settings, event/recurrence dates and completion details. Available to members and admins. Resolve names with find_container or IDs from list_containers, and ask the user to choose ambiguous matches. Budget target and currency are stored settings, not collected or remaining amounts; never calculate totals or future cycles. Use get_container_summary for financial/participant summaries and list_cycles for admin billing schedules. No public-link tokens, files, cycle records, participant records, or writes.',
+    parameterSchema: getContainerArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getContainer,
   }),
   Object.freeze({
     name: 'get_container_summary',

@@ -27,6 +27,46 @@ must enforce the user's entity selection separately from action approval.
 `has_more` means further candidates were omitted; refine the query or increase
 the limit. User-supplied names remain untrusted data.
 
+## Container browsing
+
+`list_containers` and `get_container` are Tier 1 reads available to active
+members and admins, matching the existing container HTTP routes. Both use
+the authenticated workspace and exclude deleted containers. Handlers check
+membership themselves; model arguments cannot change identity, include
+deleted records, or select a broader service view.
+
+Lists accept optional `type` (`event` or `recurring`), stored `status`
+(`active`, `completed`, or `archived`), and `sort` (`created_at`, `name`, or
+`event_date`, with an optional leading `-` for descending order). The default
+is ascending creation date with an ID tie-breaker. `page` ranges from 1 to
+10,000 and `per_page` from 1 to 100 (defaults: 1 and 20). Filtered totals and
+`next_page` come from the server; the model must not count list rows. A null
+next page means the end of the results or the page limit.
+
+List results contain identity/type/status, subtitle, task/money enablement,
+stored event/recurrence dates, and lifecycle timestamps. `get_container`
+accepts only a resolved `container_id` UUID and adds description, event type,
+recurrence settings, the stored budget target/currency, completion notes,
+and the source container ID after a conversion. Budget targets are settings,
+not collected/remaining balances; the agent must not calculate totals or
+future billing dates. Use `get_container_summary` for permitted financial
+and participant summaries and `list_cycles` for admin billing schedules.
+
+Use `find_container` for names and clarify ambiguous matches. A partial list
+cannot establish that a name is unique. All user-written text remains in the
+untrusted-data envelope. Neither tool exposes public-link tokens, files,
+ledger rows, participant/cycle records, or internal actor fields.
+
+The existing container service supports internal paginated metadata lists
+and a `metadataOnly` detail view, avoiding those unrelated joins and reads.
+Existing HTTP callers keep their unpaginated list/detail envelopes. Failed
+base queries, unavailable list rows, and invalid exact counts return typed
+`CONTAINERS_UNAVAILABLE` errors instead of zero/empty results. A missing
+container remains `NOT_FOUND`; chat maps failed reads to `AGENT_TOOL_FAILED`.
+Unit and mocked HTTP tests cover scope, field trimming, pagination, errors,
+and clarification/hostile-text turns. Live database/model validation remains
+pending.
+
 ## Container and ledger summaries
 
 `get_container_summary` and `get_ledger_summary` are Tier 1 reads available

@@ -134,6 +134,93 @@ describe('services/container.service', () => {
     });
   });
 
+  describe('container metadata reads', () => {
+    const pagination = { page: 2, perPage: 10, offset: 10 };
+
+    it('paginates filtered metadata without loading ledger, participant or public-link data', async () => {
+      const rows = [{ id: CONTAINER_ID, name: 'Rent', container_type: 'recurring', status: 'active' }];
+      mockSupabaseInstance.mockNextResponse({ data: rows, count: 31, error: null });
+      await expect(containerService.listContainers({
+        workspaceId: WORKSPACE_ID, typeFilter: 'recurring', statusFilter: 'active', sortQuery: { sort: '-name' }, pagination,
+      })).resolves.toEqual({ containers: rows, count: 31 });
+      const calls = mockSupabaseInstance.getCalls();
+      expect(calls).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
+      expect(calls).toContainEqual({ method: 'eq', args: ['container_type', 'recurring'] });
+      expect(calls).toContainEqual({ method: 'eq', args: ['status', 'active'] });
+      expect(calls).toContainEqual({ method: 'is', args: ['deleted_at', null] });
+      expect(calls).toContainEqual({ method: 'range', args: [10, 19] });
+      expect(mockSupabaseInstance.builder.order.mock.calls).toEqual([['name', { ascending: false }], ['id', { ascending: true }]]);
+      const [columns, options] = mockSupabaseInstance.builder.select.mock.calls[0];
+      expect(columns).not.toMatch(/\*|ledger_entries|container_participants|public_token|files/);
+      expect(options).toEqual({ count: 'exact' });
+      expect(mockSupabaseInstance.client.from).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the original unpaginated container summary shape for HTTP callers', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [{
+        id: CONTAINER_ID, name: 'Rent', status: 'active', container_participants: [{ id: 'p1' }],
+        ledger_entries: [{ status: 'confirmed', base_amount: '10.50' }, { status: 'resolved', base_amount: '3.25' }, { status: 'pending', base_amount: '99.00' }],
+      }], error: null });
+      const result = await containerService.listContainers({ workspaceId: WORKSPACE_ID });
+      expect(result).toEqual({ containers: [{
+        id: CONTAINER_ID, name: 'Rent', status: 'active', container_participants: undefined, ledger_entries: undefined,
+        participant_count: 1, total_confirmed_base: 13.75,
+      }], meta: { total: 1, active_count: 1 } });
+      expect(mockSupabaseInstance.builder.range).not.toHaveBeenCalled();
+    });
+
+    it.each([null, undefined, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('rejects an unavailable exact list count: %j', async (count) => {
+      mockSupabaseInstance.mockNextResponse({ data: [], count, error: null });
+      await expect(containerService.listContainers({ workspaceId: WORKSPACE_ID, pagination }))
+        .rejects.toMatchObject({ code: 'CONTAINERS_UNAVAILABLE', statusCode: 503 });
+    });
+
+    it.each([
+      { data: null, count: 0, error: null },
+      { data: [], count: 0, error: { message: 'PRIVATE_DB_FAILURE' } },
+    ])('rejects failed or missing list rows instead of reporting an empty workspace', async (response) => {
+      mockSupabaseInstance.mockNextResponse(response);
+      const error = await containerService.listContainers({ workspaceId: WORKSPACE_ID, pagination }).catch((err) => err);
+      expect(error).toMatchObject({ code: 'CONTAINERS_UNAVAILABLE', statusCode: 503 });
+      expect(error.message).not.toContain('PRIVATE_');
+    });
+
+    it('reads a live container in the workspace without fetching related records in metadata mode', async () => {
+      const row = { id: CONTAINER_ID, name: 'Rent', container_type: 'recurring', budget_target: '123456789012.34' };
+      mockSupabaseInstance.mockNextResponse({ data: row, error: null });
+      await expect(containerService.getContainer({ workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, callerMemberId: 'member-1', metadataOnly: true }))
+        .resolves.toEqual({ container: row });
+      expect(mockSupabaseInstance.getCalls()).toEqual(expect.arrayContaining([
+        { method: 'eq', args: ['workspace_id', WORKSPACE_ID] }, { method: 'eq', args: ['id', CONTAINER_ID] },
+        { method: 'is', args: ['deleted_at', null] },
+      ]));
+      const [columns] = mockSupabaseInstance.builder.select.mock.calls[0];
+      expect(columns).toContain('budget_target');
+      expect(columns).not.toMatch(/public_token|outcome_files|container_participants|ledger_entries|created_by/);
+      expect(mockSupabaseInstance.client.from.mock.calls).toEqual([['containers']]);
+    });
+
+    it('retains the existing HTTP detail envelope, cycle and caller participation', async () => {
+      const row = { id: CONTAINER_ID, container_type: 'recurring', enable_money: true, enable_tasks: false, container_participants: [{ id: 'p1' }] };
+      const cycle = { id: 'cycle-1', status: 'open' };
+      const participation = { id: 'p1', workspace_member_id: 'member-1' };
+      mockSupabaseInstance.mockResponses({ data: row, error: null }, { data: cycle, error: null }, { data: participation, error: null });
+      await expect(containerService.getContainer({ workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, callerMemberId: 'member-1' }))
+        .resolves.toEqual({
+          container: { id: CONTAINER_ID, container_type: 'recurring', enable_money: true, enable_tasks: false },
+          current_cycle: cycle, current_user_participation: participation, participant_count: 1, money_enabled: true, tasks_enabled: false,
+        });
+      expect(mockSupabaseInstance.getCalls()).toContainEqual({ method: 'eq', args: ['workspace_member_id', 'member-1'] });
+    });
+
+    it('distinguishes a missing container from a failed container lookup', async () => {
+      const args = { workspaceId: WORKSPACE_ID, containerId: CONTAINER_ID, callerMemberId: 'member-1', metadataOnly: true };
+      mockSupabaseInstance.mockResponses({ data: null, error: null }, { data: null, error: { message: 'PRIVATE_DB_FAILURE' } });
+      await expect(containerService.getContainer(args)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(containerService.getContainer(args)).rejects.toMatchObject({ code: 'CONTAINERS_UNAVAILABLE', statusCode: 503 });
+    });
+  });
+
   describe('updateContainer — fail-closed count-query guard (Issue C6)', () => {
     it('rejects disabling money tracking when confirmed ledger entries exist (count > 0)', async () => {
       mockSupabaseInstance.mockNextResponse({ data: { id: CONTAINER_ID, enable_money: true }, error: null }); // fetch current
