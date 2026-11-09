@@ -4,29 +4,38 @@
 // fix on the entry lookup.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { NotFoundError, BusinessRuleError, ForbiddenError, ConflictError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ForbiddenError, ConflictError } = require('../utils/errors');
 const notification = require('./notification.service');
 const audit        = require('./audit.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
 
-async function listDisputes({ workspaceId, statusFilter, page, perPage, offset }) {
+const DISPUTE_COLUMNS = 'id, ledger_entry_id, raised_by, reason, status, resolution_note, resolved_by, raised_at, resolved_at';
+const ENTRY_COLUMNS = 'id, container_id, cycle_id, entry_type, contributor_id, original_amount, original_currency, base_amount, is_crypto, payment_method, status, note, corrects_entry_id, recorded_at, confirmed_at';
+
+async function listDisputes({ workspaceId, statusFilter, page, perPage, offset, metadataOnly = false }) {
   let query = supabaseAdmin
     .from('disputes')
     .select(`
-      *, ledger_entries!ledger_entry_id(original_amount, original_currency, base_amount, status),
+      ${metadataOnly ? DISPUTE_COLUMNS : '*'}, ledger_entries!ledger_entry_id(original_amount, original_currency, base_amount, status),
       raised_by_member:workspace_members!raised_by(display_name),
       resolved_by_member:workspace_members!resolved_by(display_name)
     `, { count: 'exact' })
     .eq('workspace_id', workspaceId)
+    .eq('ledger_entries.workspace_id', workspaceId)
+    .eq('raised_by_member.workspace_id', workspaceId)
+    .eq('resolved_by_member.workspace_id', workspaceId)
     .order('raised_at', { ascending: false })
+    .order('id', { ascending: true })
     .range(offset, offset + perPage - 1);
 
   if (statusFilter) query = query.eq('status', statusFilter);
 
   const { data, error, count } = await query;
-  if (error) throw new Error(error.message);
+  if (error || !Array.isArray(data) || !Number.isSafeInteger(count) || count < 0) {
+    throw new AppError('Disputes are unavailable. Please try again.', 503, 'DISPUTES_UNAVAILABLE');
+  }
 
-  const disputes = (data || []).map((d) => ({
+  const disputes = data.map((d) => ({
     ...d,
     original_amount:   d.ledger_entries?.original_amount,
     original_currency: d.ledger_entries?.original_currency,
@@ -37,34 +46,45 @@ async function listDisputes({ workspaceId, statusFilter, page, perPage, offset }
     ledger_entries: undefined, raised_by_member: undefined, resolved_by_member: undefined,
   }));
 
-  return { disputes, count: count || 0 };
+  return { disputes, count };
 }
 
-async function getDispute({ workspaceId, disputeId, isAdmin, callerId }) {
+async function getDispute({ workspaceId, disputeId, isAdmin, callerId, notesPagination }) {
   const { data: dispute, error } = await supabaseAdmin
     .from('disputes')
-    .select('*, raised_by_member:workspace_members!raised_by(display_name)')
+    .select(`${notesPagination ? `${DISPUTE_COLUMNS}, notes` : '*'}, raised_by_member:workspace_members!raised_by(display_name)`)
     .eq('id', disputeId)
     .eq('workspace_id', workspaceId)
+    .eq('raised_by_member.workspace_id', workspaceId)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
+  if (error) throw new AppError('Disputes are unavailable. Please try again.', 503, 'DISPUTES_UNAVAILABLE');
   if (!dispute) throw new NotFoundError('Dispute not found');
   if (!isAdmin && dispute.raised_by !== callerId) throw new ForbiddenError('Access denied');
+
+  if (notesPagination && (!Array.isArray(dispute.notes)
+      || dispute.notes.some((note) => !note || typeof note !== 'object' || Array.isArray(note)))) {
+    throw new AppError('Dispute notes are unavailable. Please try again.', 503, 'DISPUTES_UNAVAILABLE');
+  }
 
   // .maybeSingle() + explicit 404 instead of .single(), which threw a raw
   // Postgrest error on a missing referenced entry.
   const { data: entry, error: entryErr } = await supabaseAdmin
     .from('ledger_entries')
-    .select('*, contributor:workspace_members!contributor_id(display_name)')
+    .select(`${notesPagination ? ENTRY_COLUMNS : '*'}, contributor:workspace_members!contributor_id(display_name)`)
     .eq('id', dispute.ledger_entry_id)
+    .eq('workspace_id', workspaceId)
+    .eq('contributor.workspace_id', workspaceId)
     .maybeSingle();
 
-  if (entryErr) throw new Error(entryErr.message);
+  if (entryErr) throw new AppError('Disputes are unavailable. Please try again.', 503, 'DISPUTES_UNAVAILABLE');
 
   return {
-    dispute: { ...dispute, raised_by_name: dispute.raised_by_member?.display_name, raised_by_member: undefined },
+    dispute: { ...dispute, raised_by_name: dispute.raised_by_member?.display_name, raised_by_member: undefined,
+      ...(notesPagination ? { notes: dispute.notes.slice(notesPagination.offset, notesPagination.offset + notesPagination.perPage) } : {}),
+    },
     entry:   entry ? { ...entry, contributor_name: entry.contributor?.display_name, contributor: undefined } : null,
+    ...(notesPagination ? { notesCount: dispute.notes.length } : {}),
   };
 }
 

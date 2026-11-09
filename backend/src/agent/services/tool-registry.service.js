@@ -21,6 +21,8 @@ const { listMembers, getMember } = require('./member-tools.service');
 const { listMembersArgsSchema, getMemberArgsSchema } = require('../validators/member-tools.validator');
 const { listGroups, getGroup } = require('./group-tools.service');
 const { listGroupsArgsSchema, getGroupArgsSchema } = require('../validators/group-tools.validator');
+const { listDisputes, getDispute } = require('./dispute-tools.service');
+const { listDisputesArgsSchema, getDisputeArgsSchema } = require('../validators/dispute-tools.validator');
 
 const tools = Object.freeze([
   Object.freeze({
@@ -168,6 +170,14 @@ const tools = Object.freeze([
     handler: listGroups,
   }),
   Object.freeze({
+    name: 'get_dispute',
+    description: 'Read a dispute by its ID, its linked ledger entry and a page of notes. Members can read only disputes they raised; admins can read any dispute in the current workspace. Page and per_page apply to notes in stored append order; notes_pagination contains the server note count and next_page. Use a supplied dispute ID or an ID from your notifications; admins may use list_disputes. Clarify ambiguous references. Stored amounts keep their currency and precision; never total or convert them. No proof files, private metadata, or dispute writes.',
+    parameterSchema: getDisputeArgsSchema,
+    minRole: 'member',
+    tier: 1,
+    handler: getDispute,
+  }),
+  Object.freeze({
     name: 'get_overdue_summary',
     description: 'Get the workspace overdue contribution summary. Admin access required.',
     parameterSchema: z.object({}).strict(),
@@ -198,6 +208,14 @@ const tools = Object.freeze([
     minRole: 'admin',
     tier: 1,
     handler: getGroup,
+  }),
+  Object.freeze({
+    name: 'list_disputes',
+    description: 'Browse workspace disputes newest first, with an optional open/resolved status filter. Admin access required. Returns an exact filtered dispute count and stored linked-entry amounts; never calculate financial totals. Use next_page to continue; null means the last page or page limit. Clarify ambiguous disputes before choosing an ID. Use get_dispute to read paginated notes. No resolution, corrections, or other writes.',
+    parameterSchema: listDisputesArgsSchema,
+    minRole: 'admin',
+    tier: 1,
+    handler: listDisputes,
   }),
 ]);
 

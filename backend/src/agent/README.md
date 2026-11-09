@@ -381,6 +381,36 @@ text remain in untrusted tool-result envelopes. Missing groups return
 `GROUPS_UNAVAILABLE`. Internal pagination options preserve the legacy HTTP
 response shapes. Live PostgREST join/count validation remains pending.
 
+## Dispute reads
+
+`list_disputes({ status?, page?, per_page? })` is admin-only. It lists disputes
+by newest raised timestamp then ID, with an optional `open`/`resolved` filter.
+The exact count covers matching disputes, including those whose linked entry
+is unavailable. Results include stored entry amounts but omit embedded notes.
+
+`get_dispute({ dispute_id, page?, per_page? })` is available to admins and to
+the member who raised that dispute. The handler checks membership, forwards
+the real caller and role, and verifies ownership before returning the result.
+The service checks ownership before reading the linked entry. Every parent
+and related-record lookup stays in the authenticated workspace. A missing
+linked entry is `null`; a failed query is an error.
+
+Detail pagination applies to notes in stored append order, using
+`notes_pagination`; its total is the service-counted length of the stored
+notes array. Both tools default to page 1/20, allow pages 1–10,000 and 1–100
+rows per page, and return a null `next_page` at the last page or page limit.
+Smaller pages may be needed for long text to fit the shared tool-result limit.
+IDs can come from notifications or an admin dispute list; ambiguous references
+need clarification. Reasons, resolutions, notes and linked-entry text remain
+untrusted data. Stored monetary precision/currency is preserved, with the
+workspace base currency supplied by server context. No proof paths,
+idempotency keys, or dispute writes are exposed.
+
+Internal metadata and note-pagination options preserve legacy HTTP response
+shapes. Failed queries, invalid list counts or malformed notes fail with
+`DISPUTES_UNAVAILABLE`. Unit coverage includes the ownership and workspace
+boundaries; live PostgREST join validation remains pending.
+
 ## Chat endpoint
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON

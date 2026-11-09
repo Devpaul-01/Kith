@@ -128,7 +128,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(dashboard.getDashboardData).toHaveBeenCalledWith({ workspaceId: WORKSPACE_ID, memberId: MEMBER_ID, isAdmin: false });
     const first = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(first.messages.find((message) => message.role === 'user').content).toBe('Read the dashboard.');
-    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'list_containers', 'get_container', 'list_members', 'get_member', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task', 'list_ledger_entries', 'get_ledger_entry', 'list_notifications', 'get_unread_count', 'list_groups']);
+    expect(first.tools.map((tool) => tool.function.name)).toEqual(['get_my_context', 'find_member', 'find_container', 'get_dashboard', 'list_containers', 'get_container', 'list_members', 'get_member', 'get_container_summary', 'get_ledger_summary', 'get_member_contribution_summary', 'list_tasks', 'get_task', 'list_ledger_entries', 'get_ledger_entry', 'list_notifications', 'get_unread_count', 'list_groups', 'get_dispute']);
     expect(JSON.parse(first.messages.at(-1).content).data).toMatchObject({ member_id: MEMBER_ID, workspace_id: WORKSPACE_ID, role: 'member' });
   });
 
@@ -572,7 +572,7 @@ describe('POST /v1/workspaces/:workspaceId/agent/chat', () => {
     expect(calls.slice(start)).toContainEqual({ method: 'eq', args: ['workspace_id', WORKSPACE_ID] });
   });
 
-  it.each(['get_overdue_summary', 'get_member_engagement', 'list_cycles', 'get_group'])('rejects a model attempt to request %s for a member', async (name) => {
+  it.each(['get_overdue_summary', 'get_member_engagement', 'list_cycles', 'get_group', 'list_disputes'])('rejects a model attempt to request %s for a member', async (name) => {
     fetchSpy.mockResolvedValueOnce(response(toolCompletion(name)));
     const res = await postChat();
     expect(res.status).toBe(502);
