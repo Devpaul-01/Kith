@@ -31,5 +31,6 @@ const agentBudgetKey = (workspaceId, period, windowStartMs) => `kith:agent-budge
 // The scope hashes the authenticated user, membership, workspace and role.
 // Data and lease keys share a Redis Cluster hash slot for atomic updates.
 const agentConversationKey = (scope, conversationId) => `kith:agent-conversation:v1:{${scope}:${conversationId}}`;
+const agentProposalKey = (scope, proposalId) => `kith:agent-proposal:v1:${scope}:${proposalId}`;
 
-module.exports = { TTL, lastSeenKey, membershipKey, dashboardKey, overdueSummaryKey, agentBudgetKey, agentConversationKey };
+module.exports = { TTL, lastSeenKey, membershipKey, dashboardKey, overdueSummaryKey, agentBudgetKey, agentConversationKey, agentProposalKey };

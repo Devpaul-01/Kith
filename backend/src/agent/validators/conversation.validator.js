@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const { READ_TURN_LIMITS, providerToolCallSchema } = require('./read-turn.validator');
+const { proposalSchema } = require('./proposal.validator');
 
 const CONVERSATION_LIMITS = Object.freeze({
   turns: 8,
@@ -74,6 +75,7 @@ const conversationResultSchema = z.object({
     text: assistantMessageSchema.shape.content,
     modelCalls: z.number().int().min(1).max(READ_TURN_LIMITS.modelCalls),
     toolCalls: z.number().int().min(1).max(READ_TURN_LIMITS.toolCalls),
+    proposal: proposalSchema.optional(),
   }).strict(),
   history: historySchema,
 }).strict().refine(({ reply, history }) => history.length > 0 && history.at(-1)?.at(-1)?.content === reply.text,

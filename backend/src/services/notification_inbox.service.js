@@ -7,7 +7,20 @@
 // mark-all-as-read.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { AppError, NotFoundError } = require('../utils/errors');
+const { AppError, NotFoundError, ConflictError } = require('../utils/errors');
+
+const NOTIFICATION_PREVIEW_FIELDS = 'id, workspace_id, recipient_id, type, title, is_read, read_at, created_at';
+const unavailable = () => new AppError('Notifications are unavailable. Please try again.', 503, 'NOTIFICATIONS_UNAVAILABLE');
+
+async function getNotification({ notificationId, memberId, workspaceId }) {
+  let query = supabaseAdmin.from('notifications').select(NOTIFICATION_PREVIEW_FIELDS)
+    .eq('id', notificationId).eq('recipient_id', memberId);
+  if (workspaceId) query = query.eq('workspace_id', workspaceId);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw unavailable();
+  if (!data) throw new NotFoundError('Notification not found');
+  return data;
+}
 
 function unreadQuery({ memberId, workspaceId }) {
   let query = supabaseAdmin.from('notifications').select('*', { count: 'exact', head: true })
@@ -53,16 +66,25 @@ async function getUnreadCount({ memberId, workspaceId }) {
   return count;
 }
 
-async function markAsRead({ notificationId, memberId }) {
-  const { data, error } = await supabaseAdmin
+async function markAsRead({ notificationId, memberId, workspaceId, expectedNotification }) {
+  let query = supabaseAdmin
     .from('notifications')
     .update({ is_read: true, read_at: new Date().toISOString() })
     .eq('id', notificationId)
-    .eq('recipient_id', memberId)
-    .select()
-    .maybeSingle();
+    .eq('recipient_id', memberId);
+  if (workspaceId) query = query.eq('workspace_id', workspaceId);
+  if (expectedNotification) {
+    // Conditional writes preserve the timestamp and reject a changed preview.
+    // Agent callers must supply the full snapshot loaded by getNotification.
+    query = query.eq('is_read', false).eq('title', expectedNotification.title)
+      .eq('type', expectedNotification.type).eq('created_at', expectedNotification.created_at);
+    query = expectedNotification.read_at === null
+      ? query.is('read_at', null) : query.eq('read_at', expectedNotification.read_at);
+  }
+  const { data, error } = await query.select().maybeSingle();
 
-  if (error) throw new Error(error.message);
+  if (error) throw unavailable();
+  if (!data && expectedNotification) throw new ConflictError('Notification changed. Please request a new proposal.');
   if (!data) throw new NotFoundError('Notification not found');
 
   return data;
@@ -86,4 +108,4 @@ async function markAllAsRead({ memberId, workspaceId }) {
   return (data || []).length;
 }
 
-module.exports = { listNotifications, getUnreadCount, markAsRead, markAllAsRead };
+module.exports = { listNotifications, getUnreadCount, getNotification, markAsRead, markAllAsRead };

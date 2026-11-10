@@ -105,6 +105,22 @@ describe('services/member.service', () => {
     });
   });
 
+  describe('getActiveMembership', () => {
+    it('checks user ownership, active membership and a non-deleted workspace without using the cache', async () => {
+      const row = { id: MEMBER_ID, workspace_id: WORKSPACE_ID, user_id: 'user-1', role: 'member', is_active: true, workspaces: { id: WORKSPACE_ID } };
+      mockSupabaseInstance.mockNextResponse({ data: row, error: null });
+      const result = await memberService.getActiveMembership({ workspaceId: WORKSPACE_ID, userId: 'user-1' });
+      expect(result).toEqual({ id: MEMBER_ID, workspace_id: WORKSPACE_ID, user_id: 'user-1', role: 'member', is_active: true });
+      expect(mockSupabaseInstance.builder.select).toHaveBeenCalledWith('id, workspace_id, user_id, role, is_active, workspaces!inner(id)');
+      expect(mockSupabaseInstance.builder.eq.mock.calls).toEqual([['workspace_id', WORKSPACE_ID], ['user_id', 'user-1'], ['is_active', true]]);
+      expect(mockSupabaseInstance.builder.is.mock.calls).toEqual([['deleted_at', null], ['workspaces.deleted_at', null]]);
+    });
+    it.each([{ data: null, error: null }, { data: null, error: { message: 'PRIVATE_ERROR' } }])('fails closed on missing or unreadable membership: %j', async (response) => {
+      mockSupabaseInstance.mockNextResponse(response);
+      await expect(memberService.getActiveMembership({ workspaceId: WORKSPACE_ID, userId: 'user-1' })).rejects.toMatchObject({ code: response.error ? 'MEMBERS_UNAVAILABLE' : 'NOT_FOUND' });
+    });
+  });
+
   describe('member directory reads', () => {
     const pagination = { page: 2, perPage: 10, offset: 10 };
 

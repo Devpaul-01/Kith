@@ -112,4 +112,19 @@ describe('services/audit.service', () => {
       expect(result.actorMemberId).toBeNull();
     });
   });
+
+  it('fails closed only when a caller explicitly requires auditing', async () => {
+    mockSupabaseInstance.mockNextResponse({ error: { message: 'PRIVATE_INSERT_ERROR' } });
+    await expect(audit.log({ workspaceId: 'ws-1', action: 'agent.action_approved', required: true }))
+      .rejects.toMatchObject({ code: 'AUDIT_UNAVAILABLE', statusCode: 503, message: 'The action could not be audited. Please try again.' });
+    expect(dashboardCache.invalidateDashboard).toHaveBeenCalledWith('ws-1');
+  });
+
+  it('deduplicates stable audit IDs with insert-only conflict handling', async () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    mockSupabaseInstance.mockNextResponse({ error: null });
+    await audit.log({ id, action: 'agent.action_executed', required: true });
+    expect(mockSupabaseInstance.builder.upsert).toHaveBeenCalledWith(expect.objectContaining({ id, action: 'agent.action_executed' }), { onConflict: 'id', ignoreDuplicates: true });
+    expect(mockSupabaseInstance.builder.insert).not.toHaveBeenCalled();
+  });
 });

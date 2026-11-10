@@ -142,6 +142,17 @@ async function createMember({ workspaceId, data, actorCtx }) {
   return member;
 }
 
+async function getActiveMembership({ workspaceId, userId }) {
+  const { data, error } = await supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, workspaces!inner(id)')
+    .eq('workspace_id', workspaceId).eq('user_id', userId).eq('is_active', true)
+    .is('deleted_at', null).is('workspaces.deleted_at', null).maybeSingle();
+  if (error) throw new AppError('Members are unavailable. Please try again.', 503, 'MEMBERS_UNAVAILABLE');
+  if (!data) throw new NotFoundError('Workspace not found');
+  const { workspaces, ...member } = data;
+  return member;
+}
+
 async function getMember({ workspaceId, memberId, isAdmin, metadataOnly = false }) {
   const { data, error } = await supabaseAdmin
     .from('workspace_members')
@@ -370,6 +381,7 @@ async function getMemberEngagement({ workspaceId }) {
 }
 
 module.exports = {
+  getActiveMembership,
   listMembers,
   createMember,
   getMember,

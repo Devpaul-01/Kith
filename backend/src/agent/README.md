@@ -12,8 +12,9 @@ The registry includes all seven Tier 0 tools and all 28 Tier 1 tool names
 from the architecture, with the role restrictions and data limits documented
 below. Ranked task, ledger, dispute and group searches implement the
 [approved schema extension](SEARCH_SCHEMA_PROPOSAL.md).
-Chat supports JSON replies and opt-in SSE streaming. Proposal
-approval/execution and voice are still pending.
+Chat supports JSON replies, opt-in SSE streaming, and a
+[notification proposal/approval flow](PROPOSALS.md). Other writes and voice
+are still pending.
 
 `find_member`, `find_container`, `find_disputes` and `find_group` take
 `{ query, limit? }`. `find_tasks` and `find_ledger_entries` also accept an
@@ -32,8 +33,9 @@ workspaces; the other search scopes are described below.
 - `single_match`: one candidate to confirm with the user before a write.
 - `ambiguous`: multiple candidates; the user must choose or refine the query.
 
-No result contains an automatically resolved ID. A future proposal executor
-must enforce the user's entity selection separately from action approval.
+No result contains an automatically resolved ID. Write proposals must enforce
+the user's entity selection separately from action approval; the notification
+flow requires an explicit client selection for the current request.
 `has_more` means further candidates were omitted; refine the query or increase
 the limit. All returned names, titles, notes, reasons and descriptions remain
 untrusted data.
@@ -76,7 +78,7 @@ Use selected task/entry IDs and their container IDs with `get_task` or
 `get_ledger_entry`; use a selected dispute ID with `get_dispute`. Exact matches
 still remain ambiguous when other candidates exist. Failures return
 `SEARCH_UNAVAILABLE`, not a false no-match. The read loop keeps results in
-untrusted-data envelopes and continues to reject every write/export tool.
+untrusted-data envelopes and prevents direct write execution and bulk exports.
 
 ## Container browsing
 
@@ -583,7 +585,8 @@ validation remains pending.
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
 body containing a nonempty `message` (up to 8,000 characters), with an optional
-`conversation_id` as described below:
+`conversation_id` as described below. An optional `selected_notification_id`
+enables the [notification proposal flow](PROPOSALS.md):
 
 ```json
 { "message": "Show my workspace dashboard." }
@@ -613,7 +616,9 @@ workspace router. Context comes exclusively from those middleware results.
 Client-supplied history, roles, tools, identity fields, model settings, and
 workspace IDs in the body are rejected. Query parameters cannot change the
 workspace or actor. The tools offered and executed are still role-filtered
-Tier 0/1 reads; chat does not execute writes or approve proposals.
+Tier 0/1 reads. An explicit validated notification selection additionally
+offers its Tier 2 proposal tool; chat never executes writes or approves
+proposals. Only the separate approval endpoint can apply that action.
 
 The dedicated `agentLimiter` allows 10 requests per minute per authenticated
 user across all workspaces, using the shared Redis store with prefix
@@ -651,7 +656,7 @@ body, with `Accept: text/event-stream`. Omitted/wildcard Accept headers keep
 the existing JSON response; normal Accept quality preferences are respected.
 The request still passes through the same authentication, active membership,
 per-user rate limiter and workspace token budget. There is no client `stream`
-body field, and streaming does not enable write tools.
+body field. Streaming uses the same selection/proposal rules as JSON chat.
 
 The response uses UTF-8 Server-Sent Events with one JSON value per `data`
 field. Example, omitting optional conversation continuity:
@@ -672,7 +677,7 @@ data: {"data":{"text":"There are 2 members.","modelCalls":2,"toolCalls":2}}
 | --- | --- |
 | `text_delta` | Append `delta` to the provisional answer for `modelCall`. |
 | `text_reset` | Clear that call's provisional text: the validated completion requested tools, and another model call will follow. Contains `modelCall`. |
-| `done` | The authoritative completed reply, using the existing `{ data: ... }` envelope, including `conversation_id` when requested. Replace any draft with `data.text`. |
+| `done` | The authoritative completed reply, using the existing `{ data: ... }` envelope, including `conversation_id` when requested and `proposal` when issued. Replace any draft with `data.text`. |
 | `error` | The turn failed. Contains `{ error: { code, message } }` and, for budget exhaustion, `retry_after` in seconds. Discard provisional text. |
 
 Text can arrive before the provider has finished or a turn has been saved.
@@ -723,8 +728,9 @@ UUID. Send that ID with a follow-up to resume the conversation:
 
 Send `null` again to start over, or omit the field for a stateless request.
 Client-supplied messages/history, tool results, roles, and identity overrides
-remain rejected. The response contains only text, turn metrics, and the ID;
-the saved transcript is never returned. The ID is not sent to the model.
+remain rejected. The response contains text, turn metrics, the ID and an
+optional notification proposal; the saved transcript is never returned.
+The conversation ID is not sent to the model.
 
 Redis stores at most eight completed turns, with a 30-minute idle expiry
 refreshed after a successful turn. The active conversation retains the existing
@@ -790,7 +796,9 @@ provider.chat({ messages, tools, trace })
 Messages use chat-completion roles and correlated `tool_call_id` values.
 Tool definitions contain `name`, `description`, and the Zod `parameterSchema`;
 the provider adapter owns converting schemas to its wire format. Only the
-caller's permitted Tier 0/1 definitions are supplied. Every execution still
+caller's permitted Tier 0/1 definitions are supplied by default. Explicit
+notification selection adds its proposal definition, handled by a separate
+proposal callback that cannot execute the write. Every read execution still
 passes through `executeReadTool` and the handler's permission checks.
 
 Tool messages wrap results in `{ kind: 'untrusted_tool_result', data }`, and
@@ -971,7 +979,7 @@ RPC permissions have integration coverage in
 with the real Postgres/PostgREST/Redis test stack and the updated schema.
 Unit tests mock RPC results and do not prove that the SQL or indexes work.
 
-With opt-in streaming chat (2026-11-10), all 2,767 unit tests passed across
-85 suites. Live database/PostgREST, model and deployed-proxy verification
+With notification proposals and approvals (2026-11-10), all 2,820 unit tests
+passed across 87 suites. Live database/PostgREST, model and deployed-proxy verification
 remain pending. The existing `ioredis-mock` listener warning is still present
 in full unit runs.

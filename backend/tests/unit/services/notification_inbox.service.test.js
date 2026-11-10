@@ -11,7 +11,7 @@ jest.mock('../../../src/config/supabase', () => {
 });
 
 const {
-  listNotifications, getUnreadCount, markAsRead, markAllAsRead,
+  listNotifications, getUnreadCount, getNotification, markAsRead, markAllAsRead,
 } = require('../../../src/services/notification_inbox.service');
 const { NotFoundError } = require('../../../src/utils/errors');
 const mockSupabaseInstance = require('../../../src/config/supabase').__mockInstance;
@@ -147,5 +147,30 @@ describe('services/notification_inbox.service', () => {
 
       expect(result).toBe(0);
     });
+  });
+
+  it('loads a preview only from the selected recipient and workspace', async () => {
+    mockSupabaseInstance.mockNextResponse({ data: { id: 'n1' }, error: null });
+    await getNotification({ notificationId: 'n1', memberId: MEMBER_ID, workspaceId: 'ws-1' });
+    expect(mockSupabaseInstance.builder.eq.mock.calls).toEqual([['id', 'n1'], ['recipient_id', MEMBER_ID], ['workspace_id', 'ws-1']]);
+    expect(mockSupabaseInstance.builder.select.mock.calls[0][0]).not.toMatch(/body|dedup_key|\*/);
+  });
+
+  it('atomically checks all preview fields and unread state before changing a notification', async () => {
+    const expectedNotification = { title: 'Task ready', type: 'task.assigned', created_at: '2026-11-09T12:00:00Z', read_at: null };
+    mockSupabaseInstance.mockNextResponse({ data: { id: 'n1', is_read: true }, error: null });
+    await markAsRead({ notificationId: 'n1', memberId: MEMBER_ID, workspaceId: 'ws-1', expectedNotification });
+    expect(mockSupabaseInstance.builder.eq.mock.calls).toEqual([
+      ['id', 'n1'], ['recipient_id', MEMBER_ID], ['workspace_id', 'ws-1'], ['is_read', false],
+      ['title', 'Task ready'], ['type', 'task.assigned'], ['created_at', expectedNotification.created_at],
+    ]);
+    expect(mockSupabaseInstance.builder.is).toHaveBeenCalledWith('read_at', null);
+  });
+
+  it('returns a conflict when the conditional update matches no row, instead of rewriting read_at', async () => {
+    mockSupabaseInstance.mockNextResponse({ data: null, error: null });
+    await expect(markAsRead({ notificationId: 'n1', memberId: MEMBER_ID, workspaceId: 'ws-1', expectedNotification: { title: 'Changed', type: 'task.assigned', created_at: '2026-11-09T12:00:00Z', read_at: null } }))
+      .rejects.toMatchObject({ code: 'CONFLICT', statusCode: 409 });
+    expect(mockSupabaseInstance.builder.update).toHaveBeenCalledTimes(1);
   });
 });

@@ -7,6 +7,12 @@
 // of sync.
 
 const AUDIT_ACTIONS = Object.freeze({
+  // Agent proposals and approval execution
+  AGENT_ACTION_PROPOSED: 'agent.action_proposed',
+  AGENT_ACTION_APPROVED: 'agent.action_approved',
+  AGENT_ACTION_EXECUTED: 'agent.action_executed',
+  AGENT_ACTION_REJECTED: 'agent.action_rejected',
+  AGENT_ACTION_FAILED: 'agent.action_failed',
   // Containers
   CONTAINER_CREATED:                'container.created',
   CONTAINER_COMPLETED:              'container.completed',
@@ -58,6 +64,11 @@ const AUDIT_ACTIONS = Object.freeze({
 // in the same file as the actions themselves so they cannot drift out of
 // sync the way two separately-maintained lists could.
 const AUDIT_ACTION_DESCRIPTIONS = Object.freeze({
+  [AUDIT_ACTIONS.AGENT_ACTION_PROPOSED]: 'proposed an agent action',
+  [AUDIT_ACTIONS.AGENT_ACTION_APPROVED]: 'approved an agent action',
+  [AUDIT_ACTIONS.AGENT_ACTION_EXECUTED]: 'executed an agent action',
+  [AUDIT_ACTIONS.AGENT_ACTION_REJECTED]: 'rejected an agent action',
+  [AUDIT_ACTIONS.AGENT_ACTION_FAILED]: 'could not confirm an agent action',
   [AUDIT_ACTIONS.CONTAINER_CREATED]:                'created a container',
   [AUDIT_ACTIONS.CONTAINER_COMPLETED]:              'completed a container',
   [AUDIT_ACTIONS.CONTAINER_ARCHIVED]:               'archived a container',

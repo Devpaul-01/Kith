@@ -4,6 +4,7 @@ const { runChatTurn } = require('../services/chat.service');
 const { AppError } = require('../../utils/errors');
 const { writeEvent } = require('../utils/event-stream');
 const logger = require('../../utils/logger');
+const audit = require('../../services/audit.service');
 
 function retryAfter(err) {
   return err.code === 'AGENT_BUDGET_EXHAUSTED' && Number.isSafeInteger(err.resetAtMs)
@@ -34,6 +35,7 @@ async function chat(req, res, next) {
     const result = await runChatTurn({
       data,
       context: { userId: req.user.id, member: req.member, workspace: req.workspace, requestId: req.requestId },
+      actorCtx: audit.fromReq(req),
       ...(streaming ? { onEvent: emit, signal: controller.signal } : {}),
     });
     if (streaming) {

@@ -20,6 +20,7 @@ const readTurnInputSchema = z.object({
 // The client never supplies the stored messages or the conversation's owner.
 const chatInputSchema = readTurnInputSchema.extend({
   conversation_id: z.string().uuid().nullable().optional(),
+  selected_notification_id: z.string().uuid().transform((id) => id.toLowerCase()).optional(),
 });
 
 const providerToolCallSchema = z.object({

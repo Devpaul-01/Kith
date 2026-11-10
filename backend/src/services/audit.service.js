@@ -2,9 +2,11 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 const { invalidateDashboard } = require('./dashboard-cache.service');
+const { AppError } = require('../utils/errors');
 
 /**
- * Write an audit log entry. Fire-and-forget — never throws.
+ * Write an audit log entry. Existing callers remain best-effort. Server-owned
+ * required=true lets approval workflows fail closed before a mutation.
  *
  * Also invalidates the workspace's cached dashboard payload. Nearly
  * every mutation that changes what the dashboard shows (containers,
@@ -25,9 +27,12 @@ async function log({
   metadata      = null,
   ipAddress     = null,
   userAgent     = null,
+  required      = false,
+  id,
 }) {
+  let failed = false;
   try {
-    const { error } = await supabaseAdmin.from('audit_log').insert({
+    const entry = {
       workspace_id:    workspaceId,
       actor_user_id:   actorUserId,
       actor_member_id: actorMemberId,
@@ -37,14 +42,22 @@ async function log({
       metadata:        metadata ?? null,
       ip_address:      ipAddress,
       user_agent:      userAgent,
-    });
+    };
+    // Stable server-generated IDs let approval retries finish auditing without
+    // replacing the original event or duplicating it after an uncertain reply.
+    const query = supabaseAdmin.from('audit_log');
+    const { error } = id
+      ? await query.upsert({ id, ...entry }, { onConflict: 'id', ignoreDuplicates: true })
+      : await query.insert(entry);
 
     if (error) throw new Error(error.message);
   } catch (err) {
+    failed = true;
     logger.error('Audit log write failed', { action, error: err.message });
   }
 
   if (workspaceId) invalidateDashboard(workspaceId);
+  if (failed && required) throw new AppError('The action could not be audited. Please try again.', 503, 'AUDIT_UNAVAILABLE');
 }
 
 /** Convenience helper — extracts common fields from Express req. */
