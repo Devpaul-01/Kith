@@ -5,6 +5,7 @@ const { tokenCount, tokenUsageSchema, providerTraceSchema } = require('./provide
 const GROQ_LIMITS = Object.freeze({
   requestBytes: 256 * 1024,
   responseBytes: 256 * 1024,
+  streamBytes: 2 * 1024 * 1024, // Includes SSE framing, not only the completion.
   tools: 128,
   messages: 64,
 });
@@ -77,4 +78,30 @@ const groqResponseSchema = z.object({
   })).length(1),
 });
 
-module.exports = { GROQ_LIMITS, groqConfigSchema, toolDefinitionsSchema, groqRequestSchema, groqResponseSchema, groqUsageSchema };
+const groqStreamChunkSchema = z.object({
+  choices: z.array(z.object({
+    index: z.literal(0),
+    finish_reason: z.enum(['stop', 'tool_calls', 'length']).nullish(),
+    delta: z.object({
+      role: z.literal('assistant').optional(),
+      content: z.string().max(READ_TURN_LIMITS.replyChars).nullish(),
+      refusal: z.string().max(READ_TURN_LIMITS.replyChars).nullish(),
+      tool_calls: z.array(z.object({
+        index: z.number().int().min(0).max(READ_TURN_LIMITS.toolCalls - 1),
+        id: providerToolCallSchema.shape.id.optional(),
+        type: z.literal('function').optional(),
+        function: z.object({
+          name: z.string().max(64).optional(),
+          arguments: z.string().max(READ_TURN_LIMITS.argumentChars).optional(),
+        }).strict().optional(),
+      }).strict()).max(READ_TURN_LIMITS.toolCalls).nullish(),
+      function_call: z.null().optional(),
+      executed_tools: z.array(z.unknown()).max(0).nullish(),
+    }),
+  })).max(1),
+  error: z.never().optional(),
+  executed_tools: z.array(z.unknown()).max(0).nullish(),
+  x_groq: z.object({ error: z.null().optional() }).nullish(),
+});
+
+module.exports = { GROQ_LIMITS, groqConfigSchema, toolDefinitionsSchema, groqRequestSchema, groqResponseSchema, groqUsageSchema, groqStreamChunkSchema };

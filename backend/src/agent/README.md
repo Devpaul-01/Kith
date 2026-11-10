@@ -12,7 +12,8 @@ The registry includes all seven Tier 0 tools and all 28 Tier 1 tool names
 from the architecture, with the role restrictions and data limits documented
 below. Ranked task, ledger, dispute and group searches implement the
 [approved schema extension](SEARCH_SCHEMA_PROPOSAL.md).
-Proposal approval/execution, streaming chat and voice are still pending.
+Chat supports JSON replies and opt-in SSE streaming. Proposal
+approval/execution and voice are still pending.
 
 `find_member`, `find_container`, `find_disputes` and `find_group` take
 `{ query, limit? }`. `find_tasks` and `find_ledger_entries` also accept an
@@ -588,7 +589,7 @@ body containing a nonempty `message` (up to 8,000 characters), with an optional
 { "message": "Show my workspace dashboard." }
 ```
 
-This first HTTP increment returns one complete JSON response using the existing
+By default, the endpoint returns one complete JSON response using the existing
 API envelope. For example, after a dashboard read:
 
 ```json
@@ -604,7 +605,8 @@ API envelope. For example, after a dashboard read:
 `modelCalls` and `toolCalls` are server-counted turn metrics; the initial
 context read is included in `toolCalls`. Successful replies use
 `Cache-Control: no-store`. Omitting `conversation_id` keeps the existing
-stateless behavior and response shape. Streaming remains a later increment.
+stateless behavior and response shape. Request SSE explicitly as described
+under Streaming chat below.
 
 The route inherits `requireAuth` → `loadDbUser` → `requireMembership` from the
 workspace router. Context comes exclusively from those middleware results.
@@ -641,6 +643,68 @@ HTTP unit tests run the real application middleware, read loop, and adapter
 with mocked external services. Throttling tests exercise the memory fallback;
 shared Redis enforcement and deployed Supabase/Groq behavior still need live
 integration verification.
+
+## Streaming chat
+
+Use the same `POST /v1/workspaces/:workspaceId/agent/chat` endpoint and JSON
+body, with `Accept: text/event-stream`. Omitted/wildcard Accept headers keep
+the existing JSON response; normal Accept quality preferences are respected.
+The request still passes through the same authentication, active membership,
+per-user rate limiter and workspace token budget. There is no client `stream`
+body field, and streaming does not enable write tools.
+
+The response uses UTF-8 Server-Sent Events with one JSON value per `data`
+field. Example, omitting optional conversation continuity:
+
+```text
+event: text_delta
+data: {"delta":"There are ","modelCall":2}
+
+event: text_delta
+data: {"delta":"2 members.","modelCall":2}
+
+event: done
+data: {"data":{"text":"There are 2 members.","modelCalls":2,"toolCalls":2}}
+
+```
+
+| Event | Meaning |
+| --- | --- |
+| `text_delta` | Append `delta` to the provisional answer for `modelCall`. |
+| `text_reset` | Clear that call's provisional text: the validated completion requested tools, and another model call will follow. Contains `modelCall`. |
+| `done` | The authoritative completed reply, using the existing `{ data: ... }` envelope, including `conversation_id` when requested. Replace any draft with `data.text`. |
+| `error` | The turn failed. Contains `{ error: { code, message } }` and, for budget exhaustion, `retry_after` in seconds. Discard provisional text. |
+
+Text can arrive before the provider has finished or a turn has been saved.
+Only `done` means success. EOF without `done` or an `error` event is an
+interrupted turn. Do not automatically replay a POST: it can consume another
+model budget reservation. This protocol has no event IDs or reconnection
+replay. Use a streaming POST client such as `fetch`, not browser `EventSource`.
+
+Before the first event, failures keep their regular JSON envelope and HTTP
+status, including `Retry-After` on budget exhaustion. After streaming starts,
+HTTP status stays 200 and failures use the terminal `error` event. No `done`
+follows an error. Tool arguments/results, provider reasoning and token usage
+are not streamed to the client. Tool calls are buffered and validated before
+any handler runs; existing role filtering and untrusted-data envelopes apply.
+
+Stateful turns send `done` only after history is committed. A failed partial
+reply does not replace the previous transcript. Disconnecting cancels the
+upstream request, prevents subsequent model/tool calls, and releases the
+conversation lease. Reads already in flight may finish; a completed-history
+commit already submitted to Redis may also finish after disconnect. As with
+JSON calls, unreported provider usage retains the conservative reservation.
+
+Responses disable compression/transformation and request proxy buffering be
+disabled. Writes respect backpressure; a client stalled for ten seconds is
+disconnected. Configure deployed proxy timeouts to allow tool/model turns;
+there are no heartbeat or keepalive events during quiet tool reads.
+
+Unit tests exercise real HTTP composition with mocked external services,
+including live socket disconnects, stored-history failures, permission checks,
+fragmented tool calls, Unicode split across bytes, malformed/truncated streams,
+usage accounting, and slow clients. Deployed proxy behavior and live Groq
+streaming remain integration verification work.
 
 ## Conversation continuity
 
@@ -827,7 +891,7 @@ failure behavior still need integration coverage. `chat-outage.test.js` runs
 real request middleware with mocked stalled/reconnecting Redis transports,
 checking successful chat and continued membership denial during outages.
 
-Streaming remains a subsequent increment.
+Both JSON and SSE turns share this accounting path.
 
 ## Groq adapter
 
@@ -857,9 +921,20 @@ server context objects, and credentials are not serialized into tool definitions
 
 `GROQ_TIMEOUT_MS` defaults to 20000 (maximum 60000) and covers both the request
 and response-body read. `GROQ_MAX_COMPLETION_TOKENS` defaults to 1024 (maximum
-4096). Requests and streamed response bodies are capped at 256 KiB. The
+4096). Requests and JSON response bodies are capped at 256 KiB. SSE responses
+are capped at 2 MiB including framing, with a 256 KiB per-event limit; existing
+reply and tool-argument limits also apply to the assembled completion. The
 endpoint is fixed to Groq's HTTPS chat-completions API, redirects are rejected,
-and requests are non-streaming with one completion and no automatic retries.
+and requests use one completion with no automatic retries. The server-only
+second argument `chat(request, { onText, signal })` enables streaming through
+an awaited text callback and supports cancellation. Neither control is sent
+to the provider. Without `onText`, requests remain non-streaming.
+
+Streaming requires a validated terminal completion and `[DONE]` before tool
+execution or final success. The adapter supports Groq's `x_groq.usage` and
+compatible top-level `usage` reports, while rejecting inconsistent reports,
+provider-executed tools, upstream error chunks, and incomplete tool fragments.
+The request deadline covers both transport and response consumption.
 
 Successful responses normalize to `{ text, toolCalls, usage }`.
 Truncated, malformed, or inconsistent completions terminate the turn. Timeout
@@ -871,6 +946,7 @@ Unit tests use synthetic Groq responses, Web Streams, and the real read loop.
 They do not make live model calls or verify a deployed model's behavior.
 Reference: [Groq chat API](https://console.groq.com/docs/api-reference#chat-create)
 and [tool use](https://console.groq.com/docs/tool-use).
+Streaming wire types: [Groq SDK chat completions](https://github.com/groq/groq-typescript/blob/main/src/resources/chat/completions.ts).
 
 ## Database and verification
 
@@ -895,7 +971,7 @@ RPC permissions have integration coverage in
 with the real Postgres/PostgREST/Redis test stack and the updated schema.
 Unit tests mock RPC results and do not prove that the SQL or indexes work.
 
-With the approved ranked-search extension (2026-11-09), all 2,698 unit tests
-passed across 81 suites. Live database/PostgREST and model verification remain
-pending. The existing `ioredis-mock` listener warning is still present in full
-unit runs.
+With opt-in streaming chat (2026-11-10), all 2,767 unit tests passed across
+85 suites. Live database/PostgREST, model and deployed-proxy verification
+remain pending. The existing `ioredis-mock` listener warning is still present
+in full unit runs.

@@ -9,6 +9,7 @@ const {
   READ_TURN_LIMITS, readTurnInputSchema, readProviderReplySchema,
 } = require('../validators/read-turn.validator');
 const { CONVERSATION_LIMITS, historySchema } = require('../validators/conversation.validator');
+const { assertNotCancelled } = require('../utils/cancellation');
 
 const SYSTEM_PROMPT = `You are Kith's workspace assistant.
 Use only the tools offered for the authenticated workspace. This turn supports reads only.
@@ -89,7 +90,7 @@ function toolResultMessage(call, result) {
  * messages use chat-completion roles; tools retain their Zod parameterSchema
  * for the provider adapter to serialize. No handlers/context are sent.
  */
-async function runReadTurnWithHistory({ data, context, provider, history = [] } = {}) {
+async function runReadTurnWithHistory({ data, context, provider, history = [], onEvent, signal } = {}) {
   const startedAt = Date.now();
   const trace = {
     requestId: context?.requestId,
@@ -127,6 +128,8 @@ async function runReadTurnWithHistory({ data, context, provider, history = [] } 
 
   try {
     assertAgentContext(context);
+    assertNotCancelled(signal);
+    if (onEvent !== undefined && typeof onEvent !== 'function') throw new ValidationError('Invalid stream callback');
     const input = readTurnInputSchema.safeParse(data);
     if (!input.success) throw new ValidationError('Invalid agent message', null, input.error.issues);
     if (typeof provider?.chat !== 'function') {
@@ -164,6 +167,7 @@ async function runReadTurnWithHistory({ data, context, provider, history = [] } 
     }
 
     async function read(call, args) {
+      assertNotCancelled(signal);
       trace.toolCalls += 1;
       let result;
       try {
@@ -173,11 +177,13 @@ async function runReadTurnWithHistory({ data, context, provider, history = [] } 
         throw new AppError('Workspace information could not be read. Please try again.', 503, 'AGENT_TOOL_FAILED');
       }
       append(toolResultMessage(call, result));
+      assertNotCancelled(signal);
     }
 
     await read(bootstrap, {});
 
     while (trace.modelCalls < READ_TURN_LIMITS.modelCalls) {
+      assertNotCancelled(signal);
       trace.modelCalls += 1;
       let rawReply;
       try {
@@ -188,6 +194,12 @@ async function runReadTurnWithHistory({ data, context, provider, history = [] } 
             requestId: trace.requestId, turnId: trace.turnId, workspaceId: trace.workspaceId,
             actorUserId: trace.actorUserId, actorMemberId: trace.actorMemberId, modelCall: trace.modelCalls,
           },
+        }, {
+          signal,
+          ...(onEvent ? { onText: async (delta) => {
+            assertNotCancelled(signal);
+            await onEvent({ type: 'text_delta', data: { delta, modelCall: trace.modelCalls } });
+          } } : {}),
         });
       } catch (err) {
         const error = normalizeProviderError(err);
@@ -198,6 +210,7 @@ async function runReadTurnWithHistory({ data, context, provider, history = [] } 
       }
       // Usage may be valid even when the completion or subsequent tool fails.
       recordUsage(rawReply?.usage);
+      assertNotCancelled(signal);
       const parsed = readProviderReplySchema.safeParse(rawReply);
       if (!parsed.success) {
         throw new AppError('The agent provider returned an invalid response.', 502, 'AGENT_INVALID_RESPONSE');
@@ -236,6 +249,7 @@ async function runReadTurnWithHistory({ data, context, provider, history = [] } 
       });
 
       append(assistantToolMessage(reply.toolCalls, reply.text));
+      if (onEvent) await onEvent({ type: 'text_reset', data: { modelCall: trace.modelCalls } });
       for (const call of calls) await read(call, call.args);
     }
   } catch (err) {
@@ -247,8 +261,8 @@ async function runReadTurnWithHistory({ data, context, provider, history = [] } 
 }
 
 /** Preserve the stateless service's response contract and hide its transcript. */
-async function runReadTurn({ data, context, provider } = {}) {
-  const { reply } = await runReadTurnWithHistory({ data, context, provider });
+async function runReadTurn({ data, context, provider, onEvent, signal } = {}) {
+  const { reply } = await runReadTurnWithHistory({ data, context, provider, onEvent, signal });
   return reply;
 }
 

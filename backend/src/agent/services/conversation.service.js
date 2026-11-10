@@ -5,6 +5,7 @@ const { agentConversationKey, TTL } = require('../../config/redis-keys');
 const { AppError, ValidationError } = require('../../utils/errors');
 const { withRedisDeadline } = require('../../utils/redis-deadline');
 const logger = require('../../utils/logger');
+const { assertNotCancelled } = require('../utils/cancellation');
 const { assertAgentContext } = require('./context.service');
 const {
   CONVERSATION_LIMITS, conversationRecordSchema, conversationResultSchema,
@@ -16,8 +17,9 @@ const unavailable = () => new AppError('Conversation history is unavailable. Ple
 const missing = () => new AppError('Conversation not found or expired. Start a new conversation.', 404, 'AGENT_CONVERSATION_NOT_FOUND');
 
 /** Serialize a conversation turn using only authenticated, server-owned state. */
-async function runConversationTurn({ context, conversationId, runTurn, redisFactory = getRedis } = {}) {
+async function runConversationTurn({ context, conversationId, runTurn, redisFactory = getRedis, signal } = {}) {
   assertAgentContext(context);
+  assertNotCancelled(signal);
   const input = z.string().uuid().nullable().safeParse(conversationId);
   if (!input.success) throw new ValidationError('Invalid conversation ID');
   if (typeof runTurn !== 'function' || typeof redisFactory !== 'function') throw unavailable();
@@ -64,7 +66,9 @@ async function runConversationTurn({ context, conversationId, runTurn, redisFact
     try { record = conversationRecordSchema.parse(JSON.parse(payload)); } catch { throw unavailable(); }
     if (record.scope !== scope) throw missing();
 
+    assertNotCancelled(signal);
     const output = conversationResultSchema.safeParse(await runTurn({ history: record.turns }));
+    assertNotCancelled(signal);
     if (!output.success) throw unavailable();
     const next = JSON.stringify({ version: 1, scope, turns: output.data.history });
     if (Buffer.byteLength(next, 'utf8') > CONVERSATION_LIMITS.recordBytes) throw unavailable();

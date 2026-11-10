@@ -7,7 +7,7 @@ const { createGroqProvider } = require('../providers/groq.provider');
 const { createWorkspaceBudget } = require('./budget.service');
 
 /** Compose the read loop with server-owned provider configuration per turn. */
-async function runChatTurn({ data, context } = {}) {
+async function runChatTurn({ data, context, onEvent, signal } = {}) {
   assertAgentContext(context);
   const input = chatInputSchema.safeParse(data);
   if (!input.success) throw new ValidationError('Invalid agent message', null, input.error.issues);
@@ -26,11 +26,12 @@ async function runChatTurn({ data, context } = {}) {
   const provider = createGroqProvider({ budget });
   const turnData = { message: input.data.message };
   if (input.data.conversation_id === undefined) {
-    return runReadTurn({ data: turnData, context: actorContext, provider });
+    return runReadTurn({ data: turnData, context: actorContext, provider, onEvent, signal });
   }
   return runConversationTurn({
     context: actorContext, conversationId: input.data.conversation_id,
-    runTurn: ({ history }) => runReadTurnWithHistory({ data: turnData, context: actorContext, provider, history }),
+    signal,
+    runTurn: ({ history }) => runReadTurnWithHistory({ data: turnData, context: actorContext, provider, history, onEvent, signal }),
   });
 }
 

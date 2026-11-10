@@ -4,6 +4,8 @@ const { GROQ_LIMITS, groqConfigSchema, groqRequestSchema, groqResponseSchema, gr
 const { readProviderReplySchema } = require('../validators/read-turn.validator');
 const { serializeToolDefinitions } = require('./tool-definitions');
 const { providerError, normalizeProviderError } = require('./provider-errors');
+const { readStreamReply } = require('./groq-stream');
+const { assertNotCancelled } = require('../utils/cancellation');
 
 const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
@@ -71,16 +73,19 @@ function createGroqProvider({
   const config = parsed.data;
 
   return Object.freeze({
-    async chat(request) {
+    async chat(request, { onText, signal } = {}) {
       const input = groqRequestSchema.safeParse(request);
       if (!input.success) throw new ValidationError('Invalid provider request');
+      if ((onText !== undefined && typeof onText !== 'function')
+          || (signal !== undefined && !(signal instanceof AbortSignal))) throw new ValidationError('Invalid provider controls');
+      assertNotCancelled(signal);
       const definitions = serializeToolDefinitions(input.data.tools);
       const body = JSON.stringify({
         model: config.model,
         messages: input.data.messages,
         ...(definitions.length ? { tools: definitions, tool_choice: 'auto' } : {}),
         disable_tool_validation: false,
-        stream: false,
+        stream: Boolean(onText),
         n: 1,
         temperature: 0,
         max_completion_tokens: config.maxCompletionTokens,
@@ -98,6 +103,15 @@ function createGroqProvider({
       let usage = null;
       let timer;
       let timedOut = false;
+      let cancel;
+      const cancelled = new Promise((resolve, reject) => {
+        cancel = () => {
+          controller.abort();
+          reject(providerError('AGENT_REQUEST_CANCELLED'));
+        };
+        signal?.addEventListener('abort', cancel, { once: true });
+        if (signal?.aborted) cancel();
+      });
       const deadline = new Promise((resolve, reject) => {
         timer = setTimeout(() => {
           timedOut = true;
@@ -108,6 +122,7 @@ function createGroqProvider({
 
       try {
         const operation = (async () => {
+          assertNotCancelled(signal);
           response = await fetchImpl(GROQ_CHAT_URL, {
             method: 'POST',
             headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
@@ -118,13 +133,22 @@ function createGroqProvider({
           trace.httpStatus = response.status;
           if (response.status === 429) throw providerError('AGENT_PROVIDER_RATE_LIMITED');
           if (!response.ok) throw providerError('AGENT_PROVIDER_UNAVAILABLE');
-          const payload = await readResponseJson(response);
-          const parsedUsage = groqUsageSchema.safeParse(payload?.usage);
-          if (!parsedUsage.success) throw providerError('AGENT_INVALID_RESPONSE');
-          usage = parsedUsage.data ?? null;
+          assertNotCancelled(controller.signal);
+          let payload;
+          if (onText) {
+            payload = await readStreamReply(response, {
+              signal: controller.signal, onText,
+              onUsage: (value) => { usage = value; },
+            });
+          } else {
+            payload = await readResponseJson(response);
+            const parsedUsage = groqUsageSchema.safeParse(payload?.usage);
+            if (!parsedUsage.success) throw providerError('AGENT_INVALID_RESPONSE');
+            usage = parsedUsage.data ?? null;
+          }
           return normalizeReply(payload, new Set(input.data.tools.map((tool) => tool.name)), usage);
         })();
-        const reply = await Promise.race([operation, deadline]);
+        const reply = await Promise.race([operation, deadline, cancelled]);
         logger.info('Groq chat completed', { ...trace, usage, durationMs: Date.now() - startedAt });
         return reply;
       } catch (err) {
@@ -136,6 +160,7 @@ function createGroqProvider({
         throw error;
       } finally {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', cancel);
         if (budget) {
           try {
             await budget.settle({ reservation, usage });
