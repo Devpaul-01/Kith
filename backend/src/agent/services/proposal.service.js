@@ -8,7 +8,10 @@ const { AUDIT_ACTIONS } = require('../../constants/audit-actions');
 const { assertAgentContext } = require('./context.service');
 const { assertNotCancelled } = require('../utils/cancellation');
 const notification = require('./notification-proposal.service');
-const { PROPOSAL_LIMITS, notificationSnapshotSchema, proposalRecordSchema, proposalSchema, proposalIdSchema, emptyApprovalSchema, proposalStatusSchema, proposalReferencesSchema } = require('../validators/proposal.validator');
+const {
+  PROPOSAL_LIMITS, proposalRecordSchema, proposalSchema, proposalIdSchema,
+  emptyApprovalSchema, proposalStatusSchema, proposalReferencesSchema,
+} = require('../validators/proposal.validator');
 const logger = require('../../utils/logger');
 
 // No claim can be reclaimed after entering executing. Redis uncertainty must
@@ -24,7 +27,7 @@ const failure = (code, message, status = 503) => new AppError(message, status, c
 const unavailable = () => failure('AGENT_PROPOSAL_UNAVAILABLE', 'The proposal is unavailable. Please try again.');
 const missing = () => failure('AGENT_PROPOSAL_NOT_FOUND', 'Proposal not found or expired.', 404);
 const busy = () => failure('AGENT_PROPOSAL_BUSY', 'This proposal is being processed. Retry to check its result.', 409);
-const uncertain = () => failure('AGENT_PROPOSAL_INDETERMINATE', 'The action result could not be confirmed. Check the notification before requesting another action.', 409);
+const uncertain = () => failure('AGENT_PROPOSAL_INDETERMINATE', 'The action result could not be confirmed. Check your notifications before requesting another action.', 409);
 
 function freezeContext(context) {
   assertAgentContext(context);
@@ -79,7 +82,7 @@ async function logAction({ record, context, actorCtx, stage, required = true, er
     workspaceId: context.workspace.id, actorUserId: context.userId, actorMemberId: context.member.id,
     ipAddress: actorCtx?.ipAddress ?? null, userAgent: actorCtx?.userAgent ?? null,
     action: AUDIT_ACTIONS[`AGENT_ACTION_${stage.toUpperCase()}`], targetType: 'notification',
-    targetId: record.proposal.parameters.notification_id,
+    targetId: notification.getAuditTarget(record.proposal),
     metadata: { agent_initiated: true, proposal_id: record.proposal.id, turn_id: record.turnId,
       tool: record.proposal.tool, tier: record.proposal.tier, parameters: record.proposal.parameters,
       ...(errorCode ? { error_code: errorCode } : {}),
@@ -87,17 +90,15 @@ async function logAction({ record, context, actorCtx, stage, required = true, er
   });
 }
 
-async function createNotificationProposal({ context, selection, args, actorCtx, turnId, signal, redisFactory = getRedis }) {
+async function createNotificationProposal({ context, tool = 'mark_notification_read', selection, args, actorCtx, turnId, signal, redisFactory = getRedis }) {
   const actor = freezeContext(context);
-  const selected = notificationSnapshotSchema.parse(selection);
-  if (!notification.definition.parameterSchema.safeParse(args).success) throw new ValidationError('The selected notification cannot be overridden');
   assertNotCancelled(signal);
-  await notification.assertCurrentActor(actor);
-  await notification.revalidateNotification({ context: actor, snapshot: selected });
   const store = storage(actor, redisFactory);
-  const proposal = proposalSchema.parse({ id: randomUUID(), tool: 'mark_notification_read', tier: 2,
-    summary: 'Mark the selected notification as read.', parameters: { notification_id: selected.id },
-    before: selected, after: { is_read: true }, expires_at: new Date(Date.now() + PROPOSAL_LIMITS.expiryMs).toISOString() });
+  const proposal = proposalSchema.parse(await notification.createProposalDraft({
+    context: actor, tool, selection, args, id: randomUUID(),
+    expiresAt: new Date(Date.now() + PROPOSAL_LIMITS.expiryMs).toISOString(),
+  }));
+  assertNotCancelled(signal);
   let stored = await store.create({ version: 1, scope: store.scope, proposal, state: 'preparing', turnId,
     auditIds: Object.fromEntries(['proposed', 'approved', 'executed', 'rejected', 'failed'].map((stage) => [stage, randomUUID()])) });
   await logAction({ record: stored.record, context: actor, actorCtx, stage: 'proposed' });
@@ -123,9 +124,11 @@ function statusReply(record) {
     executing: 'indeterminate', applied: 'audit_pending', executed: 'executed',
     rejecting: 'rejection_pending', rejected: 'rejected', failed: 'failed',
   };
+  const target = record.proposal.tool === 'mark_notification_read'
+    ? { notification_id: record.proposal.parameters.notification_id }
+    : { notification_count: record.proposal.parameters.notification_ids.length };
   return proposalStatusSchema.parse({
-    proposal_id: record.proposal.id, tool: record.proposal.tool,
-    notification_id: record.proposal.parameters.notification_id,
+    proposal_id: record.proposal.id, tool: record.proposal.tool, ...target,
     status: statuses[record.state], expires_at: record.proposal.expires_at,
     checked_at: new Date(now).toISOString(), ...(record.result ? { result: record.result } : {}),
   });
@@ -214,7 +217,7 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
   await logAction({ record: stored.record, context: actor, actorCtx, stage: 'approved' });
   await notification.assertCurrentActor(actor);
   try {
-    await notification.revalidateNotification({ context: actor, snapshot: stored.record.proposal.before });
+    await notification.revalidateProposal({ context: actor, proposal: stored.record.proposal });
   } catch (err) {
     if (['AGENT_PROPOSAL_STALE', 'NOT_FOUND'].includes(err.code)) {
       stored = await store.transition(stored, 'failed');
@@ -226,7 +229,7 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
   stored = await store.transition(stored, 'executing');
   let result;
   try {
-    result = await notification.applyNotificationRead({ context: actor, snapshot: stored.record.proposal.before });
+    result = await notification.applyProposal({ context: actor, proposal: stored.record.proposal });
   } catch (err) {
     logger.warn('Agent proposal execution not confirmed', { proposalId: id.data, errorCode: err.code });
     await logAction({ record: stored.record, context: actor, actorCtx, stage: 'failed', required: false, errorCode: err.code,

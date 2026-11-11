@@ -13,8 +13,9 @@ from the architecture, with the role restrictions and data limits documented
 below. Ranked task, ledger, dispute and group searches implement the
 [approved schema extension](SEARCH_SCHEMA_PROPOSAL.md).
 Chat supports JSON replies, opt-in SSE streaming, and a
-[notification proposal/approval flow with status receipts](PROPOSALS.md). Other writes and voice
-are still pending.
+[notification proposal/approval flow with status receipts](PROPOSALS.md) for
+one selected notification or an exact bounded set of current unread
+notifications. Other writes and voice are still pending.
 
 `find_member`, `find_container`, `find_disputes` and `find_group` take
 `{ query, limit? }`. `find_tasks` and `find_ledger_entries` also accept an
@@ -585,8 +586,10 @@ validation remains pending.
 
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
 body containing a nonempty `message` (up to 8,000 characters), with an optional
-`conversation_id` as described below. An optional `selected_notification_id`
-enables the [notification proposal flow](PROPOSALS.md):
+`conversation_id` as described below. The
+[notification proposal flow](PROPOSALS.md) can propose marking all current
+unread notifications read; an optional `selected_notification_id` additionally
+enables the single-notification proposal:
 
 ```json
 { "message": "Show my workspace dashboard." }
@@ -615,10 +618,12 @@ The route inherits `requireAuth` → `loadDbUser` → `requireMembership` from t
 workspace router. Context comes exclusively from those middleware results.
 Client-supplied history, roles, tools, identity fields, model settings, and
 workspace IDs in the body are rejected. Query parameters cannot change the
-workspace or actor. The tools offered and executed are still role-filtered
-Tier 0/1 reads. An explicit validated notification selection additionally
-offers its Tier 2 proposal tool; chat never executes writes or approves
-proposals. Only the separate approval endpoint can apply that action.
+workspace or actor. The tools executed immediately are still role-filtered
+Tier 0/1 reads. Chat also offers the Tier 2 mark-all proposal tool; an explicit
+validated notification selection additionally offers the single-notification
+proposal tool. Both only create server-bound approval cards. Chat never
+executes or approves them; only the separate approval endpoint can apply an
+action.
 
 The dedicated `agentLimiter` allows 10 requests per minute per authenticated
 user across all workspaces, using the shared Redis store with prefix
@@ -810,10 +815,12 @@ provider.chat({ messages, tools, trace })
 Messages use chat-completion roles and correlated `tool_call_id` values.
 Tool definitions contain `name`, `description`, and the Zod `parameterSchema`;
 the provider adapter owns converting schemas to its wire format. Only the
-caller's permitted Tier 0/1 definitions are supplied by default. Explicit
-notification selection adds its proposal definition, handled by a separate
-proposal callback that cannot execute the write. Every read execution still
-passes through `executeReadTool` and the handler's permission checks.
+caller's permitted Tier 0/1 definitions are supplied by default. Production
+chat also supplies the mark-all notification proposal definition, and an
+explicit notification selection adds the single-notification definition.
+Both are handled by a separate proposal callback that cannot execute the
+write. Every read execution still passes through `executeReadTool` and the
+handler's permission checks.
 
 Tool messages wrap results in `{ kind: 'untrusted_tool_result', data }`, and
 the fixed system instruction treats their contents as data and forbids
@@ -993,7 +1000,7 @@ RPC permissions have integration coverage in
 with the real Postgres/PostgREST/Redis test stack and the updated schema.
 Unit tests mock RPC results and do not prove that the SQL or indexes work.
 
-With notification proposals and approvals (2026-11-10), all 2,820 unit tests
-passed across 87 suites. Live database/PostgREST, model and deployed-proxy verification
-remain pending. The existing `ioredis-mock` listener warning is still present
-in full unit runs.
+With exact-set notification proposals, approvals and receipts (2026-11-11),
+all 2,902 unit tests passed across 89 suites. Live database/PostgREST, model
+and deployed-proxy verification remain pending. The existing `ioredis-mock`
+listener warning is still present in full unit runs.

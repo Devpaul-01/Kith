@@ -1,9 +1,10 @@
 # Notification proposals
 
-The first agent write is Tier 2 `mark_notification_read`: one notification
-belonging to the caller in the current workspace. The backend requires target
-selection, a proposal, and a separate approval request. Chat text and model
-tool calls cannot execute the write. Other writes remain unavailable.
+The first agent writes are Tier 2 `mark_notification_read` and
+`mark_all_notifications_read`, scoped to the caller's notifications in the
+current workspace. The backend requires a proposal and a separate approval
+request. Chat text and model tool calls cannot execute either write. Other
+writes remain unavailable.
 
 ## Select and propose
 
@@ -31,10 +32,19 @@ chat text is not a selection, and selection is never inherited from history.
 Until a general selection flow exists, clients must obtain explicit selection
 separately; the backend does not guess from titles or partial lists.
 
-When requested by the model, the server rereads the notification, persists
-and audits a proposal, then ends the turn. A proposal tool call must appear
-alone, not in a batch of reads or proposals. Chat can also return a normal
-text reply without proposing anything.
+`mark_all_notifications_read` is offered on authenticated chat turns without
+a client-supplied target. It may be called only when the user explicitly asks
+to mark all current unread notifications read, and its arguments must also be
+`{}`. When the card is created, the server snapshots up to 100 exact unread
+notification IDs. The model cannot provide or amend that set. Notifications
+created afterward are not part of the proposal and stay unread. An empty set
+or a set larger than 100 is rejected without creating a proposal; the normal
+notification inbox remains available for larger bulk actions.
+
+When requested by the model, the server reads the required current state,
+persists and audits a proposal, then ends the turn. A proposal tool call must
+appear alone, not in a batch of reads or proposals. Chat can also return a
+normal text reply without proposing anything.
 
 The response's existing `data` object gains `proposal`:
 
@@ -65,6 +75,21 @@ For SSE, the card appears in `done.data.proposal`, after conversation storage
 when requested. A partial stream is neither a proposal receipt nor approval.
 Frontend selection and approval controls are not part of this backend change.
 
+A mark-all card instead contains the server-selected IDs and exact count:
+
+```json
+{
+  "id": "<proposal-uuid>",
+  "tool": "mark_all_notifications_read",
+  "tier": 2,
+  "summary": "Mark 2 currently unread notifications as read.",
+  "parameters": { "notification_ids": ["<uuid-1>", "<uuid-2>"] },
+  "before": { "unread_count": 2 },
+  "after": { "unread_count": 0 },
+  "expires_at": "<server-generated-ISO-timestamp>"
+}
+```
+
 ## Approve or reject
 
 Send a distinct authenticated POST with an empty JSON body `{}` to:
@@ -77,13 +102,20 @@ POST /v1/workspaces/:workspaceId/agent/proposals/:proposalId/reject
 Both routes share the agent's per-user request limiter and never call the
 model. They reject parameter, identity, tier and tool overrides. Approval uses
 the saved parameters, rereads membership, audits the approval, verifies the
-preview and performs a conditional domain-service update. Changes to the
-reviewed title/type/date/read state invalidate the proposal. Concurrent
-updates cannot rewrite an existing read timestamp through this path.
+bound state and calls the notification domain service. For one notification,
+changes to the reviewed title/type/date/read state invalidate the proposal and
+the conditional update cannot rewrite an existing read timestamp. For mark-all,
+every saved ID must still exist, belong to the same recipient/workspace and be
+unread before execution. The update filters on only those IDs and then verifies
+that every target is read. A target concurrently read elsewhere is already in
+the desired final state; a later notification is never included.
 
 Approval returns `{ data: { proposal_id, status: "executed", result } }`.
-The result contains `notification_id`, `is_read: true` and the database's
-stored `read_at`. Rejection returns `{ data: { proposal_id, status: "rejected" } }`.
+The single-notification result contains `notification_id`, `is_read: true` and
+the database's stored `read_at`. The mark-all result contains the bound
+`notification_count` and the actual `updated_count`; the latter can be smaller
+when another request read a bound notification during execution. Rejection
+returns `{ data: { proposal_id, status: "rejected" } }`.
 Repeated successful decisions return the saved receipt; an opposite decision
 returns a conflict. Display the decision beside its proposal. Approval does
 not call the model or append a conversation turn. Later conversation turns
@@ -124,6 +156,10 @@ action. A successful response uses the existing envelope:
 }
 ```
 
+For `mark_all_notifications_read`, the status response uses
+`notification_count` instead of `notification_id`, and an executed result is
+`{ "notification_count": 2, "updated_count": 2 }`.
+
 | Status | Meaning |
 | --- | --- |
 | `pending` | Awaiting approval or rejection. |
@@ -142,7 +178,7 @@ recorded outcome. Missing, preparing or differently scoped records return
 past action, not the notification's current database state.
 
 When a conversation resumes, server code finds proposal cards only in validated,
-correlated `mark_notification_read` call/result exchanges in retained history.
+correlated calls/results for either supported proposal tool in retained history.
 It ignores IDs in user/assistant prose, other tool payloads and old receipt
 arrays. The server rechecks membership and compares each complete historical
 card with its scoped Redis record, then adds fresh `action_receipts` to this
@@ -174,8 +210,9 @@ of a missing proposal from client data.
 
 Atomic comparisons serialize decisions. `AGENT_PROPOSAL_BUSY` (409) means
 another transition won; retry the same decision to check its outcome.
-`AGENT_PROPOSAL_STALE` (409) means the notification changed and needs a new
-selection/proposal. A conditional database conflict applies no write.
+`AGENT_PROPOSAL_STALE` (409) means the bound notification state changed and
+needs a new selection/proposal. A single-notification conditional database
+conflict applies no write.
 `AGENT_PROPOSAL_INDETERMINATE` (409) means the result is unknown: check the
 actual notification before starting another action. Execution claims are
 never reclaimed to repeat mutations after a crash or lost acknowledgement.
@@ -193,15 +230,18 @@ returns the receipt without rerunning the write. Failure audit metadata
 distinguishes unknown execution outcomes. If result storage fails, execution
 auditing is still attempted and the API reports uncertainty. Redis and
 Postgres do not share a transaction: a crash or outage can leave an unresolved
-claim or missing completion audit. This first path relies on a conditional
-notification update; broader writes need their own durable guarantees.
+claim or missing completion audit. The mark-all service performs a bounded
+exact-set update and final-state read; an outage after any mutation stays
+indeterminate and the proposal executor never repeats it. Broader writes need
+their own durable guarantees.
 
 Existing notification HTTP calls and ordinary audit callers retain their
 default behavior. New service options are internal and cannot be set through
 model or approval input. No schema changes are required.
 
-Unit tests cover scoped handlers, real HTTP composition with mocked services,
-Redis scripts, races, stale snapshots, audit recovery, uncertain writes,
+Unit tests cover scoped handlers, exact-set mark-all behavior, real HTTP
+composition with mocked services, Redis scripts, races, stale snapshots,
+audit recovery, uncertain writes,
 read-only status and fresh conversation receipts. Receipt tests also cover
 stale membership, corrupt/missing records, hostile history and cancellation.
 `tests/integration/database/notification-proposals.test.js` covers real

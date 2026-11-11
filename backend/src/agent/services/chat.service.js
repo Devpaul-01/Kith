@@ -5,7 +5,9 @@ const { runReadTurn, runReadTurnWithHistory } = require('./read-loop.service');
 const { runConversationTurn } = require('./conversation.service');
 const { createGroqProvider } = require('../providers/groq.provider');
 const { createWorkspaceBudget } = require('./budget.service');
-const { selectNotification } = require('./notification-proposal.service');
+const {
+  selectNotification, markNotificationReadDefinition, markAllNotificationsReadDefinition,
+} = require('./notification-proposal.service');
 const { createNotificationProposal, getProposalReceipts } = require('./proposal.service');
 const { extractProposalReferences } = require('./proposal-history.service');
 
@@ -32,10 +34,16 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
   // is scoped to this request and never restored from conversation history.
   const selection = input.data.selected_notification_id === undefined ? undefined
     : await selectNotification({ context: actorContext, notificationId: input.data.selected_notification_id });
-  const proposalSupport = selection ? {
-    selection,
-    create: ({ args, turnId }) => createNotificationProposal({ context: actorContext, selection, args, turnId, actorCtx, signal }),
-  } : undefined;
+  const proposalSupport = {
+    definitions: Object.freeze([
+      ...(selection ? [markNotificationReadDefinition] : []),
+      markAllNotificationsReadDefinition,
+    ]),
+    ...(selection ? { selection } : {}),
+    create: ({ name, args, turnId }) => createNotificationProposal({
+      context: actorContext, tool: name, selection, args, turnId, actorCtx, signal,
+    }),
+  };
   const loadActionReceipts = ({ history }) => getProposalReceipts({
     context: actorContext, proposals: extractProposalReferences(history), signal,
   });

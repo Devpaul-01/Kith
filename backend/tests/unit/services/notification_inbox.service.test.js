@@ -11,7 +11,8 @@ jest.mock('../../../src/config/supabase', () => {
 });
 
 const {
-  listNotifications, getUnreadCount, getNotification, markAsRead, markAllAsRead,
+  listNotifications, getUnreadCount, getNotification, listUnreadNotificationIds,
+  getNotificationsByIds, markAsRead, markAllAsRead,
 } = require('../../../src/services/notification_inbox.service');
 const { NotFoundError } = require('../../../src/utils/errors');
 const mockSupabaseInstance = require('../../../src/config/supabase').__mockInstance;
@@ -146,6 +147,73 @@ describe('services/notification_inbox.service', () => {
       const result = await markAllAsRead({ memberId: MEMBER_ID });
 
       expect(result).toBe(0);
+    });
+
+    it('updates only the bound IDs and verifies their final state', async () => {
+      mockSupabaseInstance.mockResponses(
+        { data: [{ id: 'n1' }, { id: 'n2' }], error: null },
+        { data: [{ id: 'n2', is_read: true }, { id: 'n1', is_read: true }], error: null },
+      );
+
+      await expect(markAllAsRead({ memberId: MEMBER_ID, workspaceId: 'ws-1', notificationIds: ['n1', 'n2'] }))
+        .resolves.toEqual({ updated_count: 2, notifications: [{ id: 'n2', is_read: true }, { id: 'n1', is_read: true }] });
+      expect(mockSupabaseInstance.builder.in.mock.calls).toEqual([['id', ['n1', 'n2']], ['id', ['n1', 'n2']]]);
+      expect(mockSupabaseInstance.builder.eq.mock.calls.filter(([field]) => field === 'workspace_id')).toEqual([
+        ['workspace_id', 'ws-1'], ['workspace_id', 'ws-1'],
+      ]);
+    });
+
+    it('accepts a target concurrently read elsewhere when every bound ID is now read', async () => {
+      mockSupabaseInstance.mockResponses(
+        { data: [{ id: 'n2' }], error: null },
+        { data: [{ id: 'n1', is_read: true }, { id: 'n2', is_read: true }], error: null },
+      );
+      await expect(markAllAsRead({ memberId: MEMBER_ID, notificationIds: ['n1', 'n2'] }))
+        .resolves.toMatchObject({ updated_count: 1 });
+    });
+
+    it('keeps a partial or unverifiable bound update explicit', async () => {
+      mockSupabaseInstance.mockResponses(
+        { data: [{ id: 'n2' }], error: null },
+        { data: [{ id: 'n1', is_read: false }, { id: 'n2', is_read: true }], error: null },
+      );
+      await expect(markAllAsRead({ memberId: MEMBER_ID, notificationIds: ['n1', 'n2'] }))
+        .rejects.toMatchObject({ code: 'NOTIFICATIONS_UPDATE_UNCONFIRMED' });
+    });
+
+    it.each([null, [{ id: null }]])('rejects unavailable update rows: %j', async (data) => {
+      mockSupabaseInstance.mockNextResponse({ data, error: null });
+      await expect(markAllAsRead({ memberId: MEMBER_ID })).rejects.toMatchObject({ code: 'NOTIFICATIONS_UNAVAILABLE' });
+    });
+  });
+
+  describe('bounded notification snapshots', () => {
+    it('lists exact unread IDs in one recipient/workspace with a server count', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [{ id: 'n2' }, { id: 'n1' }], count: 2, error: null });
+      await expect(listUnreadNotificationIds({ memberId: MEMBER_ID, workspaceId: 'ws-1', limit: 100 }))
+        .resolves.toEqual({ notification_ids: ['n2', 'n1'], count: 2 });
+      expect(mockSupabaseInstance.builder.select).toHaveBeenCalledWith('id', { count: 'exact' });
+      expect(mockSupabaseInstance.builder.range).toHaveBeenCalledWith(0, 100);
+      expect(mockSupabaseInstance.builder.eq.mock.calls).toEqual([
+        ['recipient_id', MEMBER_ID], ['is_read', false], ['workspace_id', 'ws-1'],
+      ]);
+    });
+
+    it.each([
+      { data: null, count: 0 }, { data: [], count: null }, { data: [{ id: 'n1' }], count: 2 },
+      { data: [{ id: 'n1' }, { id: 'n1' }], count: 2 },
+    ])('rejects an incomplete unread snapshot: %j', async (response) => {
+      mockSupabaseInstance.mockNextResponse({ ...response, error: null });
+      await expect(listUnreadNotificationIds({ memberId: MEMBER_ID, limit: 100 }))
+        .rejects.toMatchObject({ code: 'NOTIFICATIONS_UNAVAILABLE' });
+    });
+
+    it('loads only requested notification states for later verification', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: [{ id: 'n1', is_read: false }], error: null });
+      await expect(getNotificationsByIds({ memberId: MEMBER_ID, workspaceId: 'ws-1', notificationIds: ['n1'] }))
+        .resolves.toEqual([{ id: 'n1', is_read: false }]);
+      expect(mockSupabaseInstance.builder.in).toHaveBeenCalledWith('id', ['n1']);
+      expect(mockSupabaseInstance.builder.select.mock.calls[0][0]).not.toMatch(/body|dedup_key|\*/);
     });
   });
 

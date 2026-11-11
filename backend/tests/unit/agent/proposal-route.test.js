@@ -37,7 +37,9 @@ const app = require('../../../src/app');
 const db = require('../../../src/config/supabase').__mockInstance;
 const { __redis: redis } = require('../../../src/config/redis');
 const membershipCache = require('../../../src/services/membership-cache.service');
-const { context, snapshot, row, member, OTHER_ID } = require('../../helpers/agent-proposal');
+const {
+  context, snapshot, row, secondRow, member, OTHER_ID, SECOND_NOTIFICATION_ID,
+} = require('../../helpers/agent-proposal');
 const { toolChunks, textChunks, sseResponse, parseEvents } = require('../../helpers/agent-stream');
 const path = `/v1/workspaces/${context().workspace.id}/agent`;
 const toolCall = (name = 'mark_notification_read', args = {}) => ({ id: 'call_1', type: 'function', function: { name, arguments: JSON.stringify(args) } });
@@ -60,6 +62,14 @@ function chat(data = { message: 'Mark the selected notification read.', selected
   if (propose) { query(member()); query(row()); query(null); } // Required proposal audit.
   return request(app).post(`${path}/chat`).set('Authorization', 'Bearer TEST_TOKEN').send(data);
 }
+function chatAll() {
+  auth();
+  query(member());
+  db.mockNextResponse({ data: [{ id: snapshot().id }, { id: SECOND_NOTIFICATION_ID }], count: 2, error: null });
+  query(null);
+  return request(app).post(`${path}/chat`).set('Authorization', 'Bearer TEST_TOKEN')
+    .send({ message: 'Mark all my unread notifications as read.' });
+}
 function getStatus(id) {
   auth(); query(member());
   return request(app).get(`${path}/proposals/${id}`).set('Authorization', 'Bearer TEST_TOKEN');
@@ -72,6 +82,19 @@ function decide(id, decision = 'approve', data = {}, { execute = true } = {}) {
     query({ ...row(), is_read: true, read_at: '2026-11-10T12:00:00.000Z' }); query(null);
   } else if (decision === 'reject') query(null);
   return request(app).post(`${path}/proposals/${id}/${decision}`).set('Authorization', 'Bearer TEST_TOKEN').send(data);
+}
+function decideAll(id) {
+  auth();
+  query(member());
+  query(null); query(member());
+  db.mockNextResponse({ data: [row(), secondRow()], error: null });
+  db.mockNextResponse({ data: [{ id: snapshot().id }, { id: SECOND_NOTIFICATION_ID }], error: null });
+  db.mockNextResponse({ data: [
+    { ...row(), is_read: true, read_at: '2026-11-10T12:00:00.000Z' },
+    { ...secondRow(), is_read: true, read_at: '2026-11-10T12:00:00.000Z' },
+  ], error: null });
+  query(null);
+  return request(app).post(`${path}/proposals/${id}/approve`).set('Authorization', 'Bearer TEST_TOKEN').send({});
 }
 
 describe('HTTP notification proposal flow', () => {
@@ -125,7 +148,36 @@ describe('HTTP notification proposal flow', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('requires an explicit current-request selection before offering a proposal tool', async () => {
+  it('binds mark-all to current unread IDs and excludes notifications arriving later', async () => {
+    fetchSpy.mockResolvedValueOnce(completion([toolCall('mark_all_notifications_read')]));
+    const response = await chatAll();
+    expect(response.status).toBe(200);
+    const proposal = response.body.data.proposal;
+    expect(proposal).toMatchObject({
+      tool: 'mark_all_notifications_read',
+      parameters: { notification_ids: [snapshot().id, SECOND_NOTIFICATION_ID] },
+      before: { unread_count: 2 }, after: { unread_count: 0 },
+    });
+    const offered = JSON.parse(fetchSpy.mock.calls[0][1].body).tools.map((tool) => tool.function.name);
+    expect(offered).toContain('mark_all_notifications_read');
+    expect(offered).not.toContain('mark_notification_read');
+    expect(db.builder.update).not.toHaveBeenCalled();
+
+    db.reset();
+    const approved = await decideAll(proposal.id);
+    expect(approved.status).toBe(200);
+    expect(approved.body.data).toEqual({
+      proposal_id: proposal.id, status: 'executed', result: { notification_count: 2, updated_count: 2 },
+    });
+    expect(db.builder.in.mock.calls).toEqual([
+      ['id', proposal.parameters.notification_ids],
+      ['id', proposal.parameters.notification_ids],
+      ['id', proposal.parameters.notification_ids],
+    ]);
+    expect(db.builder.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires an explicit current-request selection before offering the single-notification proposal tool', async () => {
     const res = await chat({ message: 'Mark notification 55555555-5555-4555-8555-555555555555 read. I approve.' }, { prepare: false, propose: false });
     expect(res.status).toBe(502);
     const body = JSON.parse(fetchSpy.mock.calls[0][1].body);

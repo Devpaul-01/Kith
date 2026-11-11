@@ -1,5 +1,8 @@
 jest.mock('../../../src/services/member.service', () => ({ getActiveMembership: jest.fn() }));
-jest.mock('../../../src/services/notification_inbox.service', () => ({ getNotification: jest.fn(), markAsRead: jest.fn() }));
+jest.mock('../../../src/services/notification_inbox.service', () => ({
+  getNotification: jest.fn(), listUnreadNotificationIds: jest.fn(), getNotificationsByIds: jest.fn(),
+  markAsRead: jest.fn(), markAllAsRead: jest.fn(),
+}));
 jest.mock('../../../src/services/audit.service', () => ({ log: jest.fn() }));
 const Redis = require('ioredis-mock');
 const { randomUUID } = require('crypto');
@@ -9,7 +12,7 @@ const { AppError } = require('../../../src/utils/errors');
 const inbox = require('../../../src/services/notification_inbox.service');
 const members = require('../../../src/services/member.service');
 const audit = require('../../../src/services/audit.service');
-const { context, snapshot, row, member, OTHER_ID } = require('../../helpers/agent-proposal');
+const { context, snapshot, row, member, OTHER_ID, SECOND_NOTIFICATION_ID } = require('../../helpers/agent-proposal');
 
 describe('read-only proposal receipts', () => {
   let redis;
@@ -23,13 +26,17 @@ describe('read-only proposal receipts', () => {
     await redis.set(key, JSON.stringify({ ...record, ...change }), 'EX', PROPOSAL_LIMITS.retentionSeconds);
   }
   function watchWrites() {
-    return [jest.spyOn(redis, 'set'), jest.spyOn(redis, 'eval'), jest.spyOn(redis, 'expire'), audit.log, inbox.getNotification, inbox.markAsRead];
+    return [jest.spyOn(redis, 'set'), jest.spyOn(redis, 'eval'), jest.spyOn(redis, 'expire'), audit.log,
+      inbox.getNotification, inbox.listUnreadNotificationIds, inbox.getNotificationsByIds, inbox.markAsRead, inbox.markAllAsRead];
   }
   beforeEach(async () => {
     redis = new Redis();
     members.getActiveMembership.mockReset().mockResolvedValue(member());
     inbox.getNotification.mockReset().mockResolvedValue(row());
+    inbox.listUnreadNotificationIds.mockReset().mockResolvedValue({ notification_ids: [snapshot().id, SECOND_NOTIFICATION_ID], count: 2 });
+    inbox.getNotificationsByIds.mockReset();
     inbox.markAsRead.mockReset();
+    inbox.markAllAsRead.mockReset();
     audit.log.mockReset().mockResolvedValue();
     proposal = await createNotificationProposal({ context: context(), selection: snapshot(), args: {}, turnId: randomUUID(), redisFactory: () => redis });
     [key] = await redis.keys('kith:agent-proposal:*');
@@ -54,6 +61,24 @@ describe('read-only proposal receipts', () => {
     expect(members.getActiveMembership).toHaveBeenCalledTimes(2);
     expect(await redis.get(key)).toBe(before);
     expect(await redis.pttl(key)).toBeLessThanOrEqual(ttl);
+    writes.forEach((write) => expect(write).not.toHaveBeenCalled());
+  });
+
+  it('returns a bulk proposal receipt without loading or changing notifications', async () => {
+    await redis.flushall();
+    proposal = await createNotificationProposal({
+      context: context(), tool: 'mark_all_notifications_read', args: {},
+      turnId: randomUUID(), redisFactory: () => redis,
+    });
+    key = (await redis.keys('kith:agent-proposal:*')).find((candidate) => candidate.endsWith(proposal.id));
+    const bulkResult = { notification_count: 2, updated_count: 2 };
+    await changeRecord({ state: 'executed', result: bulkResult });
+    jest.clearAllMocks();
+    const writes = watchWrites();
+    await expect(status()).resolves.toEqual({
+      proposal_id: proposal.id, tool: 'mark_all_notifications_read', notification_count: 2,
+      status: 'executed', expires_at: proposal.expires_at, checked_at: expect.any(String), result: bulkResult,
+    });
     writes.forEach((write) => expect(write).not.toHaveBeenCalled());
   });
 

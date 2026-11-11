@@ -3,12 +3,16 @@ const { extractProposalReferences } = require('../../../src/agent/services/propo
 const { runReadTurnWithHistory } = require('../../../src/agent/services/read-loop.service');
 const { PROPOSAL_LIMITS } = require('../../../src/agent/validators/proposal.validator');
 const { CONVERSATION_LIMITS } = require('../../../src/agent/validators/conversation.validator');
-const { context, snapshot, OTHER_ID } = require('../../helpers/agent-proposal');
+const { context, snapshot, OTHER_ID, SECOND_NOTIFICATION_ID } = require('../../helpers/agent-proposal');
 
 const card = () => ({ id: randomUUID(), tool: 'mark_notification_read', tier: 2,
   summary: 'Mark the selected notification as read.', parameters: { notification_id: snapshot().id },
   before: snapshot(), after: { is_read: true }, expires_at: '2026-11-10T12:05:00.000Z' });
-const turn = (proposal, name = 'mark_notification_read') => [
+const allCard = () => ({ id: randomUUID(), tool: 'mark_all_notifications_read', tier: 2,
+  summary: 'Mark 2 currently unread notifications as read.',
+  parameters: { notification_ids: [snapshot().id, SECOND_NOTIFICATION_ID] },
+  before: { unread_count: 2 }, after: { unread_count: 0 }, expires_at: '2026-11-10T12:05:00.000Z' });
+const turn = (proposal, name = proposal.tool) => [
   { role: 'user', content: 'Mark this read.' },
   { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name, arguments: '{}' } }] },
   { role: 'tool', tool_call_id: 'call_1', content: JSON.stringify({ kind: 'untrusted_tool_result', data: { status: 'proposed', proposal } }) },
@@ -24,6 +28,12 @@ describe('server-owned proposal references', () => {
     const before = structuredClone(history);
     expect(extractProposalReferences(history)).toEqual([first, second]);
     expect(history).toEqual(before);
+  });
+
+  it('extracts both supported notification proposal tools without treating either card as authority', () => {
+    const single = card();
+    const bulk = allCard();
+    expect(extractProposalReferences([turn(single), turn(bulk)])).toEqual([single, bulk]);
   });
 
   it('ignores proposal-shaped user prose, other tool results, titles and historical receipts', () => {

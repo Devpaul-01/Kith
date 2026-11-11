@@ -1,5 +1,8 @@
 jest.mock('../../../src/services/member.service', () => ({ getActiveMembership: jest.fn() }));
-jest.mock('../../../src/services/notification_inbox.service', () => ({ getNotification: jest.fn(), markAsRead: jest.fn() }));
+jest.mock('../../../src/services/notification_inbox.service', () => ({
+  getNotification: jest.fn(), listUnreadNotificationIds: jest.fn(), getNotificationsByIds: jest.fn(),
+  markAsRead: jest.fn(), markAllAsRead: jest.fn(),
+}));
 jest.mock('../../../src/services/audit.service', () => ({ log: jest.fn() }));
 const Redis = require('ioredis-mock');
 const { randomUUID } = require('crypto');
@@ -10,19 +13,31 @@ const { AppError, ConflictError } = require('../../../src/utils/errors');
 const inbox = require('../../../src/services/notification_inbox.service');
 const members = require('../../../src/services/member.service');
 const audit = require('../../../src/services/audit.service');
-const { context, snapshot, row, member, OTHER_ID } = require('../../helpers/agent-proposal');
+const {
+  context, snapshot, row, secondRow, member, OTHER_ID, SECOND_NOTIFICATION_ID,
+} = require('../../helpers/agent-proposal');
 
 describe('notification proposals and decisions', () => {
   let redis;
   const actorCtx = { actorUserId: OTHER_ID, ipAddress: '127.0.0.1', userAgent: 'test-agent' };
   const create = (overrides = {}) => createNotificationProposal({ context: context(), selection: snapshot(), args: {}, turnId: randomUUID(), actorCtx, redisFactory: () => redis, ...overrides });
+  const createAll = (overrides = {}) => createNotificationProposal({ context: context(), tool: 'mark_all_notifications_read', args: {}, turnId: randomUUID(), actorCtx, redisFactory: () => redis, ...overrides });
   const decide = (proposal, overrides = {}) => decideProposal({ context: context(), proposalId: proposal.id, data: {}, decision: 'approve', actorCtx, redisFactory: () => redis, ...overrides });
   const recordKey = async () => (await redis.keys('kith:agent-proposal:*'))[0];
   beforeEach(() => {
     redis = new Redis();
     members.getActiveMembership.mockReset().mockResolvedValue(member());
     inbox.getNotification.mockReset().mockImplementation(async () => row());
+    inbox.listUnreadNotificationIds.mockReset().mockResolvedValue({ notification_ids: [snapshot().id, SECOND_NOTIFICATION_ID], count: 2 });
+    inbox.getNotificationsByIds.mockReset().mockResolvedValue([row(), secondRow()]);
     inbox.markAsRead.mockReset().mockResolvedValue({ ...row(), is_read: true, read_at: '2026-11-10T12:00:00.000Z' });
+    inbox.markAllAsRead.mockReset().mockResolvedValue({
+      updated_count: 2,
+      notifications: [
+        { ...row(), is_read: true, read_at: '2026-11-10T12:00:00.000Z' },
+        { ...secondRow(), is_read: true, read_at: '2026-11-10T12:00:00.000Z' },
+      ],
+    });
     audit.log.mockReset().mockResolvedValue();
   });
   afterEach(async () => { await redis.flushall(); await redis.quit(); jest.useRealTimers(); });
@@ -42,6 +57,70 @@ describe('notification proposals and decisions', () => {
     expect(await redis.ttl(await recordKey())).toBeGreaterThan(PROPOSAL_LIMITS.expiryMs / 1000);
     proposal.parameters.notification_id = OTHER_ID;
     expect(JSON.parse(await redis.get(await recordKey())).proposal.parameters.notification_id).toBe(snapshot().id);
+  });
+
+  it('binds mark-all approval to the exact current unread set without executing it', async () => {
+    const proposal = await createAll();
+    expect(proposal).toMatchObject({
+      tool: 'mark_all_notifications_read', tier: 2,
+      summary: 'Mark 2 currently unread notifications as read.',
+      parameters: { notification_ids: [snapshot().id, SECOND_NOTIFICATION_ID] },
+      before: { unread_count: 2 }, after: { unread_count: 0 },
+    });
+    expect(inbox.listUnreadNotificationIds).toHaveBeenCalledWith({
+      memberId: context().member.id, workspaceId: context().workspace.id,
+      limit: PROPOSAL_LIMITS.bulkNotificationIds,
+    });
+    expect(inbox.markAllAsRead).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'agent.action_proposed', targetType: 'notification', targetId: null,
+      metadata: expect.objectContaining({ tool: 'mark_all_notifications_read', parameters: proposal.parameters }),
+    }));
+  });
+
+  it('marks only the saved unread IDs and returns an idempotent bulk receipt', async () => {
+    const proposal = await createAll();
+    // A later notification is deliberately absent from the saved parameters.
+    inbox.listUnreadNotificationIds.mockResolvedValue({ notification_ids: [...proposal.parameters.notification_ids, OTHER_ID], count: 3 });
+    const first = await decide(proposal);
+    expect(await decide(proposal)).toEqual(first);
+    expect(first).toEqual({ proposal_id: proposal.id, status: 'executed', result: { notification_count: 2, updated_count: 2 } });
+    expect(inbox.getNotificationsByIds).toHaveBeenCalledWith({
+      notificationIds: proposal.parameters.notification_ids,
+      memberId: context().member.id, workspaceId: context().workspace.id,
+    });
+    expect(inbox.markAllAsRead).toHaveBeenCalledTimes(1);
+    expect(inbox.markAllAsRead).toHaveBeenCalledWith({
+      notificationIds: proposal.parameters.notification_ids,
+      memberId: context().member.id, workspaceId: context().workspace.id,
+    });
+  });
+
+  it('does not create an empty or unbounded mark-all proposal', async () => {
+    inbox.listUnreadNotificationIds.mockResolvedValueOnce({ notification_ids: [], count: 0 });
+    await expect(createAll()).rejects.toMatchObject({ code: 'BUSINESS_RULE_VIOLATION' });
+    inbox.listUnreadNotificationIds.mockResolvedValueOnce({
+      notification_ids: Array.from({ length: PROPOSAL_LIMITS.bulkNotificationIds }, () => randomUUID()),
+      count: PROPOSAL_LIMITS.bulkNotificationIds + 1,
+    });
+    await expect(createAll()).rejects.toMatchObject({ code: 'BUSINESS_RULE_VIOLATION' });
+    expect(inbox.markAllAsRead).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale bound set before a bulk write', async () => {
+    const proposal = await createAll();
+    inbox.getNotificationsByIds.mockResolvedValue([{ ...row(), is_read: true, read_at: '2026-11-10T12:00:00.000Z' }, secondRow()]);
+    await expect(decide(proposal)).rejects.toMatchObject({ code: 'AGENT_PROPOSAL_STALE' });
+    expect(JSON.parse(await redis.get(await recordKey())).state).toBe('failed');
+    expect(inbox.markAllAsRead).not.toHaveBeenCalled();
+  });
+
+  it('never repeats a bulk update whose final state could not be confirmed', async () => {
+    const proposal = await createAll();
+    inbox.markAllAsRead.mockRejectedValueOnce(new AppError('Unknown', 503, 'NOTIFICATIONS_UPDATE_UNCONFIRMED'));
+    await expect(decide(proposal)).rejects.toMatchObject({ code: 'AGENT_PROPOSAL_INDETERMINATE' });
+    await expect(decide(proposal)).rejects.toMatchObject({ code: 'AGENT_PROPOSAL_INDETERMINATE' });
+    expect(inbox.markAllAsRead).toHaveBeenCalledTimes(1);
   });
 
   it('executes only on approval, passing the exact snapshot and returning the same receipt on retry', async () => {

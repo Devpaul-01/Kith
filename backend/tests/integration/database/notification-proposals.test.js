@@ -74,6 +74,22 @@ describe('notification proposal database boundaries', () => {
     expect((await inbox.getNotification(params)).is_read).toBe(false);
   });
 
+  it('marks only an exact bound unread set and leaves later notifications unread', async () => {
+    const owner = await tenant();
+    const first = await notification(owner);
+    const second = await notification(owner);
+    const later = await notification(owner);
+    const scope = { memberId: owner.member.id, workspaceId: owner.workspace.id };
+    const result = await inbox.markAllAsRead({ ...scope, notificationIds: [first.id, second.id] });
+    expect(result.updated_count).toBe(2);
+    const { data, error } = await supabaseAdmin.from('notifications').select('id, is_read')
+      .in('id', [first.id, second.id, later.id]);
+    if (error) throw error;
+    expect(Object.fromEntries(data.map((item) => [item.id, item.is_read]))).toEqual({
+      [first.id]: true, [second.id]: true, [later.id]: false,
+    });
+  });
+
   it('deduplicates required audit events without changing an append-only record', async () => {
     const owner = await tenant();
     const id = randomUUID();
