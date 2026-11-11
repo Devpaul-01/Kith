@@ -6,7 +6,8 @@ const { runConversationTurn } = require('./conversation.service');
 const { createGroqProvider } = require('../providers/groq.provider');
 const { createWorkspaceBudget } = require('./budget.service');
 const { selectNotification } = require('./notification-proposal.service');
-const { createNotificationProposal } = require('./proposal.service');
+const { createNotificationProposal, getProposalReceipts } = require('./proposal.service');
+const { extractProposalReferences } = require('./proposal-history.service');
 
 /** Compose the read loop with server-owned provider configuration per turn. */
 async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
@@ -35,13 +36,16 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     selection,
     create: ({ args, turnId }) => createNotificationProposal({ context: actorContext, selection, args, turnId, actorCtx, signal }),
   } : undefined;
+  const loadActionReceipts = ({ history }) => getProposalReceipts({
+    context: actorContext, proposals: extractProposalReferences(history), signal,
+  });
   if (input.data.conversation_id === undefined) {
-    return runReadTurn({ data: turnData, context: actorContext, provider, onEvent, signal, proposalSupport });
+    return runReadTurn({ data: turnData, context: actorContext, provider, onEvent, signal, proposalSupport, loadActionReceipts });
   }
   return runConversationTurn({
     context: actorContext, conversationId: input.data.conversation_id,
     signal,
-    runTurn: ({ history }) => runReadTurnWithHistory({ data: turnData, context: actorContext, provider, history, onEvent, signal, proposalSupport }),
+    runTurn: ({ history }) => runReadTurnWithHistory({ data: turnData, context: actorContext, provider, history, onEvent, signal, proposalSupport, loadActionReceipts }),
   });
 }
 

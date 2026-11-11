@@ -86,10 +86,81 @@ The result contains `notification_id`, `is_read: true` and the database's
 stored `read_at`. Rejection returns `{ data: { proposal_id, status: "rejected" } }`.
 Repeated successful decisions return the saved receipt; an opposite decision
 returns a conflict. Display the decision beside its proposal. Approval does
-not call the model or append a conversation turn; later chat must refresh
-notification facts through reads. Saying “approve” in chat cannot execute it.
+not call the model or append a conversation turn. Later conversation turns
+refresh saved action receipts as described below; current notification facts
+still require domain reads. Saying “approve” in chat cannot execute it.
 Disconnecting after submitting approval does not revoke it; retry the same
 proposal ID to learn its outcome rather than creating a replacement action.
+
+## Read status and continue the conversation
+
+Read a saved receipt without making a decision:
+
+```text
+GET /v1/workspaces/:workspaceId/agent/proposals/:proposalId
+```
+
+The route requires authentication, fresh active membership and the same
+user/member/workspace/role scope as the proposal. It shares the per-user
+agent rate limiter and returns `Cache-Control: no-store`. It never calls the
+model, writes audit events, renews expiry, repairs an audit or executes an
+action. A successful response uses the existing envelope:
+
+```json
+{
+  "data": {
+    "proposal_id": "<proposal-uuid>",
+    "tool": "mark_notification_read",
+    "notification_id": "<notification-uuid>",
+    "status": "executed",
+    "expires_at": "<approval-expiry-ISO-timestamp>",
+    "checked_at": "<server-check-ISO-timestamp>",
+    "result": {
+      "notification_id": "<notification-uuid>",
+      "is_read": true,
+      "read_at": "<stored-database-ISO-timestamp>"
+    }
+  }
+}
+```
+
+| Status | Meaning |
+| --- | --- |
+| `pending` | Awaiting approval or rejection. |
+| `expired` | The approval deadline passed before execution was claimed. |
+| `approval_pending` | Approval processing has started; no saved execution result. |
+| `indeterminate` | Execution was claimed; the outcome is unconfirmed, possibly still processing. Never assume success/failure or repeat the action. |
+| `rejection_pending` | Rejection processing has started; final auditing/storage is incomplete. |
+| `rejected` | Rejected without execution. |
+| `failed` | The proposal became stale or its conditional update was refused. |
+| `audit_pending` | The mutation result was saved but final auditing/completion is unfinished. Repeating approval can finish this without repeating the write. |
+| `executed` | The result and final audit are saved. |
+
+Only `audit_pending` and `executed` include `result`. Expiry does not erase a
+recorded outcome. Missing, preparing or differently scoped records return
+404; corrupt or unavailable storage returns 503. This endpoint reports a
+past action, not the notification's current database state.
+
+When a conversation resumes, server code finds proposal cards only in validated,
+correlated `mark_notification_read` call/result exchanges in retained history.
+It ignores IDs in user/assistant prose, other tool payloads and old receipt
+arrays. The server rechecks membership and compares each complete historical
+card with its scoped Redis record, then adds fresh `action_receipts` to this
+turn's initial `get_my_context` result, inside the untrusted-data envelope.
+This does not offer another model-callable tool or restore notification selection.
+
+Refresh is bounded to eight unique cards; normal follow-ups start with at most
+seven previous turns. Whole-turn eviction also bounds how long a proposal can
+be refreshed. Receipts alone never carry a reference forward after its original
+proposal exchange leaves history. A stateless request or new conversation has
+an empty receipt array and does not discover proposals from other conversations.
+
+For a missing, changed or unreadable record, internal conversation context gets
+only `{ proposal_id, status: "unavailable", checked_at }`, with no historical
+target/result substituted. Membership failures stop the turn before the model
+is invoked. Prompts require action claims to use this turn's fresh receipts,
+never old cards/receipts or user claims of approval. JSON and SSE follow-ups use
+the same refresh path; neither can execute a write.
 
 ## Expiry, failures and audit
 
@@ -130,7 +201,9 @@ default behavior. New service options are internal and cannot be set through
 model or approval input. No schema changes are required.
 
 Unit tests cover scoped handlers, real HTTP composition with mocked services,
-Redis scripts, races, stale snapshots, audit recovery and uncertain writes.
+Redis scripts, races, stale snapshots, audit recovery, uncertain writes,
+read-only status and fresh conversation receipts. Receipt tests also cover
+stale membership, corrupt/missing records, hostile history and cancellation.
 `tests/integration/database/notification-proposals.test.js` covers real
 membership joins, conditional updates and append-only audit deduplication;
 it requires the Postgres/PostgREST/Redis test stack and has not been run here.

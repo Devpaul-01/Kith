@@ -1,6 +1,6 @@
 const { z } = require('zod');
 
-const PROPOSAL_LIMITS = Object.freeze({ expiryMs: 5 * 60 * 1000, retentionSeconds: 24 * 60 * 60, redisTimeoutMs: 1000, recordBytes: 16 * 1024 });
+const PROPOSAL_LIMITS = Object.freeze({ expiryMs: 5 * 60 * 1000, retentionSeconds: 24 * 60 * 60, redisTimeoutMs: 1000, recordBytes: 16 * 1024, receiptBatch: 8 });
 const notificationSnapshotSchema = z.object({
   id: z.string().uuid(), type: z.string().min(1).max(100), title: z.string().max(1000),
   is_read: z.boolean(), read_at: z.string().datetime({ offset: true }).nullable(),
@@ -32,4 +32,26 @@ const proposalRecordSchema = z.object({
 const emptyApprovalSchema = z.object({}).strict();
 const proposalIdSchema = z.string().uuid().transform((id) => id.toLowerCase());
 
-module.exports = { PROPOSAL_LIMITS, notificationSnapshotSchema, notificationRowSchema, notificationReadResultSchema, proposalSchema, proposalRecordSchema, emptyApprovalSchema, proposalIdSchema };
+const statusFields = z.object({
+  proposal_id: z.string().uuid(), tool: z.literal('mark_notification_read'), notification_id: z.string().uuid(),
+  expires_at: z.string().datetime(), checked_at: z.string().datetime(),
+}).strict();
+const proposalStatusSchema = z.discriminatedUnion('status', [
+  ...['pending', 'expired', 'approval_pending', 'indeterminate', 'rejection_pending', 'rejected', 'failed']
+    .map((status) => statusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => statusFields.extend({ status: z.literal(status), result: notificationReadResultSchema })),
+]).refine((value) => !value.result || value.notification_id === value.result.notification_id);
+// A missing record never inherits a result or target from historical data.
+const unavailableReceiptSchema = z.object({
+  proposal_id: z.string().uuid(), status: z.literal('unavailable'), checked_at: z.string().datetime(),
+}).strict();
+const actionReceiptsSchema = z.array(z.union([proposalStatusSchema, unavailableReceiptSchema]))
+  .max(PROPOSAL_LIMITS.receiptBatch).refine((items) => new Set(items.map((item) => item.proposal_id)).size === items.length);
+const proposalReferencesSchema = z.array(proposalSchema).max(PROPOSAL_LIMITS.receiptBatch)
+  .refine((items) => new Set(items.map((item) => item.id)).size === items.length);
+const proposedToolResultSchema = z.object({
+  kind: z.literal('untrusted_tool_result'),
+  data: z.object({ status: z.literal('proposed'), proposal: proposalSchema }).strict(),
+}).strict();
+
+module.exports = { PROPOSAL_LIMITS, notificationSnapshotSchema, notificationRowSchema, notificationReadResultSchema, proposalSchema, proposalRecordSchema, emptyApprovalSchema, proposalIdSchema, proposalStatusSchema, actionReceiptsSchema, proposalReferencesSchema, proposedToolResultSchema };

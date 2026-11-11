@@ -8,7 +8,7 @@ const { AUDIT_ACTIONS } = require('../../constants/audit-actions');
 const { assertAgentContext } = require('./context.service');
 const { assertNotCancelled } = require('../utils/cancellation');
 const notification = require('./notification-proposal.service');
-const { PROPOSAL_LIMITS, notificationSnapshotSchema, proposalRecordSchema, proposalSchema, proposalIdSchema, emptyApprovalSchema } = require('../validators/proposal.validator');
+const { PROPOSAL_LIMITS, notificationSnapshotSchema, proposalRecordSchema, proposalSchema, proposalIdSchema, emptyApprovalSchema, proposalStatusSchema, proposalReferencesSchema } = require('../validators/proposal.validator');
 const logger = require('../../utils/logger');
 
 // No claim can be reclaimed after entering executing. Redis uncertainty must
@@ -114,6 +114,67 @@ function checkExpiry(record) {
 const executedReply = (record) => ({ proposal_id: record.proposal.id, status: 'executed', result: record.result });
 const rejectedReply = (record) => ({ proposal_id: record.proposal.id, status: 'rejected' });
 
+function statusReply(record) {
+  if (record.state === 'preparing') throw missing();
+  const now = Date.now();
+  const expired = Date.parse(record.proposal.expires_at) <= now;
+  const statuses = {
+    pending: expired ? 'expired' : 'pending', approving: expired ? 'expired' : 'approval_pending',
+    executing: 'indeterminate', applied: 'audit_pending', executed: 'executed',
+    rejecting: 'rejection_pending', rejected: 'rejected', failed: 'failed',
+  };
+  return proposalStatusSchema.parse({
+    proposal_id: record.proposal.id, tool: record.proposal.tool,
+    notification_id: record.proposal.parameters.notification_id,
+    status: statuses[record.state], expires_at: record.proposal.expires_at,
+    checked_at: new Date(now).toISOString(), ...(record.result ? { result: record.result } : {}),
+  });
+}
+
+/** Read a receipt only. Never audit, renew expiry, repair or execute an action. */
+async function getProposalStatus({ context, proposalId, redisFactory = getRedis }) {
+  const actor = freezeContext(context);
+  const id = proposalIdSchema.safeParse(proposalId);
+  if (!id.success) throw new ValidationError('Invalid proposal ID');
+  await notification.assertCurrentActor(actor);
+  const stored = await storage(actor, redisFactory).read(id.data);
+  return statusReply(stored.record);
+}
+
+/** Refresh a bounded set of server-owned proposal cards from recent history. */
+async function getProposalReceipts({ context, proposals, signal, redisFactory = getRedis }) {
+  const actor = freezeContext(context);
+  const input = proposalReferencesSchema.safeParse(proposals);
+  if (!input.success) throw new ValidationError('Invalid proposal references');
+  assertNotCancelled(signal);
+  if (input.data.length === 0) return [];
+  // Fresh membership failures must stop the turn, not become unknown receipts.
+  await notification.assertCurrentActor(actor);
+  assertNotCancelled(signal);
+  const unknown = (id) => ({ proposal_id: id, status: 'unavailable', checked_at: new Date().toISOString() });
+  let store;
+  try { store = storage(actor, redisFactory); } catch {
+    logger.warn('Agent action receipts unavailable', { requestId: actor.requestId, workspaceId: actor.workspace.id });
+    return input.data.map((proposal) => unknown(proposal.id));
+  }
+  return Promise.all(input.data.map(async (proposal) => {
+    assertNotCancelled(signal);
+    try {
+      const stored = await store.read(proposal.id);
+      assertNotCancelled(signal);
+      // The current record must describe the same card, not another target
+      // attached to a valid-looking proposal ID in corrupt conversation data.
+      if (JSON.stringify(stored.record.proposal) !== JSON.stringify(proposal)) throw unavailable();
+      return statusReply(stored.record);
+    } catch (err) {
+      assertNotCancelled(signal);
+      if (!['AGENT_PROPOSAL_NOT_FOUND', 'AGENT_PROPOSAL_UNAVAILABLE'].includes(err.code)) throw err;
+      logger.warn('Agent action receipt unavailable', { requestId: actor.requestId, proposalId: proposal.id, errorCode: err.code });
+      return unknown(proposal.id);
+    }
+  }));
+}
+
 async function decideProposal({ context, proposalId, data, decision, actorCtx, redisFactory = getRedis }) {
   const actor = freezeContext(context);
   const id = proposalIdSchema.safeParse(proposalId);
@@ -189,4 +250,4 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
   return executedReply(stored.record);
 }
 
-module.exports = { createNotificationProposal, decideProposal, CAS_PROPOSAL_SCRIPT };
+module.exports = { createNotificationProposal, decideProposal, getProposalStatus, getProposalReceipts, CAS_PROPOSAL_SCRIPT };

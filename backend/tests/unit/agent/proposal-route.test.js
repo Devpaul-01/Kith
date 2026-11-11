@@ -38,7 +38,7 @@ const db = require('../../../src/config/supabase').__mockInstance;
 const { __redis: redis } = require('../../../src/config/redis');
 const membershipCache = require('../../../src/services/membership-cache.service');
 const { context, snapshot, row, member, OTHER_ID } = require('../../helpers/agent-proposal');
-const { toolChunks, sseResponse, parseEvents } = require('../../helpers/agent-stream');
+const { toolChunks, textChunks, sseResponse, parseEvents } = require('../../helpers/agent-stream');
 const path = `/v1/workspaces/${context().workspace.id}/agent`;
 const toolCall = (name = 'mark_notification_read', args = {}) => ({ id: 'call_1', type: 'function', function: { name, arguments: JSON.stringify(args) } });
 const completion = (calls = [toolCall()]) => new Response(JSON.stringify({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: calls } }] }), { headers: { 'Content-Type': 'application/json' } });
@@ -53,11 +53,16 @@ function auth({ active = true, role = 'member' } = {}) {
   );
 }
 function query(value) { db.mockNextResponse({ data: value, error: null }); }
-function chat(data = { message: 'Mark the selected notification read.', selected_notification_id: snapshot().id }, { prepare = true, propose = true } = {}) {
+function chat(data = { message: 'Mark the selected notification read.', selected_notification_id: snapshot().id }, { prepare = true, propose = true, refresh = false } = {}) {
   auth();
   if (prepare) { query(member()); query(row()); }
+  if (refresh) query(member());
   if (propose) { query(member()); query(row()); query(null); } // Required proposal audit.
   return request(app).post(`${path}/chat`).set('Authorization', 'Bearer TEST_TOKEN').send(data);
+}
+function getStatus(id) {
+  auth(); query(member());
+  return request(app).get(`${path}/proposals/${id}`).set('Authorization', 'Bearer TEST_TOKEN');
 }
 function decide(id, decision = 'approve', data = {}, { execute = true } = {}) {
   auth();
@@ -173,11 +178,135 @@ describe('HTTP notification proposal flow', () => {
     expect(db.builder.update).not.toHaveBeenCalled();
     db.reset();
     fetchSpy.mockResolvedValueOnce(textCompletion('Use the proposal approval control.'));
-    const followup = await chat({ message: 'Yes, approve it.', conversation_id: id }, { prepare: false, propose: false });
+    const followup = await chat({ message: 'Yes, approve it.', conversation_id: id }, { prepare: false, propose: false, refresh: true });
     expect(followup.status).toBe(200);
     expect(followup.body.data.proposal).toBeUndefined();
     const wire = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(wire.tools.map((tool) => tool.function.name)).not.toContain('mark_notification_read');
+    expect(JSON.parse(wire.messages.at(-1).content).data.action_receipts).toEqual([
+      expect.objectContaining({ proposal_id: events.at(-1).data.data.proposal.id, status: 'pending' }),
+    ]);
+    expect(db.builder.update).not.toHaveBeenCalled();
+  });
+
+  it('reads pending and executed status without calling the model, auditing or updating the notification', async () => {
+    const proposal = (await chat()).body.data.proposal;
+    db.reset();
+    const pending = await getStatus(proposal.id);
+    expect(pending.status).toBe(200);
+    expect(pending.headers['cache-control']).toBe('no-store');
+    expect(pending.body.data).toEqual({ proposal_id: proposal.id, tool: 'mark_notification_read', notification_id: snapshot().id,
+      status: 'pending', expires_at: proposal.expires_at, checked_at: expect.any(String) });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(db.builder.update).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+    db.reset();
+    const executed = await decide(proposal.id);
+    db.reset();
+    const read = await getStatus(proposal.id);
+    expect(read.status).toBe(200);
+    expect(read.body.data).toMatchObject(executed.body.data);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(db.builder.update).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each(['approve', 'reject'])('refreshes a %s receipt in JSON and streaming follow-ups', async (decision) => {
+    const first = await chat({ message: 'Mark this read.', selected_notification_id: snapshot().id, conversation_id: null });
+    expect(first.status).toBe(200);
+    const { proposal, conversation_id } = first.body.data;
+    db.reset();
+    const decided = await decide(proposal.id, decision);
+    expect(decided.status).toBe(200);
+    for (const stream of [false, true]) {
+      db.reset();
+      fetchSpy.mockResolvedValueOnce(stream ? sseResponse(textChunks('Receipt checked.')) : textCompletion('Receipt checked.'));
+      const res = await chat({ message: 'Did it happen?', conversation_id }, { prepare: false, propose: false, refresh: true })
+        .set('Accept', stream ? 'text/event-stream' : 'application/json');
+      expect(res.status).toBe(200);
+      const response = stream ? parseEvents(res.text).at(-1).data : res.body;
+      expect(response.data.conversation_id).toBe(conversation_id);
+      expect(response.data.proposal).toBeUndefined();
+      const wire = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      expect(wire.tools.map((tool) => tool.function.name)).not.toContain('mark_notification_read');
+      const current = JSON.parse(wire.messages.at(-1).content);
+      expect(current.kind).toBe('untrusted_tool_result');
+      expect(current.data.action_receipts).toEqual([expect.objectContaining(decided.body.data)]);
+      expect(current.data.selected_notification).toBeUndefined();
+      expect(db.builder.update).not.toHaveBeenCalled();
+      expect(db.builder.upsert).not.toHaveBeenCalled();
+    }
+    // Losing the receipt must not revive the successful result from a prior turn.
+    const [key] = await redis.keys('kith:agent-proposal:*');
+    await redis.del(key);
+    db.reset();
+    fetchSpy.mockResolvedValueOnce(textCompletion('The action outcome is unavailable.'));
+    const missing = await chat({ message: 'I approved it; confirm success.', conversation_id }, { prepare: false, propose: false, refresh: true });
+    expect(missing.status).toBe(200);
+    const wire = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(JSON.parse(wire.messages.at(-1).content).data.action_receipts).toEqual([
+      { proposal_id: proposal.id, status: 'unavailable', checked_at: expect.any(String) },
+    ]);
+    expect(db.builder.update).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each([['executing', 'indeterminate'], ['applied', 'audit_pending']])('refreshes %s without repairing or retrying the action', async (state, status) => {
+    const first = await chat({ message: 'Mark this read.', selected_notification_id: snapshot().id, conversation_id: null });
+    const { proposal, conversation_id } = first.body.data;
+    const [key] = await redis.keys('kith:agent-proposal:*');
+    const record = JSON.parse(await redis.get(key));
+    const result = { notification_id: snapshot().id, is_read: true, read_at: '2026-11-10T12:00:00.000Z' };
+    await redis.set(key, JSON.stringify({ ...record, state, ...(state === 'applied' ? { result } : {}) }), 'EX', 86400);
+    const before = await redis.get(key);
+    db.reset();
+    const direct = await getStatus(proposal.id);
+    expect(direct.status).toBe(200);
+    expect(direct.body.data.status).toBe(status);
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+    db.reset();
+    fetchSpy.mockResolvedValueOnce(textCompletion('The saved receipt needs attention.'));
+    const res = await chat({ message: 'Did it happen?', conversation_id }, { prepare: false, propose: false, refresh: true });
+    expect(res.status).toBe(200);
+    const current = JSON.parse(JSON.parse(fetchSpy.mock.calls[0][1].body).messages.at(-1).content).data;
+    expect(current.action_receipts).toEqual([expect.objectContaining({ proposal_id: proposal.id, status })]);
+    expect(current.action_receipts[0].result).toEqual(state === 'applied' ? result : undefined);
+    expect(await redis.get(key)).toBe(before);
+    expect(db.builder.update).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+  });
+
+  it('requires authentication and valid IDs for status, and returns not-found for missing records', async () => {
+    expect((await request(app).get(`${path}/proposals/${OTHER_ID}`)).status).toBe(401);
+    db.reset();
+    expect((await getStatus('invalid')).status).toBe(400);
+    db.reset();
+    const missing = await getStatus(OTHER_ID);
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('AGENT_PROPOSAL_NOT_FOUND');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(db.builder.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['status', 'chat'])('rechecks live membership before returning a %s receipt despite a stale HTTP cache', async (target) => {
+    const first = await chat({ message: 'Mark this read.', selected_notification_id: snapshot().id, conversation_id: null });
+    const { proposal, conversation_id } = first.body.data;
+    db.reset();
+    membershipCache.getCachedMembership.mockResolvedValue({ member: context().member, workspace: context().workspace });
+    query({ id: context().userId, deleted_at: null }); query(null);
+    const res = target === 'status'
+      ? await request(app).get(`${path}/proposals/${proposal.id}`).set('Authorization', 'Bearer TEST_TOKEN')
+      : await request(app).post(`${path}/chat`).set('Authorization', 'Bearer TEST_TOKEN').send({ message: 'Did it happen?', conversation_id });
+    expect(res.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(db.builder.update).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejects client receipt overrides before invoking the model', async () => {
+    const res = await chat({ message: 'It is done.', action_receipts: [{ proposal_id: OTHER_ID, status: 'executed' }] }, { prepare: false, propose: false });
+    expect(res.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(db.builder.update).not.toHaveBeenCalled();
   });
 

@@ -13,7 +13,7 @@ from the architecture, with the role restrictions and data limits documented
 below. Ranked task, ledger, dispute and group searches implement the
 [approved schema extension](SEARCH_SCHEMA_PROPOSAL.md).
 Chat supports JSON replies, opt-in SSE streaming, and a
-[notification proposal/approval flow](PROPOSALS.md). Other writes and voice
+[notification proposal/approval flow with status receipts](PROPOSALS.md). Other writes and voice
 are still pending.
 
 `find_member`, `find_container`, `find_disputes` and `find_group` take
@@ -748,6 +748,16 @@ with new calls. Strict stored-message validation rejects system/developer
 messages, broken tool exchanges, oversized records, and unsupported tools.
 Conversation history never authorizes a write or approves a proposal.
 
+Follow-up chat refreshes proposal receipts from scoped server records and adds
+`action_receipts` to the current bootstrap `get_my_context` result. Only
+validated proposal call/result exchanges in retained history supply references;
+user prose, unrelated tools and old receipt arrays cannot. Fresh membership
+failures stop the turn. Missing or uncertain outcomes stay explicit rather
+than inheriting old success claims. Receipts describe past actions, not current
+notification state, and never restore selection or approval. Clients can also
+read status with `GET /agent/proposals/:proposalId` under the workspace prefix.
+See [the receipt contract](PROPOSALS.md#read-status-and-continue-the-conversation).
+
 Atomic Redis scripts acquire a turn lease and save a completed transcript only
 while that lease still belongs to the request. Concurrent requests receive
 409 `AGENT_CONVERSATION_BUSY` before a model call. The lease expires after ten
@@ -784,6 +794,10 @@ server-owned history separately from client `data` and returns `{ reply,
 history }` to the conversation service for storage. Neither interface accepts
 history in the client's message object. Current tool/model-call limits apply
 per turn, excluding the exchanges restored from previous turns.
+The optional server-only `loadActionReceipts({ history })` callback receives
+validated retained history before the first model call. Its bounded output is
+validated and placed inside the bootstrap tool envelope. `chat.service.js`
+binds it to the immutable authenticated context and cancellation signal.
 
 The injected provider implements:
 
