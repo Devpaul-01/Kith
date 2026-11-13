@@ -13,9 +13,17 @@ from the architecture, with the role restrictions and data limits documented
 below. Ranked task, ledger, dispute and group searches implement the
 [approved schema extension](SEARCH_SCHEMA_PROPOSAL.md).
 Chat supports JSON replies, opt-in SSE streaming, and a
-[notification proposal/approval flow with status receipts](PROPOSALS.md) for
+[Tier 2 proposal/approval flow with status receipts](PROPOSALS.md) for
 one selected notification or an exact bounded set of current unread
-notifications. Other writes and voice are still pending.
+notifications, plus account-wide profile changes through `update_my_profile`.
+An explicit contact selection also enables `delete_contact` for one personal
+account contact. An explicit current-request task selection enables Tier 2
+`update_task` to start or complete the caller's own active, unconfirmed task,
+optionally updating its completion note. Other writes and voice are still pending.
+
+Current work prioritizes the core money, task, member, participant and dispute
+flow. Do not add or polish tools marked Lower-Priority in the architecture;
+existing handlers remain available.
 
 `find_member`, `find_container`, `find_disputes` and `find_group` take
 `{ query, limit? }`. `find_tasks` and `find_ledger_entries` also accept an
@@ -35,8 +43,9 @@ workspaces; the other search scopes are described below.
 - `ambiguous`: multiple candidates; the user must choose or refine the query.
 
 No result contains an automatically resolved ID. Write proposals must enforce
-the user's entity selection separately from action approval; the notification
-flow requires an explicit client selection for the current request.
+the user's entity selection separately from action approval. Selected
+notification, contact and task flows require explicit client selection for the
+current request.
 `has_more` means further candidates were omitted; refine the query or increase
 the limit. All returned names, titles, notes, reasons and descriptions remain
 untrusted data.
@@ -587,9 +596,16 @@ validation remains pending.
 `POST /v1/workspaces/:workspaceId/agent/chat` accepts a bearer token and a JSON
 body containing a nonempty `message` (up to 8,000 characters), with an optional
 `conversation_id` as described below. The
-[notification proposal flow](PROPOSALS.md) can propose marking all current
-unread notifications read; an optional `selected_notification_id` additionally
-enables the single-notification proposal:
+[Tier 2 proposal flow](PROPOSALS.md) can propose marking all current unread
+notifications read or updating the caller's account profile. An optional
+`selected_notification_id` additionally enables the single-notification proposal.
+
+`selected_contact_id` instead enables deletion of that exact caller-owned
+account contact. Each selection applies only to the current request; IDs in
+prose and conversation history do not select a target. See the
+[contact deletion contract](PROPOSALS.md#contact-deletion).
+
+For example, a dashboard read needs only a message:
 
 ```json
 { "message": "Show my workspace dashboard." }
@@ -619,11 +635,11 @@ workspace router. Context comes exclusively from those middleware results.
 Client-supplied history, roles, tools, identity fields, model settings, and
 workspace IDs in the body are rejected. Query parameters cannot change the
 workspace or actor. The tools executed immediately are still role-filtered
-Tier 0/1 reads. Chat also offers the Tier 2 mark-all proposal tool; an explicit
-validated notification selection additionally offers the single-notification
-proposal tool. Both only create server-bound approval cards. Chat never
-executes or approves them; only the separate approval endpoint can apply an
-action.
+Tier 0/1 reads. Chat also offers the Tier 2 mark-all and profile proposal tools;
+an explicit validated notification or contact selection additionally offers
+the matching proposal tool. All create approval cards stored by the server.
+Chat never executes or approves them; only the separate approval
+endpoint can apply an action.
 
 The dedicated `agentLimiter` allows 10 requests per minute per authenticated
 user across all workspaces, using the shared Redis store with prefix
@@ -734,7 +750,7 @@ UUID. Send that ID with a follow-up to resume the conversation:
 Send `null` again to start over, or omit the field for a stateless request.
 Client-supplied messages/history, tool results, roles, and identity overrides
 remain rejected. The response contains text, turn metrics, the ID and an
-optional notification proposal; the saved transcript is never returned.
+optional proposal; the saved transcript is never returned.
 The conversation ID is not sent to the model.
 
 Redis stores at most eight completed turns, with a 30-minute idle expiry
@@ -759,8 +775,9 @@ validated proposal call/result exchanges in retained history supply references;
 user prose, unrelated tools and old receipt arrays cannot. Fresh membership
 failures stop the turn. Missing or uncertain outcomes stay explicit rather
 than inheriting old success claims. Receipts describe past actions, not current
-notification state, and never restore selection or approval. Clients can also
-read status with `GET /agent/proposals/:proposalId` under the workspace prefix.
+notification, profile or contact state, and never restore selection or approval.
+Clients can also read status with `GET /agent/proposals/:proposalId` under the
+workspace prefix.
 See [the receipt contract](PROPOSALS.md#read-status-and-continue-the-conversation).
 
 Atomic Redis scripts acquire a turn lease and save a completed transcript only
@@ -816,9 +833,10 @@ Messages use chat-completion roles and correlated `tool_call_id` values.
 Tool definitions contain `name`, `description`, and the Zod `parameterSchema`;
 the provider adapter owns converting schemas to its wire format. Only the
 caller's permitted Tier 0/1 definitions are supplied by default. Production
-chat also supplies the mark-all notification proposal definition, and an
+chat also supplies the mark-all notification and profile proposal definitions. An
 explicit notification selection adds the single-notification definition.
-Both are handled by a separate proposal callback that cannot execute the
+An explicit contact selection adds the contact deletion definition.
+These are handled by a separate proposal callback that cannot execute the
 write. Every read execution still passes through `executeReadTool` and the
 handler's permission checks.
 
@@ -1000,7 +1018,11 @@ RPC permissions have integration coverage in
 with the real Postgres/PostgREST/Redis test stack and the updated schema.
 Unit tests mock RPC results and do not prove that the SQL or indexes work.
 
-With exact-set notification proposals, approvals and receipts (2026-11-11),
-all 2,902 unit tests passed across 89 suites. Live database/PostgREST, model
-and deployed-proxy verification remain pending. The existing `ioredis-mock`
+Profile proposal tests cover exact changed fields, current membership,
+conditional updates, audit events, receipts and retry idempotency. They also
+check that activity timestamps and unrelated profile edits do not invalidate
+a card, while changes to reviewed fields do.
+Contact deletion tests cover ownership, full reviewed-state comparisons,
+conditional conflicts and receipts that never restore selection. Live
+database/PostgREST, model and deployed-proxy verification remain pending. The existing `ioredis-mock`
 listener warning is still present in full unit runs.

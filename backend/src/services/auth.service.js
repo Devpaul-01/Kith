@@ -13,6 +13,7 @@ const {
 const { generateUploadUrl } = require('./storage.service');
 const { getQueue } = require('../queues');
 const logger = require('../utils/logger');
+const { profileUpdateExpectedSchema, contactSnapshotSchema } = require('../validators/auth.validator');
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -476,11 +477,32 @@ const PROFILE_UPDATE_ALLOWED_FIELDS = [
   'full_name', 'bio', 'country_of_residence', 'timezone',
   'avatar_url', 'push_enabled', 'email_digest_enabled', 'preferred_language',
 ];
+const PROFILE_SNAPSHOT_FIELDS = 'id, full_name, bio, country_of_residence, timezone, preferred_language, push_enabled, email_digest_enabled, updated_at';
+const profileUnavailable = () => new AppError('The user profile is unavailable. Please try again.', 503, 'PROFILE_UNAVAILABLE');
 
-async function updateProfile({ userId, data }) {
+async function getProfileForUpdate({ userId }) {
+  const { data, error } = await supabaseAdmin.from('users').select(PROFILE_SNAPSHOT_FIELDS)
+    .eq('id', userId).is('deleted_at', null).maybeSingle();
+  if (error) throw profileUnavailable();
+  if (!data) throw new NotFoundError('User profile not found');
+  return data;
+}
+
+async function updateProfile({ userId, data, expectedValues }) {
   const updates = {};
   for (const field of PROFILE_UPDATE_ALLOWED_FIELDS) {
     if (data[field] !== undefined) updates[field] = data[field];
+  }
+
+  let conditions;
+  if (expectedValues !== undefined) {
+    const parsed = profileUpdateExpectedSchema.safeParse(expectedValues);
+    if (!parsed.success || Object.keys(parsed.data).length !== Object.keys(updates).length
+        || Object.keys(updates).some((field) => !Object.hasOwn(parsed.data, field)
+          || parsed.data[field] === undefined)) {
+      throw new ValidationError('Expected profile values must match the fields being updated');
+    }
+    conditions = parsed.data;
   }
 
   if (!Object.keys(updates).length) {
@@ -490,14 +512,25 @@ async function updateProfile({ userId, data }) {
   }
 
   updates.updated_at = new Date().toISOString();
-  const { data: user, error } = await supabaseAdmin
-    .from('users')
-    .update(updates)
-    .eq('id', userId)
-    .select()
-    .single();
+  let query = supabaseAdmin.from('users').update(updates).eq('id', userId);
+  if (conditions) {
+    // users.updated_at also changes for background last_seen_at writes.
+    // Bind the mutation to the reviewed values so activity cannot stale a card.
+    query = query.is('deleted_at', null);
+    for (const [field, value] of Object.entries(conditions)) {
+      query = value === null ? query.is(field, null) : query.eq(field, value);
+    }
+    query = query.select(PROFILE_SNAPSHOT_FIELDS).maybeSingle();
+  } else {
+    query = query.select().single();
+  }
+  const { data: user, error } = await query;
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    if (conditions) throw profileUnavailable();
+    throw new Error(error.message);
+  }
+  if (!user && conditions) throw new ConflictError('The user profile changed. Please request a new proposal.');
   return user;
 }
 
@@ -527,6 +560,17 @@ async function getUserContacts({ userId }) {
   return data || [];
 }
 
+const CONTACT_SNAPSHOT_FIELDS = 'id, user_id, type, value, label, country_code, is_primary, is_verified, verified_at, created_at';
+const contactUnavailable = () => new AppError('Contact information is unavailable. Please try again.', 503, 'CONTACT_UNAVAILABLE');
+
+async function getContactForUpdate({ userId, contactId }) {
+  const { data, error } = await supabaseAdmin.from('user_contacts')
+    .select(CONTACT_SNAPSHOT_FIELDS).eq('id', contactId).eq('user_id', userId).maybeSingle();
+  if (error) throw contactUnavailable();
+  if (!data) throw new NotFoundError('Contact not found');
+  return data;
+}
+
 // upsert_primary_contact runs the is_primary=false demotion and the
 // upsert atomically, so two concurrent calls can't both end up with
 // is_primary=true for the same contact type.
@@ -550,17 +594,32 @@ async function upsertContact({ userId, type, value, label, country_code, is_prim
 
 // .select('id').maybeSingle() detects a no-op delete (nothing matched) so
 // a non-existent contactId returns 404 instead of a false-positive 200.
-async function deleteContact({ userId, contactId }) {
-  const { data, error } = await supabaseAdmin
-    .from('user_contacts')
-    .delete()
-    .eq('id', contactId)
-    .eq('user_id', userId)
-    .select('id')
-    .maybeSingle();
-
-  if (error) throw new Error(error.message);
-  if (!data) throw new NotFoundError('Contact not found');
+async function deleteContact({ userId, contactId, expectedContact }) {
+  let expected;
+  if (expectedContact !== undefined) {
+    const parsed = contactSnapshotSchema.safeParse(expectedContact);
+    if (!parsed.success || parsed.data.id !== contactId) {
+      throw new ValidationError('Invalid expected contact state');
+    }
+    expected = parsed.data;
+  }
+  let query = supabaseAdmin.from('user_contacts').delete().eq('id', contactId).eq('user_id', userId);
+  if (expected) {
+    for (const [field, value] of Object.entries(expected)) {
+      if (field === 'id') continue;
+      query = value === null ? query.is(field, null) : query.eq(field, value);
+    }
+  }
+  const { data, error } = await query.select('id').maybeSingle();
+  if (error) {
+    if (expected) throw contactUnavailable();
+    throw new Error(error.message);
+  }
+  if (!data) {
+    if (expected) throw new ConflictError('The contact changed. Please request a new proposal.');
+    throw new NotFoundError('Contact not found');
+  }
+  if (expected) return data;
 }
 
 // Single atomic RPC (replace_user_contacts_atomic) instead of a separate
@@ -660,9 +719,11 @@ module.exports = {
   verifyEmail,
   register,
   getMe,
+  getProfileForUpdate,
   updateProfile,
   getAvatarUploadUrl,
   getUserContacts,
+  getContactForUpdate,
   upsertContact,
   deleteContact,
   updateContacts,

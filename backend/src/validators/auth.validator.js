@@ -72,6 +72,20 @@ const updateProfileSchema = z.object({
   preferred_language: z.string().max(10).optional(),
 });
 
+// Stored profile values may be null even where new updates require strings.
+// These schemas are internal conditional-update inputs, not HTTP body fields.
+const profileSnapshotFieldsSchema = z.object({
+  full_name: z.string().max(100).nullable(),
+  bio: z.string().max(500).nullable(),
+  country_of_residence: z.string().max(100).nullable(),
+  timezone: z.string().max(100).nullable(),
+  preferred_language: z.string().max(10).nullable(),
+  push_enabled: z.boolean(),
+  email_digest_enabled: z.boolean(),
+}).strict();
+const profileUpdateExpectedSchema = profileSnapshotFieldsSchema.partial()
+  .refine((value) => Object.keys(value).length > 0, 'Expected profile fields are required');
+
 // ── Contact methods ───────────────────────────────────────────────
 const contactSchema = z.object({
   contacts: z.array(
@@ -87,6 +101,19 @@ const contactSchema = z.object({
     })
   ).min(1),
 });
+
+// Complete reviewed state for an internal conditional contact deletion.
+const contactSnapshotSchema = z.object({
+  id: z.string().uuid(),
+  type: contactSchema.shape.contacts.element.shape.type,
+  value: z.string().min(1).max(200),
+  label: z.string().max(80).nullable(),
+  country_code: z.string().max(10).nullable(),
+  is_primary: z.boolean(),
+  is_verified: z.boolean(),
+  verified_at: z.string().datetime({ offset: true }).nullable(),
+  created_at: z.string().datetime({ offset: true }),
+}).strict();
 
 // ── Push token ────────────────────────────────────────────────────
 const pushTokenSchema = z.object({
@@ -113,7 +140,10 @@ module.exports = {
   resetPasswordSchema,
   changePasswordSchema,
   updateProfileSchema,
+  profileSnapshotFieldsSchema,
+  profileUpdateExpectedSchema,
   contactSchema,
+  contactSnapshotSchema,
   pushTokenSchema,
   notificationPrefsSchema,
   refreshTokenSchema,

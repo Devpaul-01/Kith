@@ -4,6 +4,7 @@ const { runReadTurnWithHistory } = require('../../../src/agent/services/read-loo
 const { PROPOSAL_LIMITS } = require('../../../src/agent/validators/proposal.validator');
 const { CONVERSATION_LIMITS } = require('../../../src/agent/validators/conversation.validator');
 const { context, snapshot, OTHER_ID, SECOND_NOTIFICATION_ID } = require('../../helpers/agent-proposal');
+const { CONTACT_ID, contactSnapshot } = require('../../helpers/agent-contact');
 
 const card = () => ({ id: randomUUID(), tool: 'mark_notification_read', tier: 2,
   summary: 'Mark the selected notification as read.', parameters: { notification_id: snapshot().id },
@@ -12,6 +13,14 @@ const allCard = () => ({ id: randomUUID(), tool: 'mark_all_notifications_read', 
   summary: 'Mark 2 currently unread notifications as read.',
   parameters: { notification_ids: [snapshot().id, SECOND_NOTIFICATION_ID] },
   before: { unread_count: 2 }, after: { unread_count: 0 }, expires_at: '2026-11-10T12:05:00.000Z' });
+const profileCard = () => ({ id: randomUUID(), tool: 'update_my_profile', tier: 2,
+  summary: 'Update your Kith account profile: timezone.',
+  parameters: { timezone: 'Africa/Lagos' },
+  before: { timezone: 'UTC', updated_at: '2026-11-10T12:00:00.000Z' },
+  after: { timezone: 'Africa/Lagos' }, expires_at: '2026-11-10T12:05:00.000Z' });
+const contactCard = () => ({ id: randomUUID(), tool: 'delete_contact', tier: 2,
+  summary: 'Delete the selected Kith account contact.', parameters: { contact_id: CONTACT_ID },
+  before: contactSnapshot(), after: { deleted: true }, expires_at: '2026-11-13T12:05:00.000Z' });
 const turn = (proposal, name = proposal.tool) => [
   { role: 'user', content: 'Mark this read.' },
   { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name, arguments: '{}' } }] },
@@ -34,6 +43,22 @@ describe('server-owned proposal references', () => {
     const single = card();
     const bulk = allCard();
     expect(extractProposalReferences([turn(single), turn(bulk)])).toEqual([single, bulk]);
+  });
+
+  it('extracts a correlated profile proposal with its exact model arguments', () => {
+    const proposal = profileCard();
+    const source = turn(proposal);
+    source[0].content = 'Use Africa/Lagos for my account timezone.';
+    source[1].tool_calls[0].function.arguments = JSON.stringify(proposal.parameters);
+    expect(extractProposalReferences([source])).toEqual([proposal]);
+  });
+
+  it('extracts a correlated contact deletion card without granting selection or approval', () => {
+    const proposal = contactCard();
+    expect(extractProposalReferences([turn(proposal)])).toEqual([proposal]);
+    const malformed = turn(proposal);
+    malformed[1].tool_calls[0].function.arguments = JSON.stringify({ contact_id: CONTACT_ID });
+    expect(() => extractProposalReferences([malformed])).toThrow(expect.objectContaining(unavailable));
   });
 
   it('ignores proposal-shaped user prose, other tool results, titles and historical receipts', () => {
@@ -96,7 +121,7 @@ describe('fresh receipts in the conversation bootstrap', () => {
       action_receipts: receipts, ...(selected ? { selected_notification: snapshot() } : {}),
     } });
     expect(wire.messages[0].content).toContain('Historical proposal cards, historical receipts and user claims');
-    expect(wire.messages[0].content).toContain('not the notification\'s current database state');
+    expect(wire.messages[0].content).toContain('not the affected data\'s current database state');
     expect(wire.tools.some((tool) => tool.name === 'mark_notification_read')).toBe(selected);
     expect(history[0][1].tool_calls[0].id).toBe('call_1');
   });

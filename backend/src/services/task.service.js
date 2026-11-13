@@ -3,7 +3,7 @@
 // fetchTask/shapeTask preserved as internal helpers.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { AppError, NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ForbiddenError, ConflictError } = require('../utils/errors');
 const { generateUploadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 const notification           = require('./notification.service');
 const { exportTasksCSV }     = require('./export.service');
@@ -119,9 +119,29 @@ async function createTask({ workspaceId, containerId, data, actorMemberId, actor
   return task;
 }
 
-async function updateTask({ workspaceId, containerId, taskId, data, isAdmin, callerId, actorDisplayName, actorCtx }) {
+async function updateTask({ workspaceId, containerId, taskId, data, isAdmin, callerId, actorDisplayName, actorCtx, expectedTask }) {
+  // Proposal callers bind a reviewed snapshot. Keep existing HTTP callers on
+  // their original path when no snapshot is supplied.
+  if (expectedTask !== undefined) {
+    try { await assertWorkspaceContainer({ workspaceId, containerId }); } catch (err) {
+      if (err.code === 'NOT_FOUND') throw new ConflictError('The reviewed task is no longer available');
+      throw err;
+    }
+  }
   const task = await fetchTask(containerId, taskId);
-  if (!task) throw new NotFoundError('Task not found');
+  if (!task) {
+    if (expectedTask !== undefined) throw new ConflictError('The reviewed task is no longer available');
+    throw new NotFoundError('Task not found');
+  }
+
+  const snapshotFields = ['title', 'assigned_to', 'status', 'completion_note', 'completed_at', 'completed_by', 'admin_confirmed_at', 'updated_at'];
+  if (expectedTask !== undefined && (!expectedTask
+      || expectedTask.id !== taskId || expectedTask.container_id !== containerId
+      || expectedTask.assigned_to !== callerId || expectedTask.admin_confirmed_at !== null
+      || !['pending', 'in_progress', 'overdue'].includes(expectedTask.status)
+      || snapshotFields.some((field) => !Object.hasOwn(expectedTask, field) || !Object.is(task[field], expectedTask[field])))) {
+    throw new ConflictError('The task changed since it was reviewed');
+  }
 
   const isAssigned = task.assigned_to === callerId;
   if (!isAdmin && !isAssigned) throw new ForbiddenError('You can only update tasks assigned to you');
@@ -151,9 +171,19 @@ async function updateTask({ workspaceId, containerId, taskId, data, isAdmin, cal
   if (!Object.keys(updates).length) return shapeTask(task);
   updates.updated_at = new Date().toISOString();
 
-  const { data: updated, error } = await supabaseAdmin
-    .from('container_tasks').update(updates).eq('id', taskId).eq('container_id', containerId).select().single();
-  if (error) throw new Error(error.message);
+  let updateQuery = supabaseAdmin
+    .from('container_tasks').update(updates).eq('id', taskId).eq('container_id', containerId);
+  if (expectedTask !== undefined) {
+    updateQuery = updateQuery.is('deleted_at', null);
+    for (const field of snapshotFields) {
+      updateQuery = expectedTask[field] === null
+        ? updateQuery.is(field, null) : updateQuery.eq(field, expectedTask[field]);
+    }
+  }
+  const { data: updated, error } = await (expectedTask !== undefined
+    ? updateQuery.select().maybeSingle() : updateQuery.select().single());
+  if (error) throw new AppError('Tasks are unavailable. Please try again.', 503, 'TASKS_UNAVAILABLE');
+  if (!updated && expectedTask !== undefined) throw new ConflictError('The task changed since it was reviewed');
 
   if (updates.status === 'completed') {
     const { data: admins } = await supabaseAdmin.from('workspace_members').select('id').eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true);

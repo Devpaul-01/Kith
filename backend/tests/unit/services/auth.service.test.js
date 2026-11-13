@@ -22,6 +22,7 @@ const {
   ValidationError, UnauthorizedError, ForbiddenError, ConflictError, BusinessRuleError, NotFoundError,
 } = require('../../../src/utils/errors');
 const { mintTestJWT } = require('../../helpers/authHelper');
+const { CONTACT_ID, contactSnapshot, contactRow } = require('../../helpers/agent-contact');
 const mockSupabaseInstance = require('../../../src/config/supabase').__mockInstance;
 
 const ORIGINAL_ENV = { ...process.env };
@@ -469,6 +470,18 @@ describe('services/auth.service', () => {
   });
 
   describe('updateProfile — mass-assignment protection', () => {
+    it('loads a trimmed current profile snapshot for conditional updates', async () => {
+      const profile = { id: 'user-1', full_name: 'Ada', updated_at: '2026-11-11T12:00:00.000Z' };
+      mockSupabaseInstance.mockNextResponse({ data: profile, error: null });
+      await expect(authService.getProfileForUpdate({ userId: 'user-1' })).resolves.toEqual(profile);
+      const selectedFields = mockSupabaseInstance.builder.select.mock.calls[0][0].split(',').map((field) => field.trim());
+      for (const field of ['email', 'auth_provider', 'push_token', 'avatar_url', '*']) {
+        expect(selectedFields).not.toContain(field);
+      }
+      expect(mockSupabaseInstance.builder.eq).toHaveBeenCalledWith('id', 'user-1');
+      expect(mockSupabaseInstance.builder.is).toHaveBeenCalledWith('deleted_at', null);
+    });
+
     it('only whitelisted fields are applied; extra fields silently ignored', async () => {
       mockSupabaseInstance.mockNextResponse({ data: { id: 'user-1', full_name: 'New Name' }, error: null });
 
@@ -488,9 +501,109 @@ describe('services/auth.service', () => {
       expect(result).toEqual({ id: 'user-1', full_name: 'Unchanged' });
       expect(mockSupabaseInstance.getCalls().filter((c) => c.method === 'update').length).toBe(0);
     });
+
+    it('conditionally updates only unchanged reviewed fields on a live profile', async () => {
+      const updated = { id: 'user-1', full_name: 'New Name', updated_at: '2026-11-11T12:01:00.000Z' };
+      mockSupabaseInstance.mockNextResponse({ data: updated, error: null });
+      await expect(authService.updateProfile({
+        userId: 'user-1', data: { full_name: 'New Name' }, expectedValues: { full_name: 'Ada' },
+      })).resolves.toEqual(updated);
+      expect(mockSupabaseInstance.builder.eq).toHaveBeenCalledWith('full_name', 'Ada');
+      expect(mockSupabaseInstance.builder.eq.mock.calls.some(([field]) => field === 'updated_at')).toBe(false);
+      expect(mockSupabaseInstance.builder.is).toHaveBeenCalledWith('deleted_at', null);
+      expect(mockSupabaseInstance.builder.maybeSingle).toHaveBeenCalled();
+    });
+
+    it('compares nullable and boolean values in the same conditional update', async () => {
+      const updated = { id: 'user-1', bio: 'New bio', push_enabled: false };
+      mockSupabaseInstance.mockNextResponse({ data: updated, error: null });
+      await expect(authService.updateProfile({
+        userId: 'user-1', data: { bio: 'New bio', push_enabled: false },
+        expectedValues: { bio: null, push_enabled: true },
+      })).resolves.toEqual(updated);
+      expect(mockSupabaseInstance.builder.update).toHaveBeenCalledTimes(1);
+      expect(mockSupabaseInstance.builder.is).toHaveBeenCalledWith('bio', null);
+      expect(mockSupabaseInstance.builder.eq).toHaveBeenCalledWith('push_enabled', true);
+      expect(mockSupabaseInstance.builder.update.mock.calls[0][0]).toMatchObject({ bio: 'New bio', push_enabled: false });
+    });
+
+    it.each([
+      ['missing fields', {}],
+      ['another field', { bio: null }],
+      ['extra fields', { timezone: 'UTC', full_name: 'Ada' }],
+      ['identity fields', { timezone: 'UTC', id: 'user-1' }],
+      ['undefined values', { timezone: undefined }],
+      ['invalid value types', { timezone: false }],
+    ])('rejects conditional updates with %s before writing', async (_label, expectedValues) => {
+      await expect(authService.updateProfile({
+        userId: 'user-1', data: { timezone: 'Africa/Lagos' }, expectedValues,
+      })).rejects.toBeInstanceOf(ValidationError);
+      expect(mockSupabaseInstance.builder.update).not.toHaveBeenCalled();
+    });
+
+    it('returns a conflict rather than overwriting a stale profile proposal', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null });
+      await expect(authService.updateProfile({
+        userId: 'user-1', data: { timezone: 'Africa/Lagos' }, expectedValues: { timezone: 'UTC' },
+      })).rejects.toBeInstanceOf(ConflictError);
+    });
   });
 
   describe('deleteContact', () => {
+    it('reads one caller-owned contact with a fixed field list', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: contactRow(), error: null });
+      await expect(authService.getContactForUpdate({ userId: contactRow().user_id, contactId: CONTACT_ID }))
+        .resolves.toEqual(contactRow());
+      expect(mockSupabaseInstance.builder.eq).toHaveBeenCalledWith('id', CONTACT_ID);
+      expect(mockSupabaseInstance.builder.eq).toHaveBeenCalledWith('user_id', contactRow().user_id);
+      expect(mockSupabaseInstance.builder.select.mock.calls[0][0]).not.toContain('*');
+      expect(mockSupabaseInstance.builder.maybeSingle).toHaveBeenCalled();
+    });
+
+    it('conditionally deletes only the caller-owned contact while every reviewed field matches', async () => {
+      const snapshot = contactSnapshot({ label: null, country_code: null });
+      mockSupabaseInstance.mockNextResponse({ data: { id: CONTACT_ID }, error: null });
+      await expect(authService.deleteContact({
+        userId: contactRow().user_id, contactId: CONTACT_ID, expectedContact: snapshot,
+      })).resolves.toEqual({ id: CONTACT_ID });
+      expect(mockSupabaseInstance.builder.delete).toHaveBeenCalledTimes(1);
+      expect(mockSupabaseInstance.builder.eq).toHaveBeenCalledWith('user_id', contactRow().user_id);
+      for (const [field, value] of Object.entries(snapshot)) {
+        if (value === null) expect(mockSupabaseInstance.builder.is).toHaveBeenCalledWith(field, null);
+        else expect(mockSupabaseInstance.builder.eq).toHaveBeenCalledWith(field, value);
+      }
+    });
+
+    it('preserves the ordinary HTTP delete return value', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: CONTACT_ID }, error: null });
+      await expect(authService.deleteContact({ userId: contactRow().user_id, contactId: CONTACT_ID })).resolves.toBeUndefined();
+    });
+
+    it('treats a conditional no-op as a conflict', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: null });
+      await expect(authService.deleteContact({
+        userId: contactRow().user_id, contactId: CONTACT_ID, expectedContact: contactSnapshot(),
+      })).rejects.toBeInstanceOf(ConflictError);
+    });
+
+    it.each([
+      { ...contactSnapshot(), id: '44444444-4444-4444-8444-444444444444' },
+      { ...contactSnapshot(), user_id: 'other-user' },
+      { ...contactSnapshot(), value: undefined },
+    ])('rejects an invalid conditional snapshot before deleting: %j', async (expectedContact) => {
+      await expect(authService.deleteContact({
+        userId: contactRow().user_id, contactId: CONTACT_ID, expectedContact,
+      })).rejects.toBeInstanceOf(ValidationError);
+      expect(mockSupabaseInstance.builder.delete).not.toHaveBeenCalled();
+    });
+
+    it('reports conditional database errors as unconfirmed rather than a stale conflict', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: null, error: { message: 'Unavailable' } });
+      await expect(authService.deleteContact({
+        userId: contactRow().user_id, contactId: CONTACT_ID, expectedContact: contactSnapshot(),
+      })).rejects.toMatchObject({ code: 'CONTACT_UNAVAILABLE', statusCode: 503 });
+    });
+
     it('non-existent contactId -> NotFoundError (via .maybeSingle() no-op detection)', async () => {
       mockSupabaseInstance.mockNextResponse({ data: null, error: null });
 

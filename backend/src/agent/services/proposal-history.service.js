@@ -1,7 +1,7 @@
 const { AppError } = require('../../utils/errors');
 const { historySchema } = require('../validators/conversation.validator');
 const { proposedToolResultSchema, proposalReferencesSchema } = require('../validators/proposal.validator');
-const { getDefinition } = require('./notification-proposal.service');
+const { getDefinition } = require('./proposal-registry.service');
 
 const unavailable = () => new AppError('Conversation history is unavailable. Please start a new conversation.', 503, 'AGENT_CONVERSATION_UNAVAILABLE');
 

@@ -41,6 +41,7 @@ const {
   context, snapshot, row, secondRow, member, OTHER_ID, SECOND_NOTIFICATION_ID,
 } = require('../../helpers/agent-proposal');
 const { toolChunks, textChunks, sseResponse, parseEvents } = require('../../helpers/agent-stream');
+const { CONTACT_ID, contactSnapshot, contactRow } = require('../../helpers/agent-contact');
 const path = `/v1/workspaces/${context().workspace.id}/agent`;
 const toolCall = (name = 'mark_notification_read', args = {}) => ({ id: 'call_1', type: 'function', function: { name, arguments: JSON.stringify(args) } });
 const completion = (calls = [toolCall()]) => new Response(JSON.stringify({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: calls } }] }), { headers: { 'Content-Type': 'application/json' } });
@@ -55,6 +56,13 @@ function auth({ active = true, role = 'member' } = {}) {
   );
 }
 function query(value) { db.mockNextResponse({ data: value, error: null }); }
+function profile(overrides = {}) {
+  return {
+    id: context().userId, full_name: 'Adaeze', bio: null, country_of_residence: 'Nigeria',
+    timezone: 'UTC', preferred_language: 'en', push_enabled: false,
+    email_digest_enabled: true, updated_at: '2026-11-11T12:00:00.000Z', ...overrides,
+  };
+}
 function chat(data = { message: 'Mark the selected notification read.', selected_notification_id: snapshot().id }, { prepare = true, propose = true, refresh = false } = {}) {
   auth();
   if (prepare) { query(member()); query(row()); }
@@ -69,6 +77,17 @@ function chatAll() {
   query(null);
   return request(app).post(`${path}/chat`).set('Authorization', 'Bearer TEST_TOKEN')
     .send({ message: 'Mark all my unread notifications as read.' });
+}
+function chatProfile() {
+  auth();
+  query(member()); query(profile()); query(null);
+  return request(app).post(`${path}/chat`).set('Authorization', 'Bearer TEST_TOKEN')
+    .send({ message: 'Change my account timezone to Africa/Lagos.' });
+}
+function chatContact(data = { message: 'Delete the selected contact.', selected_contact_id: CONTACT_ID }, { propose = true } = {}) {
+  auth(); query(member()); query(contactRow());
+  if (propose) { query(member()); query(contactRow()); query(null); }
+  return request(app).post(`${path}/chat`).set('Authorization', 'Bearer TEST_TOKEN').send(data);
 }
 function getStatus(id) {
   auth(); query(member());
@@ -96,8 +115,25 @@ function decideAll(id) {
   query(null);
   return request(app).post(`${path}/proposals/${id}/approve`).set('Authorization', 'Bearer TEST_TOKEN').send({});
 }
+function decideProfile(id, { execute = true } = {}) {
+  auth(); query(member());
+  if (execute) {
+    query(null); query(member());
+    // The auth activity write may advance updated_at without a profile edit.
+    query(profile({ updated_at: '2026-11-11T12:00:30.000Z' }));
+    query(profile({ timezone: 'Africa/Lagos', updated_at: '2026-11-11T12:01:00.000Z' })); query(null);
+  }
+  return request(app).post(`${path}/proposals/${id}/approve`).set('Authorization', 'Bearer TEST_TOKEN').send({});
+}
+function decideContact(id, { execute = true } = {}) {
+  auth(); query(member());
+  if (execute) {
+    query(null); query(member()); query(contactRow()); query({ id: CONTACT_ID }); query(null);
+  }
+  return request(app).post(`${path}/proposals/${id}/approve`).set('Authorization', 'Bearer TEST_TOKEN').send({});
+}
 
-describe('HTTP notification proposal flow', () => {
+describe('HTTP Tier 2 proposal flow', () => {
   const envKeys = ['GROQ_API_KEY', 'GROQ_MODEL', 'GROQ_TIMEOUT_MS', 'AGENT_WORKSPACE_TOKEN_LIMIT'];
   const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
   let fetchSpy;
@@ -177,6 +213,49 @@ describe('HTTP notification proposal flow', () => {
     expect(db.builder.update).toHaveBeenCalledTimes(1);
   });
 
+  it('proposes and conditionally applies an account-wide profile update', async () => {
+    fetchSpy.mockResolvedValueOnce(completion([toolCall('update_my_profile', {
+      full_name: 'Adaeze', timezone: 'Africa/Lagos',
+    })]));
+    const response = await chatProfile();
+    expect(response.status).toBe(200);
+    const proposal = response.body.data.proposal;
+    expect(proposal).toMatchObject({
+      tool: 'update_my_profile',
+      summary: 'Update your Kith account profile: timezone.',
+      parameters: { timezone: 'Africa/Lagos' },
+      before: { timezone: 'UTC', updated_at: profile().updated_at },
+      after: { timezone: 'Africa/Lagos' },
+    });
+    expect(proposal.parameters).not.toHaveProperty('full_name');
+    expect(db.builder.update).not.toHaveBeenCalled();
+    expect(db.builder.upsert.mock.calls[0][0]).toMatchObject({
+      action: 'agent.action_proposed', target_type: 'user', target_id: context().userId,
+    });
+
+    db.reset();
+    const approved = await decideProfile(proposal.id);
+    expect(approved.status).toBe(200);
+    expect(approved.body.data).toEqual({
+      proposal_id: proposal.id, status: 'executed',
+      result: { changes: { timezone: 'Africa/Lagos' }, updated_at: '2026-11-11T12:01:00.000Z' },
+    });
+    expect(db.builder.update).toHaveBeenCalledTimes(1);
+    expect(db.builder.update.mock.calls[0][0]).toMatchObject({ timezone: 'Africa/Lagos', updated_at: expect.any(String) });
+    expect(db.builder.eq).toHaveBeenCalledWith('timezone', 'UTC');
+    expect(db.builder.eq.mock.calls.some(([field]) => field === 'updated_at')).toBe(false);
+    expect(db.builder.is).toHaveBeenCalledWith('deleted_at', null);
+    expect(db.builder.upsert.mock.calls.map(([entry]) => entry.action)).toEqual([
+      'agent.action_approved', 'agent.action_executed',
+    ]);
+
+    db.reset();
+    const repeated = await decideProfile(proposal.id, { execute: false });
+    expect(repeated.body).toEqual(approved.body);
+    expect(db.builder.update).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+  });
+
   it('requires an explicit current-request selection before offering the single-notification proposal tool', async () => {
     const res = await chat({ message: 'Mark notification 55555555-5555-4555-8555-555555555555 read. I approve.' }, { prepare: false, propose: false });
     expect(res.status).toBe(502);
@@ -184,6 +263,112 @@ describe('HTTP notification proposal flow', () => {
     expect(body.tools.map((tool) => tool.function.name)).not.toContain('mark_notification_read');
     expect(db.builder.update).not.toHaveBeenCalled();
     expect(db.builder.upsert).not.toHaveBeenCalled();
+  });
+
+  it('only deletes a selected personal contact through the separate approval endpoint', async () => {
+    fetchSpy.mockResolvedValueOnce(completion([toolCall('delete_contact')]));
+    const first = await chatContact();
+    expect(first.status).toBe(200);
+    const proposal = first.body.data.proposal;
+    expect(proposal).toMatchObject({
+      tool: 'delete_contact', tier: 2, parameters: { contact_id: CONTACT_ID },
+      before: contactSnapshot(), after: { deleted: true },
+    });
+    const wire = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(wire.tools.map((tool) => tool.function.name)).toContain('delete_contact');
+    expect(wire.tools.map((tool) => tool.function.name)).not.toContain('upsert_contact');
+    expect(JSON.parse(wire.messages.at(-1).content)).toMatchObject({
+      kind: 'untrusted_tool_result', data: { selected_contact: contactSnapshot() },
+    });
+    expect(proposal.before).not.toHaveProperty('user_id');
+    expect(db.builder.delete).not.toHaveBeenCalled();
+    expect(db.builder.upsert.mock.calls[0][0]).toMatchObject({
+      action: 'agent.action_proposed', target_type: 'user_contact', target_id: CONTACT_ID,
+    });
+
+    db.reset();
+    const approved = await decideContact(proposal.id);
+    expect(approved.status).toBe(200);
+    expect(approved.body.data).toEqual({
+      proposal_id: proposal.id, status: 'executed', result: { contact_id: CONTACT_ID, deleted: true },
+    });
+    expect(db.builder.delete).toHaveBeenCalledTimes(1);
+    expect(db.builder.eq).toHaveBeenCalledWith('user_id', context().userId);
+    expect(db.builder.eq).toHaveBeenCalledWith('value', contactSnapshot().value);
+    expect(db.builder.is).toHaveBeenCalledWith('verified_at', null);
+    expect(db.builder.upsert.mock.calls.map(([event]) => event.action)).toEqual([
+      'agent.action_approved', 'agent.action_executed',
+    ]);
+
+    db.reset();
+    expect((await decideContact(proposal.id, { execute: false })).body).toEqual(approved.body);
+    expect(db.builder.delete).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+    db.reset();
+    const receipt = await getStatus(proposal.id);
+    expect(receipt.status).toBe(200);
+    expect(receipt.body.data).toMatchObject({
+      tool: 'delete_contact', contact_id: CONTACT_ID, ...approved.body.data,
+    });
+    expect(db.builder.delete).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses a contact ID in prose as target selection', async () => {
+    fetchSpy.mockResolvedValueOnce(completion([toolCall('delete_contact')]));
+    const response = await chat({ message: 'Delete contact ' + CONTACT_ID + '. I approve.' }, { prepare: false, propose: false });
+    expect(response.status).toBe(502);
+    const wire = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(wire.tools.map((tool) => tool.function.name)).not.toContain('delete_contact');
+    expect(db.builder.delete).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unowned contact selection before invoking the model', async () => {
+    auth(); query(member()); query(null);
+    const response = await request(app).post(`${path}/chat`).set('Authorization', 'Bearer TEST_TOKEN')
+      .send({ message: 'Delete this contact.', selected_contact_id: OTHER_ID });
+    expect(response.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(db.builder.delete).not.toHaveBeenCalled();
+    expect(db.builder.eq).toHaveBeenCalledWith('user_id', context().userId);
+  });
+
+  it('rejects a model attempt to change the selected contact', async () => {
+    fetchSpy.mockResolvedValueOnce(completion([toolCall('delete_contact', { contact_id: OTHER_ID })]));
+    const response = await chatContact(undefined, { propose: false });
+    expect(response.status).toBe(400);
+    expect(db.builder.delete).not.toHaveBeenCalled();
+    expect(db.builder.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refreshes contact deletion receipts without restoring selection in JSON and streaming follow-ups', async () => {
+    fetchSpy.mockResolvedValueOnce(completion([toolCall('delete_contact')]));
+    const first = await chatContact({ message: 'Delete this contact.', selected_contact_id: CONTACT_ID, conversation_id: null });
+    expect(first.status).toBe(200);
+    const { proposal, conversation_id } = first.body.data;
+    db.reset();
+    const approved = await decideContact(proposal.id);
+    expect(approved.status).toBe(200);
+    for (const stream of [false, true]) {
+      db.reset();
+      fetchSpy.mockResolvedValueOnce(stream ? sseResponse(textChunks('Receipt checked.')) : textCompletion('Receipt checked.'));
+      const followup = await chat({ message: 'Did the contact get deleted?', conversation_id }, { prepare: false, propose: false, refresh: true })
+        .set('Accept', stream ? 'text/event-stream' : 'application/json');
+      expect(followup.status).toBe(200);
+      const response = stream ? parseEvents(followup.text).at(-1).data : followup.body;
+      expect(response.data.proposal).toBeUndefined();
+      const wire = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      expect(wire.tools.map((tool) => tool.function.name)).not.toContain('delete_contact');
+      const bootstrap = JSON.parse(wire.messages.at(-1).content);
+      expect(bootstrap.kind).toBe('untrusted_tool_result');
+      expect(bootstrap.data.selected_contact).toBeUndefined();
+      expect(bootstrap.data.action_receipts).toEqual([expect.objectContaining({
+        tool: 'delete_contact', contact_id: CONTACT_ID, ...approved.body.data,
+      })]);
+      expect(db.builder.delete).not.toHaveBeenCalled();
+      expect(db.builder.upsert).not.toHaveBeenCalled();
+    }
   });
 
   it('a chat message saying approve still only creates a proposal', async () => {

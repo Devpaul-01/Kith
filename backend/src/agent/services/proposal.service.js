@@ -7,7 +7,8 @@ const audit = require('../../services/audit.service');
 const { AUDIT_ACTIONS } = require('../../constants/audit-actions');
 const { assertAgentContext } = require('./context.service');
 const { assertNotCancelled } = require('../utils/cancellation');
-const notification = require('./notification-proposal.service');
+const { assertCurrentActor } = require('./proposal-actor.service');
+const proposals = require('./proposal-registry.service');
 const {
   PROPOSAL_LIMITS, proposalRecordSchema, proposalSchema, proposalIdSchema,
   emptyApprovalSchema, proposalStatusSchema, proposalReferencesSchema,
@@ -27,7 +28,7 @@ const failure = (code, message, status = 503) => new AppError(message, status, c
 const unavailable = () => failure('AGENT_PROPOSAL_UNAVAILABLE', 'The proposal is unavailable. Please try again.');
 const missing = () => failure('AGENT_PROPOSAL_NOT_FOUND', 'Proposal not found or expired.', 404);
 const busy = () => failure('AGENT_PROPOSAL_BUSY', 'This proposal is being processed. Retry to check its result.', 409);
-const uncertain = () => failure('AGENT_PROPOSAL_INDETERMINATE', 'The action result could not be confirmed. Check your notifications before requesting another action.', 409);
+const uncertain = () => failure('AGENT_PROPOSAL_INDETERMINATE', 'The action result could not be confirmed. Check the affected data before requesting another action.', 409);
 
 function freezeContext(context) {
   assertAgentContext(context);
@@ -77,12 +78,15 @@ function storage(context, redisFactory) {
 async function logAction({ record, context, actorCtx, stage, required = true, errorCode, outcome }) {
   // IDs always come from the authenticated context; only HTTP metadata is
   // taken from audit.fromReq. None of this metadata is offered to the model.
+  const domain = proposals.getDomain(record.proposal.tool);
+  if (!domain) throw unavailable();
+  const target = domain.getAuditTarget(record.proposal, context);
   await audit.log({
     id: record.auditIds[stage], required,
     workspaceId: context.workspace.id, actorUserId: context.userId, actorMemberId: context.member.id,
     ipAddress: actorCtx?.ipAddress ?? null, userAgent: actorCtx?.userAgent ?? null,
-    action: AUDIT_ACTIONS[`AGENT_ACTION_${stage.toUpperCase()}`], targetType: 'notification',
-    targetId: notification.getAuditTarget(record.proposal),
+    action: AUDIT_ACTIONS[`AGENT_ACTION_${stage.toUpperCase()}`],
+    targetType: target.targetType, targetId: target.targetId,
     metadata: { agent_initiated: true, proposal_id: record.proposal.id, turn_id: record.turnId,
       tool: record.proposal.tool, tier: record.proposal.tier, parameters: record.proposal.parameters,
       ...(errorCode ? { error_code: errorCode } : {}),
@@ -90,11 +94,13 @@ async function logAction({ record, context, actorCtx, stage, required = true, er
   });
 }
 
-async function createNotificationProposal({ context, tool = 'mark_notification_read', selection, args, actorCtx, turnId, signal, redisFactory = getRedis }) {
+async function createProposal({ context, tool, selection, args, actorCtx, turnId, signal, redisFactory = getRedis }) {
   const actor = freezeContext(context);
   assertNotCancelled(signal);
   const store = storage(actor, redisFactory);
-  const proposal = proposalSchema.parse(await notification.createProposalDraft({
+  const domain = proposals.getDomain(tool);
+  if (!domain) throw new ValidationError('Invalid proposal tool');
+  const proposal = proposalSchema.parse(await domain.createProposalDraft({
     context: actor, tool, selection, args, id: randomUUID(),
     expiresAt: new Date(Date.now() + PROPOSAL_LIMITS.expiryMs).toISOString(),
   }));
@@ -105,6 +111,10 @@ async function createNotificationProposal({ context, tool = 'mark_notification_r
   assertNotCancelled(signal);
   stored = await store.transition(stored, 'pending');
   return stored.record.proposal;
+}
+
+function createNotificationProposal(options) {
+  return createProposal({ tool: 'mark_notification_read', ...options });
 }
 
 function checkExpiry(record) {
@@ -124,9 +134,9 @@ function statusReply(record) {
     executing: 'indeterminate', applied: 'audit_pending', executed: 'executed',
     rejecting: 'rejection_pending', rejected: 'rejected', failed: 'failed',
   };
-  const target = record.proposal.tool === 'mark_notification_read'
-    ? { notification_id: record.proposal.parameters.notification_id }
-    : { notification_count: record.proposal.parameters.notification_ids.length };
+  const domain = proposals.getDomain(record.proposal.tool);
+  if (!domain) throw unavailable();
+  const target = domain.getStatusTarget(record.proposal);
   return proposalStatusSchema.parse({
     proposal_id: record.proposal.id, tool: record.proposal.tool, ...target,
     status: statuses[record.state], expires_at: record.proposal.expires_at,
@@ -139,7 +149,7 @@ async function getProposalStatus({ context, proposalId, redisFactory = getRedis 
   const actor = freezeContext(context);
   const id = proposalIdSchema.safeParse(proposalId);
   if (!id.success) throw new ValidationError('Invalid proposal ID');
-  await notification.assertCurrentActor(actor);
+  await assertCurrentActor(actor);
   const stored = await storage(actor, redisFactory).read(id.data);
   return statusReply(stored.record);
 }
@@ -152,7 +162,7 @@ async function getProposalReceipts({ context, proposals, signal, redisFactory = 
   assertNotCancelled(signal);
   if (input.data.length === 0) return [];
   // Fresh membership failures must stop the turn, not become unknown receipts.
-  await notification.assertCurrentActor(actor);
+  await assertCurrentActor(actor);
   assertNotCancelled(signal);
   const unknown = (id) => ({ proposal_id: id, status: 'unavailable', checked_at: new Date().toISOString() });
   let store;
@@ -186,7 +196,7 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
   }
   const store = storage(actor, redisFactory);
   let stored = await store.read(id.data);
-  await notification.assertCurrentActor(actor);
+  await assertCurrentActor(actor);
   if (stored.record.state === 'executed') {
     if (decision === 'reject') throw failure('AGENT_PROPOSAL_DECIDED', 'This proposal was already executed.', 409);
     return executedReply(stored.record);
@@ -215,9 +225,11 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
   checkExpiry(stored.record);
   if (stored.record.state === 'pending') stored = await store.transition(stored, 'approving');
   await logAction({ record: stored.record, context: actor, actorCtx, stage: 'approved' });
-  await notification.assertCurrentActor(actor);
+  await assertCurrentActor(actor);
+  const domain = proposals.getDomain(stored.record.proposal.tool);
+  if (!domain) throw unavailable();
   try {
-    await notification.revalidateProposal({ context: actor, proposal: stored.record.proposal });
+    await domain.revalidateProposal({ context: actor, proposal: stored.record.proposal });
   } catch (err) {
     if (['AGENT_PROPOSAL_STALE', 'NOT_FOUND'].includes(err.code)) {
       stored = await store.transition(stored, 'failed');
@@ -229,7 +241,12 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
   stored = await store.transition(stored, 'executing');
   let result;
   try {
-    result = await notification.applyProposal({ context: actor, proposal: stored.record.proposal });
+    result = await domain.applyProposal({ context: actor, proposal: stored.record.proposal,
+      actorCtx: {
+        workspaceId: actor.workspace.id, actorUserId: actor.userId, actorMemberId: actor.member.id,
+        ipAddress: actorCtx?.ipAddress ?? null, userAgent: actorCtx?.userAgent ?? null,
+      },
+    });
   } catch (err) {
     logger.warn('Agent proposal execution not confirmed', { proposalId: id.data, errorCode: err.code });
     await logAction({ record: stored.record, context: actor, actorCtx, stage: 'failed', required: false, errorCode: err.code,
@@ -238,7 +255,7 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
     // may follow a committed write and must keep the irreversible claim.
     if (err.code === 'CONFLICT') {
       await store.transition(stored, 'failed');
-      throw failure('AGENT_PROPOSAL_STALE', 'The notification changed. Please request a new proposal.', 409);
+      throw failure('AGENT_PROPOSAL_STALE', 'The proposed data changed. Please request a new proposal.', 409);
     }
     throw uncertain();
   }
@@ -253,4 +270,11 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
   return executedReply(stored.record);
 }
 
-module.exports = { createNotificationProposal, decideProposal, getProposalStatus, getProposalReceipts, CAS_PROPOSAL_SCRIPT };
+module.exports = {
+  createProposal,
+  createNotificationProposal,
+  decideProposal,
+  getProposalStatus,
+  getProposalReceipts,
+  CAS_PROPOSAL_SCRIPT,
+};

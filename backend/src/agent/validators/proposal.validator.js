@@ -1,4 +1,6 @@
 const { z } = require('zod');
+const { updateProfileSchema, profileSnapshotFieldsSchema, contactSnapshotSchema } = require('../../validators/auth.validator');
+const { createTaskSchema, updateTaskSchema } = require('../../validators/ledger.validator');
 
 const MAX_BULK_NOTIFICATION_IDS = 100;
 const PROPOSAL_LIMITS = Object.freeze({
@@ -30,6 +32,84 @@ const notificationBulkReadResultSchema = z.object({
   updated_count: z.number().int().min(0).max(MAX_BULK_NOTIFICATION_IDS),
 }).strict().refine((value) => value.updated_count <= value.notification_count);
 
+const PROFILE_UPDATE_FIELDS = Object.freeze([
+  'full_name', 'bio', 'country_of_residence', 'timezone',
+  'preferred_language', 'push_enabled', 'email_digest_enabled',
+]);
+const PROFILE_FIELD_LABELS = Object.freeze({
+  full_name: 'full name',
+  bio: 'bio',
+  country_of_residence: 'country of residence',
+  timezone: 'timezone',
+  preferred_language: 'preferred language',
+  push_enabled: 'push notifications',
+  email_digest_enabled: 'email digests',
+});
+const profileFieldSchema = z.enum(PROFILE_UPDATE_FIELDS);
+const profileUpdateParametersSchema = updateProfileSchema
+  .pick(Object.fromEntries(PROFILE_UPDATE_FIELDS.map((field) => [field, true]))).strict()
+  .refine((value) => Object.keys(value).length > 0, 'At least one profile field is required');
+const profileBeforeSchema = profileSnapshotFieldsSchema.partial().extend({
+  updated_at: z.string().datetime({ offset: true }),
+}).strict();
+const profileUpdateResultSchema = z.object({
+  changes: profileUpdateParametersSchema,
+  updated_at: z.string().datetime({ offset: true }),
+}).strict();
+const contactDeletionResultSchema = z.object({
+  contact_id: z.string().uuid(), deleted: z.literal(true),
+}).strict();
+
+const taskTargetSchema = z.object({
+  container_id: z.string().uuid().transform((id) => id.toLowerCase()),
+  task_id: z.string().uuid().transform((id) => id.toLowerCase()),
+}).strict();
+const taskCompletionNoteSchema = updateTaskSchema.shape.completion_note.unwrap().unwrap().nullable();
+const taskSnapshotSchema = z.object({
+  id: z.string().uuid(), container_id: z.string().uuid(),
+  title: createTaskSchema.shape.title,
+  assigned_to: z.string().uuid(),
+  status: updateTaskSchema.shape.status.unwrap(),
+  completion_note: taskCompletionNoteSchema,
+  completed_at: z.string().datetime({ offset: true }).nullable(),
+  completed_by: z.string().uuid().nullable(),
+  admin_confirmed_at: z.string().datetime({ offset: true }).nullable(),
+  updated_at: z.string().datetime({ offset: true }),
+}).strict();
+const taskProgressSnapshotSchema = taskSnapshotSchema.extend({
+  status: z.enum(['pending', 'in_progress', 'overdue']),
+  admin_confirmed_at: z.null(),
+});
+const taskProgressParametersSchema = updateTaskSchema.pick({ status: true, completion_note: true }).extend({
+  status: z.enum(['in_progress', 'completed']),
+}).strict();
+const taskProgressAfterSchema = taskProgressParametersSchema.extend({
+  completion_note: taskCompletionNoteSchema,
+});
+const taskProgressResultSchema = z.object({
+  task_id: z.string().uuid(), container_id: z.string().uuid(),
+  status: taskProgressParametersSchema.shape.status,
+  completion_note: taskCompletionNoteSchema,
+  completed_at: z.string().datetime({ offset: true }).nullable(),
+  updated_at: z.string().datetime({ offset: true }),
+}).strict().refine((value) => value.status !== 'completed' || value.completed_at !== null,
+  'Completed tasks must have a completion timestamp');
+
+function taskProposalSummary(parameters) {
+  return parameters.status === 'completed'
+    ? 'Mark the selected task as completed.'
+    : 'Set the selected task to in progress.';
+}
+
+function profileProposalSummary(parameters) {
+  const labels = PROFILE_UPDATE_FIELDS.filter((field) => Object.hasOwn(parameters, field))
+    .map((field) => PROFILE_FIELD_LABELS[field]);
+  const joined = labels.length === 1
+    ? labels[0]
+    : `${labels.slice(0, -1).join(', ')} and ${labels.at(-1)}`;
+  return `Update your Kith account profile: ${joined}.`;
+}
+
 const singleNotificationProposalSchema = z.object({
   id: z.string().uuid(), tool: z.literal('mark_notification_read'), tier: z.literal(2),
   summary: z.literal('Mark the selected notification as read.'),
@@ -46,10 +126,40 @@ const allNotificationsProposalSchema = z.object({
   after: z.object({ unread_count: z.literal(0) }).strict(),
   expires_at: z.string().datetime(),
 }).strict();
+const updateProfileProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('update_my_profile'), tier: z.literal(2),
+  summary: z.string().min(1).max(300),
+  parameters: profileUpdateParametersSchema,
+  before: profileBeforeSchema,
+  after: profileUpdateParametersSchema,
+  expires_at: z.string().datetime(),
+}).strict();
+const deleteContactProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('delete_contact'), tier: z.literal(2),
+  summary: z.literal('Delete the selected Kith account contact.'),
+  parameters: z.object({ contact_id: z.string().uuid() }).strict(),
+  before: contactSnapshotSchema,
+  after: z.object({ deleted: z.literal(true) }).strict(),
+  expires_at: z.string().datetime(),
+}).strict();
+const updateTaskProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('update_task'), tier: z.literal(2),
+  summary: z.string().min(1).max(200),
+  parameters: taskTargetSchema.merge(taskProgressParametersSchema),
+  before: taskProgressSnapshotSchema,
+  after: taskProgressAfterSchema,
+  expires_at: z.string().datetime(),
+}).strict();
 
-const proposalSchema = z.union([singleNotificationProposalSchema, allNotificationsProposalSchema]).superRefine((value, ctx) => {
+const proposalSchema = z.union([
+  singleNotificationProposalSchema, allNotificationsProposalSchema, updateProfileProposalSchema, deleteContactProposalSchema,
+  updateTaskProposalSchema,
+]).superRefine((value, ctx) => {
   if (value.tool === 'mark_notification_read' && value.parameters.notification_id !== value.before.id) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Notification target mismatch' });
+  }
+  if (value.tool === 'delete_contact' && value.parameters.contact_id !== value.before.id) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Contact target mismatch' });
   }
   if (value.tool === 'mark_all_notifications_read') {
     const count = value.parameters.notification_ids.length;
@@ -58,9 +168,36 @@ const proposalSchema = z.union([singleNotificationProposalSchema, allNotificatio
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Notification set mismatch' });
     }
   }
+  if (value.tool === 'update_my_profile') {
+    const parameterKeys = PROFILE_UPDATE_FIELDS.filter((field) => Object.hasOwn(value.parameters, field));
+    const beforeKeys = PROFILE_UPDATE_FIELDS.filter((field) => Object.hasOwn(value.before, field));
+    const afterKeys = PROFILE_UPDATE_FIELDS.filter((field) => Object.hasOwn(value.after, field));
+    if (JSON.stringify(beforeKeys) !== JSON.stringify(parameterKeys)
+        || JSON.stringify(afterKeys) !== JSON.stringify(parameterKeys)
+        || JSON.stringify(value.after) !== JSON.stringify(value.parameters)
+        || value.summary !== profileProposalSummary(value.parameters)
+        || parameterKeys.some((field) => Object.is(value.before[field], value.after[field]))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Profile change mismatch' });
+    }
+  }
+  if (value.tool === 'update_task') {
+    const note = Object.hasOwn(value.parameters, 'completion_note')
+      ? value.parameters.completion_note : value.before.completion_note;
+    if (value.parameters.task_id !== value.before.id
+        || value.parameters.container_id !== value.before.container_id
+        || value.after.status !== value.parameters.status
+        || value.after.completion_note !== note
+        || value.summary !== taskProposalSummary(value.parameters)
+        || (value.after.status === value.before.status && value.after.completion_note === value.before.completion_note)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task progress change mismatch' });
+    }
+  }
 });
 
-const proposalResultSchema = z.union([notificationReadResultSchema, notificationBulkReadResultSchema]);
+const proposalResultSchema = z.union([
+  notificationReadResultSchema, notificationBulkReadResultSchema, profileUpdateResultSchema, contactDeletionResultSchema,
+  taskProgressResultSchema,
+]);
 const proposalRecordSchema = z.object({
   version: z.literal(1), scope: z.string().regex(/^[a-f0-9]{64}$/), proposal: proposalSchema,
   state: z.enum(['preparing', 'pending', 'approving', 'executing', 'applied', 'executed', 'rejecting', 'rejected', 'failed']),
@@ -79,9 +216,26 @@ const proposalRecordSchema = z.object({
         || record.result.notification_id !== record.proposal.parameters.notification_id) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Notification result mismatch' });
     }
-  } else if (!Object.hasOwn(record.result, 'notification_count')
-      || record.result.notification_count !== record.proposal.parameters.notification_ids.length) {
+  } else if (record.proposal.tool === 'mark_all_notifications_read'
+      && (!Object.hasOwn(record.result, 'notification_count')
+        || record.result.notification_count !== record.proposal.parameters.notification_ids.length)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Notification set result mismatch' });
+  } else if (record.proposal.tool === 'update_my_profile'
+      && (!Object.hasOwn(record.result, 'changes')
+        || JSON.stringify(record.result.changes) !== JSON.stringify(record.proposal.after))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Profile result mismatch' });
+  } else if (record.proposal.tool === 'delete_contact'
+      && (!Object.hasOwn(record.result, 'contact_id')
+        || record.result.contact_id !== record.proposal.parameters.contact_id)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Contact result mismatch' });
+  } else if (record.proposal.tool === 'update_task'
+      && (!Object.hasOwn(record.result, 'task_id')
+        || record.result.task_id !== record.proposal.parameters.task_id
+        || record.result.container_id !== record.proposal.parameters.container_id
+        || record.result.status !== record.proposal.after.status
+        || record.result.completion_note !== record.proposal.after.completion_note
+        || (record.result.status === 'in_progress' && record.result.completed_at !== record.proposal.before.completed_at))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task progress result mismatch' });
   }
 });
 
@@ -99,11 +253,29 @@ const bulkStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('mark_all_notifications_read'),
   notification_count: z.number().int().positive().max(MAX_BULK_NOTIFICATION_IDS),
 }).strict();
+const profileStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('update_my_profile'),
+  profile_fields: z.array(profileFieldSchema).min(1).max(PROFILE_UPDATE_FIELDS.length)
+    .refine((fields) => new Set(fields).size === fields.length),
+}).strict();
+const contactStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('delete_contact'), contact_id: z.string().uuid(),
+}).strict();
+const taskStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('update_task'),
+  task_id: z.string().uuid(), container_id: z.string().uuid(),
+}).strict();
 const proposalStatusSchema = z.union([
   ...incompleteStatuses.map((status) => singleStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => singleStatusFields.extend({ status: z.literal(status), result: notificationReadResultSchema })),
   ...incompleteStatuses.map((status) => bulkStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => bulkStatusFields.extend({ status: z.literal(status), result: notificationBulkReadResultSchema })),
+  ...incompleteStatuses.map((status) => profileStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => profileStatusFields.extend({ status: z.literal(status), result: profileUpdateResultSchema })),
+  ...incompleteStatuses.map((status) => contactStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => contactStatusFields.extend({ status: z.literal(status), result: contactDeletionResultSchema })),
+  ...incompleteStatuses.map((status) => taskStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => taskStatusFields.extend({ status: z.literal(status), result: taskProgressResultSchema })),
 ]);
 
 // A missing record never inherits a result or target from historical data.
@@ -127,6 +299,20 @@ module.exports = {
   notificationIdsSchema,
   notificationBulkSelectionSchema,
   notificationBulkReadResultSchema,
+  PROFILE_UPDATE_FIELDS,
+  profileFieldSchema,
+  profileUpdateParametersSchema,
+  profileBeforeSchema,
+  profileUpdateResultSchema,
+  contactSnapshotSchema,
+  contactDeletionResultSchema,
+  taskTargetSchema,
+  taskSnapshotSchema,
+  taskProgressSnapshotSchema,
+  taskProgressParametersSchema,
+  taskProgressResultSchema,
+  taskProposalSummary,
+  profileProposalSummary,
   proposalSchema,
   proposalRecordSchema,
   emptyApprovalSchema,

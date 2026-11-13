@@ -1,8 +1,9 @@
 const { z } = require('zod');
 const {
-  AppError, ForbiddenError, ValidationError, BusinessRuleError,
+  AppError, ValidationError, BusinessRuleError,
 } = require('../../utils/errors');
 const { assertAgentContext } = require('./context.service');
+const { assertCurrentActor } = require('./proposal-actor.service');
 const {
   PROPOSAL_LIMITS,
   notificationRowSchema,
@@ -27,16 +28,6 @@ const definitions = Object.freeze([markNotificationReadDefinition, markAllNotifi
 
 function getDefinition(name) {
   return definitions.find((definition) => definition.name === name);
-}
-
-async function assertCurrentActor(context) {
-  assertAgentContext(context);
-  const members = require('../../services/member.service');
-  const member = await members.getActiveMembership({ workspaceId: context.workspace.id, userId: context.userId });
-  if (member.id !== context.member.id || member.workspace_id !== context.workspace.id || member.user_id !== context.userId
-      || member.is_active !== true || member.role !== context.member.role) {
-    throw new ForbiddenError('Workspace membership changed. Please retry.');
-  }
 }
 
 async function readSelection({ context, notificationId }) {
@@ -187,7 +178,16 @@ async function applyProposal({ context, proposal }) {
 }
 
 function getAuditTarget(proposal) {
-  return proposal.tool === markNotificationReadDefinition.name ? proposal.parameters.notification_id : null;
+  return {
+    targetType: 'notification',
+    targetId: proposal.tool === markNotificationReadDefinition.name ? proposal.parameters.notification_id : null,
+  };
+}
+
+function getStatusTarget(proposal) {
+  return proposal.tool === markNotificationReadDefinition.name
+    ? { notification_id: proposal.parameters.notification_id }
+    : { notification_count: proposal.parameters.notification_ids.length };
 }
 
 module.exports = {
@@ -197,6 +197,7 @@ module.exports = {
   markAllNotificationsReadDefinition,
   getDefinition,
   getAuditTarget,
+  getStatusTarget,
   assertCurrentActor,
   selectNotification,
   createProposalDraft,

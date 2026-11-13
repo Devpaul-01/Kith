@@ -8,7 +8,10 @@ const { createWorkspaceBudget } = require('./budget.service');
 const {
   selectNotification, markNotificationReadDefinition, markAllNotificationsReadDefinition,
 } = require('./notification-proposal.service');
-const { createNotificationProposal, getProposalReceipts } = require('./proposal.service');
+const { updateMyProfileDefinition } = require('./profile-proposal.service');
+const { selectContact, deleteContactDefinition } = require('./contact-proposal.service');
+const { selectTask, updateTaskDefinition } = require('./task-proposal.service');
+const { createProposal, getProposalReceipts } = require('./proposal.service');
 const { extractProposalReferences } = require('./proposal-history.service');
 
 /** Compose the read loop with server-owned provider configuration per turn. */
@@ -34,14 +37,27 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
   // is scoped to this request and never restored from conversation history.
   const selection = input.data.selected_notification_id === undefined ? undefined
     : await selectNotification({ context: actorContext, notificationId: input.data.selected_notification_id });
+  const contactSelection = input.data.selected_contact_id === undefined ? undefined
+    : await selectContact({ context: actorContext, contactId: input.data.selected_contact_id });
+  const taskSelection = input.data.selected_task === undefined ? undefined
+    : await selectTask({ context: actorContext,
+      containerId: input.data.selected_task.container_id, taskId: input.data.selected_task.task_id });
   const proposalSupport = {
     definitions: Object.freeze([
       ...(selection ? [markNotificationReadDefinition] : []),
       markAllNotificationsReadDefinition,
+      updateMyProfileDefinition,
+      ...(contactSelection ? [deleteContactDefinition] : []),
+      ...(taskSelection ? [updateTaskDefinition] : []),
     ]),
     ...(selection ? { selection } : {}),
-    create: ({ name, args, turnId }) => createNotificationProposal({
-      context: actorContext, tool: name, selection, args, turnId, actorCtx, signal,
+    ...(contactSelection ? { contactSelection } : {}),
+    ...(taskSelection ? { taskSelection } : {}),
+    create: ({ name, args, turnId }) => createProposal({
+      context: actorContext, tool: name,
+      selection: name === updateTaskDefinition.name ? taskSelection
+        : name === deleteContactDefinition.name ? contactSelection : selection,
+      args, turnId, actorCtx, signal,
     }),
   };
   const loadActionReceipts = ({ history }) => getProposalReceipts({
