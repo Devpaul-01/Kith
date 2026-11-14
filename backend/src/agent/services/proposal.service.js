@@ -36,6 +36,12 @@ function freezeContext(context) {
     member: Object.freeze({ ...context.member }), workspace: Object.freeze({ ...context.workspace }) });
 }
 
+function assertProposalRole(context, tool) {
+  const definition = proposals.getDefinition(tool);
+  if (!definition) throw unavailable();
+  assertAgentContext(context, definition.minRole);
+}
+
 function storage(context, redisFactory) {
   const scope = createHash('sha256').update(JSON.stringify([context.userId, context.member.id, context.workspace.id, context.member.role])).digest('hex');
   let redis;
@@ -89,6 +95,7 @@ async function logAction({ record, context, actorCtx, stage, required = true, er
     targetType: target.targetType, targetId: target.targetId,
     metadata: { agent_initiated: true, proposal_id: record.proposal.id, turn_id: record.turnId,
       tool: record.proposal.tool, tier: record.proposal.tier, parameters: record.proposal.parameters,
+      ...(record.proposal.tier === 3 ? { before: record.proposal.before, after: record.proposal.after } : {}),
       ...(errorCode ? { error_code: errorCode } : {}),
       ...(outcome ? { execution_outcome: outcome } : {}) },
   });
@@ -97,9 +104,10 @@ async function logAction({ record, context, actorCtx, stage, required = true, er
 async function createProposal({ context, tool, selection, args, actorCtx, turnId, signal, redisFactory = getRedis }) {
   const actor = freezeContext(context);
   assertNotCancelled(signal);
-  const store = storage(actor, redisFactory);
   const domain = proposals.getDomain(tool);
   if (!domain) throw new ValidationError('Invalid proposal tool');
+  assertProposalRole(actor, tool);
+  const store = storage(actor, redisFactory);
   const proposal = proposalSchema.parse(await domain.createProposalDraft({
     context: actor, tool, selection, args, id: randomUUID(),
     expiresAt: new Date(Date.now() + PROPOSAL_LIMITS.expiryMs).toISOString(),
@@ -151,6 +159,7 @@ async function getProposalStatus({ context, proposalId, redisFactory = getRedis 
   if (!id.success) throw new ValidationError('Invalid proposal ID');
   await assertCurrentActor(actor);
   const stored = await storage(actor, redisFactory).read(id.data);
+  assertProposalRole(actor, stored.record.proposal.tool);
   return statusReply(stored.record);
 }
 
@@ -178,6 +187,7 @@ async function getProposalReceipts({ context, proposals, signal, redisFactory = 
       // The current record must describe the same card, not another target
       // attached to a valid-looking proposal ID in corrupt conversation data.
       if (JSON.stringify(stored.record.proposal) !== JSON.stringify(proposal)) throw unavailable();
+      assertProposalRole(actor, stored.record.proposal.tool);
       return statusReply(stored.record);
     } catch (err) {
       assertNotCancelled(signal);
@@ -197,6 +207,7 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
   const store = storage(actor, redisFactory);
   let stored = await store.read(id.data);
   await assertCurrentActor(actor);
+  assertProposalRole(actor, stored.record.proposal.tool);
   if (stored.record.state === 'executed') {
     if (decision === 'reject') throw failure('AGENT_PROPOSAL_DECIDED', 'This proposal was already executed.', 409);
     return executedReply(stored.record);

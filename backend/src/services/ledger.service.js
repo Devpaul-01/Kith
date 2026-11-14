@@ -10,6 +10,7 @@ const { z } = require('zod');
 const { SUPPORTED_CURRENCIES } = require('../validators/auth.validator');
 const {
   selfLedgerContextSchema, selfLedgerSubmissionDataSchema, normalizeSelfLedgerAmount,
+  entryConfirmationSnapshotSchema, entryConfirmationContextSchema,
 } = require('../validators/ledger.validator');
 const { generateUploadUrl, generateDownloadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 const notification = require('./notification.service');
@@ -201,21 +202,21 @@ const selfLedgerUnavailable = () => new AppError(
   'Ledger submissions are unavailable. Please try again.', 503, 'LEDGER_UNAVAILABLE',
 );
 
-async function selfLedgerOperation(operation) {
+async function selfLedgerOperation(operation, unavailable = selfLedgerUnavailable) {
   let response;
-  try { response = await operation(); } catch { throw selfLedgerUnavailable(); }
+  try { response = await operation(); } catch { throw unavailable(); }
   if (!response || typeof response !== 'object'
       || !Object.hasOwn(response, 'data') || !Object.hasOwn(response, 'error')) {
-    throw selfLedgerUnavailable();
+    throw unavailable();
   }
   return response;
 }
 
-async function readSelfLedgerRow(operation) {
-  const response = await selfLedgerOperation(operation);
+async function readSelfLedgerRow(operation, unavailable = selfLedgerUnavailable) {
+  const response = await selfLedgerOperation(operation, unavailable);
   if (response.error !== null || (response.data !== null
       && (typeof response.data !== 'object' || Array.isArray(response.data)))) {
-    throw selfLedgerUnavailable();
+    throw unavailable();
   }
   return response.data;
 }
@@ -697,7 +698,190 @@ async function confirmProof({ workspaceId, containerId, entryId, isAdmin, caller
   return updated;
 }
 
-async function confirmEntry({ workspaceId, containerId, entryId, actorMemberId, actorCtx }) {
+const entryConfirmationCallerSchema = selfLedgerCallerSchema.extend({ entryId: z.string().uuid() });
+const reviewedEntryConfirmationSchema = z.object({
+  userId: z.string().uuid(), isAdmin: z.boolean(), expected: entryConfirmationContextSchema,
+}).strict();
+const entryConfirmationRowSchema = entryConfirmationSnapshotSchema.omit({ entry_id: true }).extend({
+  id: z.string().uuid(), contributor_id: z.string().uuid().nullable(),
+  entry_type: z.enum(['contribution', 'expense', 'correction', 'reversal', 'carry_forward']),
+  original_amount: z.union([z.string(), z.number()]), original_currency: z.string().min(1),
+  base_amount: z.union([z.string(), z.number()]),
+  payment_method: z.enum(['cash', 'bank_transfer', 'mobile_money', 'crypto', 'other']).nullable(),
+  cycle_id: z.string().uuid().nullable(), is_crypto: z.boolean(), proofs: z.array(z.unknown()),
+  status: z.enum(['pending', 'proof_uploaded', 'confirmed', 'disputed', 'resolved', 'reversed']),
+  corrects_entry_id: z.string().uuid().nullable(), recorded_by: z.string().uuid().nullable(),
+  confirmed_at: z.string().datetime({ offset: true }).nullable(), confirmed_by: z.string().uuid().nullable(),
+}).strip();
+const entryConfirmationContributorSchema = selfLedgerMemberRowSchema.extend({
+  user_id: z.string().uuid().nullable(), display_name: z.string().min(1).max(100),
+});
+const entryConfirmationFields = Object.freeze(Object.keys(entryConfirmationSnapshotSchema.shape));
+const entryConfirmationUnavailable = () => new AppError(
+  'Ledger confirmations are unavailable. Please try again.', 503, 'LEDGER_CONFIRMATION_UNAVAILABLE',
+);
+const readConfirmationRow = (operation) => readSelfLedgerRow(operation, entryConfirmationUnavailable);
+
+function confirmationEntryFields(entry) {
+  return Object.fromEntries(entryConfirmationFields.map((field) => [
+    field, field === 'entry_id' ? entry.id
+      : ['original_amount', 'base_amount'].includes(field) ? normalizeSelfLedgerAmount(entry[field]) : entry[field],
+  ]));
+}
+
+/** Fresh, scoped eligibility for one admin-reviewed contribution. */
+async function getEntryConfirmationContext({ workspaceId, containerId, entryId, callerId, userId, isAdmin }) {
+  if (!entryConfirmationCallerSchema.safeParse({ workspaceId, containerId, entryId, callerId, userId, isAdmin }).success) {
+    throw new ValidationError('Invalid ledger confirmation context');
+  }
+  if (!isAdmin) throw new ForbiddenError('Only workspace admins can confirm ledger entries');
+
+  const workspaceRaw = await readConfirmationRow(() => supabaseAdmin.from('workspaces')
+    .select('id, base_currency').eq('id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (!workspaceRaw) throw new NotFoundError('Workspace not found');
+  const workspace = selfLedgerWorkspaceRowSchema.safeParse(workspaceRaw);
+  if (!workspace.success || workspace.data.id !== workspaceId) throw entryConfirmationUnavailable();
+
+  const actorRaw = await readConfirmationRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('role', 'admin').eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (!actorRaw) throw new ForbiddenError('Active admin membership required');
+  const actor = selfLedgerMemberRowSchema.safeParse(actorRaw);
+  if (!actor.success) throw entryConfirmationUnavailable();
+  if (actor.data.id !== callerId || actor.data.workspace_id !== workspaceId || actor.data.user_id !== userId
+      || actor.data.role !== 'admin' || !actor.data.is_active || actor.data.is_proxy) {
+    throw new ForbiddenError('Workspace admin membership changed. Please retry.');
+  }
+
+  const containerRaw = await readConfirmationRow(() => supabaseAdmin.from('containers')
+    .select('id, workspace_id, name, container_type, status, enable_money, updated_at')
+    .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (!containerRaw) throw new NotFoundError('Container not found');
+  const container = selfLedgerContainerRowSchema.safeParse(containerRaw);
+  if (!container.success || container.data.id !== containerId || container.data.workspace_id !== workspaceId) {
+    throw entryConfirmationUnavailable();
+  }
+  if (container.data.container_type !== 'event' || container.data.status !== 'active' || !container.data.enable_money) {
+    throw new BusinessRuleError('Ledger confirmation requires an active event container with money tracking enabled');
+  }
+
+  const entryRaw = await readConfirmationRow(() => supabaseAdmin.from('ledger_entries')
+    .select(entryConfirmationFields.map((field) => field === 'entry_id' ? 'id' : field).join(', '))
+    .eq('id', entryId).eq('workspace_id', workspaceId).eq('container_id', containerId).maybeSingle());
+  if (!entryRaw) throw new NotFoundError('Ledger entry not found');
+  const entry = entryConfirmationRowSchema.safeParse(entryRaw);
+  if (!entry.success || entry.data.id !== entryId || entry.data.workspace_id !== workspaceId
+      || entry.data.container_id !== containerId) throw entryConfirmationUnavailable();
+  const snapshot = entryConfirmationSnapshotSchema.safeParse(confirmationEntryFields(entry.data));
+  if (!snapshot.success || snapshot.data.original_currency !== workspace.data.base_currency
+      || snapshot.data.original_amount !== snapshot.data.base_amount) {
+    throw new BusinessRuleError('Only pending, proof-free base-currency contributions can be confirmed by this tool');
+  }
+
+  const contributorRaw = await readConfirmationRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, display_name')
+    .eq('id', snapshot.data.contributor_id).eq('workspace_id', workspaceId)
+    .eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (!contributorRaw) throw new BusinessRuleError('The contributor must have active non-proxy membership');
+  const contributor = entryConfirmationContributorSchema.safeParse(contributorRaw);
+  if (!contributor.success || contributor.data.id !== snapshot.data.contributor_id
+      || contributor.data.workspace_id !== workspaceId) throw entryConfirmationUnavailable();
+  if (!contributor.data.is_active || contributor.data.is_proxy) {
+    throw new BusinessRuleError('The contributor must have active non-proxy membership');
+  }
+
+  const participantRaw = await readConfirmationRow(() => supabaseAdmin.from('container_participants')
+    .select('id, container_id, workspace_member_id, money_enabled')
+    .eq('container_id', containerId).eq('workspace_member_id', snapshot.data.contributor_id).maybeSingle());
+  if (!participantRaw) throw new BusinessRuleError('The contributor must participate in this container');
+  const participant = selfLedgerParticipantRowSchema.safeParse(participantRaw);
+  if (!participant.success || participant.data.container_id !== containerId
+      || participant.data.workspace_member_id !== snapshot.data.contributor_id) throw entryConfirmationUnavailable();
+  if (!participant.data.money_enabled) throw new BusinessRuleError('Money tracking must be enabled for the contributor');
+
+  return entryConfirmationContextSchema.parse({
+    ...snapshot.data, base_currency: workspace.data.base_currency,
+    container_name: container.data.name, container_type: container.data.container_type,
+    container_status: container.data.status, enable_money: container.data.enable_money,
+    container_updated_at: container.data.updated_at, actor_member_id: callerId, member_role: actor.data.role,
+    contributor_display_name: contributor.data.display_name, contributor_role: contributor.data.role,
+    participant_id: participant.data.id, money_enabled: participant.data.money_enabled,
+  });
+}
+
+async function confirmReviewedEntry({ workspaceId, containerId, entryId, actorMemberId, actorCtx, reviewedConfirmation }) {
+  const reviewed = reviewedEntryConfirmationSchema.safeParse(reviewedConfirmation);
+  if (!reviewed.success || !entryConfirmationCallerSchema.safeParse({
+    workspaceId, containerId, entryId, callerId: actorMemberId,
+    userId: reviewed.data?.userId, isAdmin: reviewed.data?.isAdmin,
+  }).success) throw new ValidationError('Invalid reviewed ledger confirmation');
+  if (!reviewed.data.isAdmin) throw new ForbiddenError('Only workspace admins can confirm ledger entries');
+  const expected = reviewed.data.expected;
+  if (expected.workspace_id !== workspaceId || expected.container_id !== containerId
+      || expected.entry_id !== entryId || expected.actor_member_id !== actorMemberId) {
+    throw new ForbiddenError('Ledger confirmation must use the reviewed workspace, entry and admin');
+  }
+  if (expected.original_currency !== expected.base_currency || expected.original_amount !== expected.base_amount) {
+    throw new ValidationError('Ledger confirmation must use base currency without conversion');
+  }
+
+  let current;
+  try {
+    current = await getEntryConfirmationContext({ workspaceId, containerId, entryId,
+      callerId: actorMemberId, userId: reviewed.data.userId, isAdmin: reviewed.data.isAdmin });
+  } catch (err) {
+    if (['NOT_FOUND', 'FORBIDDEN', 'BUSINESS_RULE_VIOLATION'].includes(err.code)) {
+      throw new ConflictError('The reviewed ledger confirmation is no longer available');
+    }
+    throw err;
+  }
+  if (JSON.stringify(current) !== JSON.stringify(expected)) {
+    throw new ConflictError('The ledger entry or confirmation eligibility changed since review');
+  }
+
+  const snapshot = entryConfirmationSnapshotSchema.parse(Object.fromEntries(
+    entryConfirmationFields.map((field) => [field, expected[field]]),
+  ));
+  const confirmedAt = new Date().toISOString();
+  let updateQuery = supabaseAdmin.from('ledger_entries')
+    .update({ status: 'confirmed', confirmed_at: confirmedAt, confirmed_by: actorMemberId });
+  for (const [field, value] of Object.entries(snapshot)) {
+    const column = field === 'entry_id' ? 'id' : field;
+    updateQuery = value === null ? updateQuery.is(column, null)
+      : updateQuery.eq(column, field === 'proofs' ? JSON.stringify(value) : value);
+  }
+  const response = await selfLedgerOperation(() => updateQuery.select().maybeSingle(), entryConfirmationUnavailable);
+  if (response.error !== null) throw entryConfirmationUnavailable();
+  if (response.data === null) throw new ConflictError('The ledger entry changed since it was reviewed');
+
+  const updated = entryConfirmationRowSchema.safeParse(response.data);
+  const actual = updated.success ? confirmationEntryFields(updated.data) : null;
+  const unchanged = actual && entryConfirmationFields
+    .filter((field) => !['status', 'confirmed_at', 'confirmed_by'].includes(field))
+    .every((field) => JSON.stringify(actual[field]) === JSON.stringify(snapshot[field]));
+  if (!unchanged || actual.status !== 'confirmed' || actual.confirmed_by !== actorMemberId
+      || actual.confirmed_at === null || Date.parse(actual.confirmed_at) !== Date.parse(confirmedAt)) {
+    throw entryConfirmationUnavailable();
+  }
+
+  try {
+    await notification.send({ type: 'contribution_confirmed', workspaceId,
+      recipientIds: [snapshot.contributor_id], referenceType: 'ledger_entry', referenceId: entryId,
+      variables: { amount: `${snapshot.original_amount} ${snapshot.original_currency}`, container: containerId } });
+    await audit.log({
+      ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId,
+      action: AUDIT_ACTIONS.LEDGER_CONFIRMED, targetType: 'ledger_entry', targetId: entryId,
+    });
+  } catch { throw entryConfirmationUnavailable(); }
+  return response.data;
+}
+
+async function confirmEntry({ workspaceId, containerId, entryId, actorMemberId, actorCtx, reviewedConfirmation }) {
+  if (reviewedConfirmation !== undefined) {
+    return confirmReviewedEntry({ workspaceId, containerId, entryId, actorMemberId, actorCtx, reviewedConfirmation });
+  }
+  // Ordinary HTTP callers retain their existing route-gated behavior.
   const { data: entry } = await supabaseAdmin.from('ledger_entries').select('*').eq('id', entryId).eq('container_id', containerId).maybeSingle();
   if (!entry) throw new NotFoundError('Entry not found');
   if (!['pending','proof_uploaded'].includes(entry.status)) throw new BusinessRuleError('Only pending or proof_uploaded entries can be confirmed');
@@ -823,6 +1007,7 @@ module.exports = {
   listEntries,
   getEntry,
   getSelfSubmissionContext,
+  getEntryConfirmationContext,
   createEntry,
   updateEntry,
   deleteEntry,

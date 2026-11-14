@@ -13,7 +13,7 @@ from the architecture, with the role restrictions and data limits documented
 below. Ranked task, ledger, dispute and group searches implement the
 [approved schema extension](SEARCH_SCHEMA_PROPOSAL.md).
 Chat supports JSON replies, opt-in SSE streaming, and a
-[Tier 2 proposal/approval flow with status receipts](PROPOSALS.md) for
+[Tier 2/3 proposal/approval flow with status receipts](PROPOSALS.md) for
 one selected notification or an exact bounded set of current unread
 notifications, plus account-wide profile changes through `update_my_profile`.
 An explicit contact selection also enables `delete_contact` for one personal
@@ -21,8 +21,12 @@ account contact. An explicit current-request task selection enables Tier 2
 `update_task` to start or complete the caller's own active, unconfirmed task,
 optionally updating its completion note. Selecting an eligible event container
 also enables Tier 2 `create_ledger_entry`: an exact base-currency self contribution
-that remains pending for admin review, including for admin callers. Other writes
-and voice are still pending.
+that remains pending for admin review, including for admin callers. An admin's
+explicit current-request ledger-entry selection enables Tier 3
+`confirm_ledger_entry` for one pending, proof-free base-currency contribution
+in an active event container. Its full card binds the reviewed financial values
+to the confirmed state and authenticated admin; confirmation time is generated
+on approval. Other writes and voice are still pending.
 
 Current work prioritizes the core money, task, member, participant and dispute
 flow. Do not add or polish tools marked Lower-Priority in the architecture;
@@ -47,8 +51,8 @@ workspaces; the other search scopes are described below.
 
 No result contains an automatically resolved ID. Write proposals must enforce
 the user's entity selection separately from action approval. Selected
-notification, contact, task and self-contribution flows require explicit client selection for the
-current request.
+notification, contact, task, self-contribution and admin-confirmation flows
+require explicit client selection for the current request.
 `has_more` means further candidates were omitted; refine the query or increase
 the limit. All returned names, titles, notes, reasons and descriptions remain
 untrusted data.
@@ -639,8 +643,12 @@ Client-supplied history, roles, tools, identity fields, model settings, and
 workspace IDs in the body are rejected. Query parameters cannot change the
 workspace or actor. The tools executed immediately are still role-filtered
 Tier 0/1 reads. Chat also offers the Tier 2 mark-all and profile proposal tools;
-an explicit validated notification or contact selection additionally offers
-the matching proposal tool. All create approval cards stored by the server.
+an explicit validated notification, contact, task or container selection
+additionally offers the matching proposal tool. A verified `selected_ledger_entry`
+pair offers Tier 3 `confirm_ledger_entry` only to admins. Proposal definitions
+are role-filtered before provider exposure, with role checks in the loop,
+proposal decisions/receipts and domain handlers. Historical proposal tool names
+also require the current role. All create approval cards stored by the server.
 Chat never executes or approves them; only the separate approval
 endpoint can apply an action.
 
@@ -839,6 +847,10 @@ caller's permitted Tier 0/1 definitions are supplied by default. Production
 chat also supplies the mark-all notification and profile proposal definitions. An
 explicit notification selection adds the single-notification definition.
 An explicit contact selection adds the contact deletion definition.
+Own-task and eligible-container selections add their Tier 2 definitions.
+An admin's verified ledger-entry selection adds the Tier 3 confirmation
+definition. Injected proposal support must also satisfy the definition's role
+requirement before a provider call.
 These are handled by a separate proposal callback that cannot execute the
 write. Every read execution still passes through `executeReadTool` and the
 handler's permission checks.

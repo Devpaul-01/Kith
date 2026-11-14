@@ -93,6 +93,45 @@ const selfLedgerSubmissionDataSchema = z.object({
   is_crypto: z.literal(false).default(false),
 }).strict();
 
+// A confirmation approves one complete pending entry, not just its ID. Keep
+// these as strict ZodObjects so cards can project/extend the reviewed fields.
+const entryConfirmationSnapshotSchema = z.object({
+  entry_id: z.string().uuid(),
+  workspace_id: z.string().uuid(),
+  container_id: z.string().uuid(),
+  contributor_id: z.string().uuid(),
+  entry_type: z.literal('contribution'),
+  original_amount: selfLedgerAmountSchema,
+  original_currency: z.enum(SUPPORTED_CURRENCIES),
+  base_amount: selfLedgerAmountSchema,
+  payment_method: z.enum(['cash', 'bank_transfer', 'mobile_money', 'other']).nullable(),
+  note: z.string().max(500).nullable(),
+  cycle_id: z.null(),
+  is_crypto: z.literal(false),
+  proofs: z.array(z.never()).length(0),
+  status: z.literal('pending'),
+  corrects_entry_id: z.null(),
+  recorded_by: z.string().uuid(),
+  recorded_at: z.string().datetime({ offset: true }),
+  confirmed_at: z.null(),
+  confirmed_by: z.null(),
+}).strict();
+
+const entryConfirmationContextSchema = entryConfirmationSnapshotSchema.extend({
+  base_currency: z.enum(SUPPORTED_CURRENCIES),
+  container_name: z.string().min(1).max(200),
+  container_type: z.literal('event'),
+  container_status: z.literal('active'),
+  enable_money: z.literal(true),
+  container_updated_at: z.string().datetime({ offset: true }),
+  actor_member_id: z.string().uuid(),
+  member_role: z.literal('admin'),
+  contributor_display_name: z.string().min(1).max(100),
+  contributor_role: z.enum(['member', 'admin']),
+  participant_id: z.string().uuid(),
+  money_enabled: z.literal(true),
+}).strict();
+
 const createLedgerEntrySchema = z.object({
   entry_type: z.enum(['contribution', 'expense']),
   contributor_id: z.string().uuid().optional(),
@@ -243,6 +282,8 @@ module.exports = {
   normalizeSelfLedgerAmount,
   selfLedgerContextSchema,
   selfLedgerSubmissionDataSchema,
+  entryConfirmationSnapshotSchema,
+  entryConfirmationContextSchema,
   createLedgerEntrySchema,
   updateLedgerEntrySchema,
   uploadFileSchema,

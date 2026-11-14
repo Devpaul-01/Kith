@@ -1,8 +1,10 @@
-# Tier 2 proposals
+# Agent action proposals
 
 The available agent writes are Tier 2 `mark_notification_read`,
 `mark_all_notifications_read`, `update_my_profile`, `delete_contact`, `update_task`,
 and `create_ledger_entry` for a self contribution.
+Admins can also request Tier 3 `confirm_ledger_entry` for an explicitly selected
+eligible contribution, with a full before/after approval card.
 Notification actions are scoped to the caller in the current workspace.
 Task progress changes are scoped to the caller's own assignment in that workspace.
 Self contributions are scoped to their own money-enabled participation in an
@@ -95,6 +97,78 @@ A mark-all card instead contains the server-selected IDs and exact count:
   "expires_at": "<server-generated-ISO-timestamp>"
 }
 ```
+
+## Admin ledger confirmation
+
+An admin explicitly selects an entry for the current chat request:
+
+```json
+{
+  "message": "Confirm the selected contribution.",
+  "selected_ledger_entry": {
+    "container_id": "<container-uuid>",
+    "entry_id": "<entry-uuid>"
+  },
+  "conversation_id": null
+}
+```
+
+The backend validates the pair and fresh admin membership before offering
+`confirm_ledger_entry`. Historical confirmation tool calls are also restricted
+to admin turns. Its model arguments are strictly `{}`. IDs, amounts,
+contributor/confirmer, timestamps and force cannot come from model arguments.
+Names, search candidates, IDs in prose, previous cards and receipts do not
+select an entry. Ambiguous results require the user to choose a target.
+
+This milestone supports pending, proof-free, non-crypto contributions in the
+workspace's freshly read base currency, with identical original/base amounts,
+in active event containers. The contributor must have active, non-deleted,
+non-proxy membership and money-enabled participation. Recurring cycles,
+expenses, corrections, disputes, proof-uploaded entries, foreign currency,
+proxies and force overrides remain outside this tool.
+
+The Tier 3 `before` card includes the complete pending entry business snapshot,
+contributor label, container/version, currency and reviewed eligibility. The
+`after` snapshot fixes the same IDs, recorded identity/time, exact decimal
+amounts, currency, note, payment method and empty proofs, changing only
+`status: confirmed`, `confirmed_by` to the authenticated admin and
+`confirmed_at: on_approval`. That timestamp is a plan: the service generates
+the actual confirmation time during execution and returns the stored ISO value
+in the receipt. Proposal creation never confirms an entry. Names and notes
+remain untrusted display data.
+
+Approval uses the existing separate endpoint and a strict empty `{}` body.
+The domain explicitly checks admin access before calling ledger services and
+rereads the full reviewed context. The opt-in ledger service path performs its
+own fresh admin/eligibility checks, then conditionally updates only the exact
+reviewed pending entry. Predicates cover every reviewed ledger business field,
+workspace/container identity, nullable fields and empty proofs. A changed
+amount, note, contributor, state or proof invalidates the approval. An explicit
+zero-row update with no database error proves no mutation; query/transport or
+returned-data uncertainty and failures after the update retain the irreversible
+execution claim and never authorize a repeat.
+
+One approved card executes once through the existing Redis state machine.
+Successful confirmation preserves contributor notifications and the existing
+ledger-confirmed audit. Every agent audit targets the known ledger entry;
+Tier 3 metadata includes the reviewed before/after state. Verified receipts
+contain the complete confirmed entry projection and actual confirmation time,
+without internal keys or extra storage data. Record and receipt validation
+binds every returned field to the approved card. Retries can finish final agent
+auditing from a saved result without confirming or notifying again.
+
+The entry predicates guard the row being confirmed. Related workspace,
+membership, container and participation reads are separate from the update,
+and existing HTTP writers retain their previous behavior. Global concurrent
+writer/eligibility protection needs a broader service or database/RPC decision
+and live Postgres integration coverage. Read-only turns retain the existing
+membership-cache policy: application changes invalidate immediately, while
+external edits or missed invalidation can retain a cached role for up to
+30 seconds. Confirmation selection/drafts, approval, execution and actual
+saved-receipt lookups reread membership. Unit coverage includes explicit role
+denials, exact snapshots/CAS predicates, stale state, duplicate/concurrent
+approvals, uncertain outcomes, scripted model turns and mocked HTTP/SSE flows.
+Live database concurrency and live model behavior remain unverified.
 
 ## Self contributions
 

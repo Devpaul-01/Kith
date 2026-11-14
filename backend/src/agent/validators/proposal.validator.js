@@ -3,6 +3,7 @@ const { updateProfileSchema, profileSnapshotFieldsSchema, contactSnapshotSchema 
 const {
   createTaskSchema, updateTaskSchema, selfLedgerAmountSchema,
   selfLedgerContextSchema, selfLedgerSubmissionDataSchema,
+  entryConfirmationSnapshotSchema, entryConfirmationContextSchema,
 } = require('../../validators/ledger.validator');
 
 const MAX_BULK_NOTIFICATION_IDS = 100;
@@ -137,6 +138,37 @@ function selfLedgerAfter(parameters) {
   return selfLedgerAfterSchema.parse({ ...parameters, status: 'pending', confirmed_at: null, confirmed_by: null });
 }
 
+const ledgerConfirmationTargetSchema = z.object({
+  container_id: z.string().uuid().transform((id) => id.toLowerCase()),
+  entry_id: z.string().uuid().transform((id) => id.toLowerCase()),
+}).strict();
+const ledgerConfirmationArgumentsSchema = z.object({}).strict();
+const ledgerConfirmationAfterSchema = entryConfirmationSnapshotSchema.extend({
+  status: z.literal('confirmed'), confirmed_by: z.string().uuid(),
+  confirmed_at: z.literal('on_approval'),
+});
+const ledgerConfirmationResultSchema = ledgerConfirmationAfterSchema.extend({
+  confirmed_at: z.string().datetime({ offset: true }),
+});
+const LEDGER_CONFIRMATION_SUMMARY = 'Confirm the selected contribution and lock its financial details.';
+
+function ledgerConfirmationAfter(selection) {
+  const selected = entryConfirmationContextSchema.parse(selection);
+  const snapshot = Object.fromEntries(Object.keys(entryConfirmationSnapshotSchema.shape)
+    .map((field) => [field, selected[field]]));
+  return ledgerConfirmationAfterSchema.parse({
+    ...snapshot, status: 'confirmed', confirmed_by: selected.actor_member_id,
+    confirmed_at: 'on_approval',
+  });
+}
+
+function ledgerConfirmationResultMatches(proposal, result) {
+  const parsed = ledgerConfirmationResultSchema.safeParse(result);
+  return parsed.success && JSON.stringify(ledgerConfirmationAfterSchema.parse({
+    ...parsed.data, confirmed_at: 'on_approval',
+  })) === JSON.stringify(proposal.after);
+}
+
 function profileProposalSummary(parameters) {
   const labels = PROFILE_UPDATE_FIELDS.filter((field) => Object.hasOwn(parameters, field))
     .map((field) => PROFILE_FIELD_LABELS[field]);
@@ -192,11 +224,18 @@ const createSelfLedgerProposalSchema = z.object({
   before: selfLedgerContextSchema, after: selfLedgerAfterSchema,
   expires_at: z.string().datetime(),
 }).strict();
+const confirmLedgerEntryProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('confirm_ledger_entry'), tier: z.literal(3),
+  summary: z.literal(LEDGER_CONFIRMATION_SUMMARY), parameters: ledgerConfirmationTargetSchema,
+  before: entryConfirmationContextSchema, after: ledgerConfirmationAfterSchema,
+  expires_at: z.string().datetime(),
+}).strict();
 
 const proposalSchema = z.union([
   singleNotificationProposalSchema, allNotificationsProposalSchema, updateProfileProposalSchema, deleteContactProposalSchema,
   updateTaskProposalSchema,
   createSelfLedgerProposalSchema,
+  confirmLedgerEntryProposalSchema,
 ]).superRefine((value, ctx) => {
   if (value.tool === 'mark_notification_read' && value.parameters.notification_id !== value.before.id) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Notification target mismatch' });
@@ -244,12 +283,22 @@ const proposalSchema = z.union([
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Self contribution mismatch' });
     }
   }
+  if (value.tool === 'confirm_ledger_entry') {
+    if (value.parameters.entry_id !== value.before.entry_id
+        || value.parameters.container_id !== value.before.container_id
+        || value.before.original_currency !== value.before.base_currency
+        || value.before.original_amount !== value.before.base_amount
+        || JSON.stringify(value.after) !== JSON.stringify(ledgerConfirmationAfter(value.before))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Ledger confirmation mismatch' });
+    }
+  }
 });
 
 const proposalResultSchema = z.union([
   notificationReadResultSchema, notificationBulkReadResultSchema, profileUpdateResultSchema, contactDeletionResultSchema,
   taskProgressResultSchema,
   selfLedgerResultSchema,
+  ledgerConfirmationResultSchema,
 ]);
 const proposalRecordSchema = z.object({
   version: z.literal(1), scope: z.string().regex(/^[a-f0-9]{64}$/), proposal: proposalSchema,
@@ -299,6 +348,9 @@ const proposalRecordSchema = z.object({
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Self contribution result mismatch' });
       }
     }
+  } else if (record.proposal.tool === 'confirm_ledger_entry'
+      && !ledgerConfirmationResultMatches(record.proposal, record.result)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Ledger confirmation result mismatch' });
   }
 });
 
@@ -332,6 +384,10 @@ const selfLedgerStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('create_ledger_entry'),
   container_id: z.string().uuid(), contributor_id: z.string().uuid(),
 }).strict();
+const ledgerConfirmationStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('confirm_ledger_entry'),
+  container_id: z.string().uuid(), entry_id: z.string().uuid(),
+}).strict();
 const proposalStatusSchema = z.union([
   ...incompleteStatuses.map((status) => singleStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => singleStatusFields.extend({ status: z.literal(status), result: notificationReadResultSchema })),
@@ -345,6 +401,11 @@ const proposalStatusSchema = z.union([
   ...['audit_pending', 'executed'].map((status) => taskStatusFields.extend({ status: z.literal(status), result: taskProgressResultSchema })),
   ...incompleteStatuses.map((status) => selfLedgerStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => selfLedgerStatusFields.extend({ status: z.literal(status), result: selfLedgerResultSchema })),
+  ...incompleteStatuses.map((status) => ledgerConfirmationStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => ledgerConfirmationStatusFields.extend({
+    status: z.literal(status), result: ledgerConfirmationResultSchema,
+  }).refine((value) => value.entry_id === value.result.entry_id && value.container_id === value.result.container_id,
+    'Ledger confirmation receipt target mismatch')),
 ]);
 
 // A missing record never inherits a result or target from historical data.
@@ -388,6 +449,14 @@ module.exports = {
   selfLedgerParametersFromArgs,
   selfLedgerAfter,
   SELF_LEDGER_SUMMARY,
+  entryConfirmationContextSchema,
+  ledgerConfirmationTargetSchema,
+  ledgerConfirmationArgumentsSchema,
+  ledgerConfirmationAfterSchema,
+  ledgerConfirmationResultSchema,
+  ledgerConfirmationAfter,
+  ledgerConfirmationResultMatches,
+  LEDGER_CONFIRMATION_SUMMARY,
   profileProposalSummary,
   proposalSchema,
   proposalRecordSchema,

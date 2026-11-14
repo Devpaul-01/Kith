@@ -12,6 +12,7 @@ const { updateMyProfileDefinition } = require('./profile-proposal.service');
 const { selectContact, deleteContactDefinition } = require('./contact-proposal.service');
 const { selectTask, updateTaskDefinition } = require('./task-proposal.service');
 const { selectLedgerContainer, createLedgerEntryDefinition } = require('./ledger-proposal.service');
+const { selectLedgerEntry, confirmLedgerEntryDefinition } = require('./ledger-confirmation-proposal.service');
 const { createProposal, getProposalReceipts } = require('./proposal.service');
 const { extractProposalReferences } = require('./proposal-history.service');
 
@@ -45,6 +46,9 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
       containerId: input.data.selected_task.container_id, taskId: input.data.selected_task.task_id });
   const ledgerSelection = input.data.selected_container_id === undefined ? undefined
     : await selectLedgerContainer({ context: actorContext, containerId: input.data.selected_container_id });
+  const ledgerEntrySelection = input.data.selected_ledger_entry === undefined ? undefined
+    : await selectLedgerEntry({ context: actorContext,
+      containerId: input.data.selected_ledger_entry.container_id, entryId: input.data.selected_ledger_entry.entry_id });
   const proposalSupport = {
     definitions: Object.freeze([
       ...(selection ? [markNotificationReadDefinition] : []),
@@ -53,14 +57,18 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
       ...(contactSelection ? [deleteContactDefinition] : []),
       ...(taskSelection ? [updateTaskDefinition] : []),
       ...(ledgerSelection ? [createLedgerEntryDefinition] : []),
-    ]),
+      ...(ledgerEntrySelection ? [confirmLedgerEntryDefinition] : []),
+    ].filter((definition) => definition.minRole === 'member'
+      || (definition.minRole === 'admin' && actorContext.member.role === 'admin'))),
     ...(selection ? { selection } : {}),
     ...(contactSelection ? { contactSelection } : {}),
     ...(taskSelection ? { taskSelection } : {}),
     ...(ledgerSelection ? { ledgerSelection } : {}),
+    ...(ledgerEntrySelection ? { ledgerEntrySelection } : {}),
     create: ({ name, args, turnId }) => createProposal({
       context: actorContext, tool: name,
-      selection: name === createLedgerEntryDefinition.name ? ledgerSelection
+      selection: name === confirmLedgerEntryDefinition.name ? ledgerEntrySelection
+        : name === createLedgerEntryDefinition.name ? ledgerSelection
         : name === updateTaskDefinition.name ? taskSelection
         : name === deleteContactDefinition.name ? contactSelection : selection,
       args, turnId, actorCtx, signal,
