@@ -141,6 +141,76 @@ const createContainerSchema = z
     }
   });
 
+// Agent event creation uses the existing field constraints, with canonical
+// text and explicit defaults so the reviewed card matches the stored row.
+const containerCreationFields = createContainerSchema.innerType().shape;
+const unsupportedContainerCreationText = /[\u0000\uD800-\uDFFF]/u;
+const supportedContainerCreationText = (field) => field.refine(
+  (value) => !unsupportedContainerCreationText.test(value), 'Text contains unsupported characters',
+);
+const canonicalContainerText = (field) => supportedContainerCreationText(field.trim())
+  .transform((value) => value || null).nullable().default(null);
+const containerCreationCategorySchema = containerCreationFields.event_type_category.removeDefault().unwrap();
+const containerCreationDateSchema = containerCreationFields.event_date.unwrap().unwrap();
+const containerCreationEventTypeSchema = containerCreationFields.event_type.unwrap().unwrap();
+
+const eventContainerCreationDataSchema = z.object({
+  name: supportedContainerCreationText(containerCreationFields.name.trim().min(2)),
+  subtitle: canonicalContainerText(containerCreationFields.subtitle.unwrap()),
+  description: canonicalContainerText(containerCreationFields.description.unwrap()),
+  container_type: z.literal('event'),
+  enable_money: containerCreationFields.enable_money,
+  enable_tasks: containerCreationFields.enable_tasks,
+  event_date: containerCreationDateSchema.nullable().default(null),
+  event_type: canonicalContainerText(containerCreationEventTypeSchema),
+  event_type_category: containerCreationCategorySchema.default('other'),
+}).strict();
+
+const containerCreationContextSchema = z.object({
+  workspace_id: z.string().uuid(),
+  workspace_name: createWorkspaceSchema.shape.name,
+  workspace_updated_at: z.string().datetime({ offset: true }),
+  actor_member_id: z.string().uuid(),
+  member_role: z.literal('admin'),
+}).strict();
+
+// Stored-state fields are required and never normalize missing or unexpected
+// values into the reviewed defaults. Execution timestamps live in the result.
+const eventContainerCreationStateSchema = z.object({
+  container_id: z.string().uuid(),
+  workspace_id: z.string().uuid(),
+  name: containerCreationFields.name,
+  subtitle: containerCreationFields.subtitle.unwrap().nullable(),
+  description: containerCreationFields.description.unwrap().nullable(),
+  container_type: z.literal('event'),
+  enable_money: containerCreationFields.enable_money.removeDefault(),
+  enable_tasks: containerCreationFields.enable_tasks.removeDefault(),
+  event_date: containerCreationDateSchema.nullable(),
+  event_type: containerCreationEventTypeSchema.nullable(),
+  event_type_category: containerCreationCategorySchema,
+  recurrence_cadence: z.null(), recurrence_days: z.null(),
+  recurrence_start: z.null(), recurrence_end: z.null(),
+  carry_forward_unpaid: z.literal(false), auto_generate_cycles: z.literal(true),
+  budget_target: z.null(), budget_currency: z.null(),
+  public_token: z.null(), public_show_names: z.literal(true),
+  cover_photos: z.array(z.never()).length(0), status: z.literal('active'),
+  outcome_details: z.null(), outcome_files: z.array(z.never()).length(0),
+  converted_from_id: z.null(), completed_at: z.null(), deleted_at: z.null(),
+  created_by: z.string().uuid(),
+}).strict();
+
+function buildEventContainerCreationState({ data, workspaceId, containerId, actorMemberId }) {
+  return eventContainerCreationStateSchema.parse({
+    ...eventContainerCreationDataSchema.parse(data),
+    container_id: containerId, workspace_id: workspaceId, created_by: actorMemberId,
+    recurrence_cadence: null, recurrence_days: null, recurrence_start: null, recurrence_end: null,
+    carry_forward_unpaid: false, auto_generate_cycles: true,
+    budget_target: null, budget_currency: null, public_token: null, public_show_names: true,
+    cover_photos: [], status: 'active', outcome_details: null, outcome_files: [],
+    converted_from_id: null, completed_at: null, deleted_at: null,
+  });
+}
+
 const updateContainerSchema = z.object({
   name:                z.string().min(2).max(100).optional(),
   subtitle:            z.string().max(200).optional().nullable(),
@@ -200,6 +270,10 @@ module.exports = {
   updateGroupSchema,
   addGroupMembersSchema,
   createContainerSchema,
+  eventContainerCreationDataSchema,
+  containerCreationContextSchema,
+  eventContainerCreationStateSchema,
+  buildEventContainerCreationState,
   updateContainerSchema,
   completeContainerSchema,
   convertToRecurringSchema,

@@ -5,6 +5,8 @@ The available agent writes are Tier 2 `mark_notification_read`,
 and `create_ledger_entry` for a self contribution.
 Admins can also request Tier 3 `confirm_ledger_entry` for an explicitly selected
 eligible contribution, with a full before/after approval card.
+Tier 3 `create_container` creates a new event through a full approval card and
+requires no existing entity selection.
 Notification actions are scoped to the caller in the current workspace.
 Task progress changes are scoped to the caller's own assignment in that workspace.
 Self contributions are scoped to their own money-enabled participation in an
@@ -97,6 +99,77 @@ A mark-all card instead contains the server-selected IDs and exact count:
   "expires_at": "<server-generated-ISO-timestamp>"
 }
 ```
+
+## Event container creation
+
+An admin requests a new event through the existing chat input:
+
+```json
+{
+  "message": "Create an event called Family groceries on 2026-12-01 with money and task tracking.",
+  "conversation_id": null
+}
+```
+
+`create_container` is offered to admins without an entity selection. Only a
+requested draft reads fresh workspace/admin state and pins it in the card.
+Its strict model arguments are `name` plus optional `subtitle`, `description`,
+`event_date`, `event_type`, `event_type_category`, `enable_money` and
+`enable_tasks`. Names use the existing 2–100 character limit; subtitle,
+description and event type limits are 200, 2,000 and 80 characters. Text is
+trimmed, and omitted/empty optional text becomes null. NUL and unpaired Unicode
+surrogates are rejected before database access; valid emoji pairs are allowed.
+Dates must be explicit valid `YYYY-MM-DD` calendar dates. Relative or ambiguous
+dates require clarification. Tracking flags default to false and category to
+`other`; only requested values should be supplied.
+
+This milestone creates active event containers. Budgets, recurring schedules,
+participants, assets/uploads and public links are excluded. The model cannot
+supply a workspace, creator, ID, state, execution time or inert-default fields.
+The server allocates the new container UUID from the proposal UUID. Separate
+approved cards create separate containers, including when names are identical.
+
+The full Tier 3 `before` card includes the reviewed workspace identity/name/
+version, real admin and `container: null`. The `after` projection contains the
+new ID, creator, requested fields and every fixed stored business field:
+active event state, null recurrence/budget/link/conversion/completion/deletion
+values and empty cover/outcome assets. Existing SQL defaults
+`auto_generate_cycles: true` and `public_show_names: true` are preserved; an
+event schedules no recurring jobs and its null public token exposes no link.
+`created_at` and `updated_at` are previewed as `on_approval`; execution generates
+the same actual instant for both and verified receipts carry the stored ISO
+values. Names and descriptions remain untrusted display data.
+
+The draft checks the complete eventual executed record against the existing
+16 KiB storage limit before issuing the card, including the result copy,
+bounded timestamps and bookkeeping. Text that fits individual character limits
+can still exceed that encoded record limit; shorten metadata when rejected.
+This check prevents a predictable receipt-storage failure after creation.
+
+Approval uses the existing separate endpoint with a strict empty `{}` body.
+The domain explicitly checks admin access and revalidates the workspace. The
+opt-in `createContainer` service path rereads actual active non-proxy admin
+membership and the non-deleted workspace, then inserts the server-owned ID,
+exact reviewed values, inert defaults and execution timestamps. It verifies
+the complete returned business state and time before required native auditing.
+The ordinary HTTP creation path and recurring job behavior remain unchanged.
+
+The existing Redis execution claim deduplicates approval; the containers primary
+key also prevents repeated insertion of the same generated ID. INSERT errors,
+PK collisions, transport uncertainty, malformed results and post-insert audit
+failure retain the irreversible claim. There is no native replay or repair path.
+Saved successful results can finish final agent auditing without another INSERT.
+Every audit and status targets the preallocated container ID, even before the
+new row exists or when result persistence is uncertain. Tier 3 agent metadata
+includes the full reviewed before/after state. Role-scoped records and history
+prevent member turns from restoring admin creation calls.
+
+Fresh admin/workspace reads remain separate from INSERT. Stronger concurrent
+eligibility protection requires a service/database decision and live Postgres
+coverage. Unit checks cover explicit permission denial, normalized/fixed state,
+Unicode and size boundaries, strict args/approval, stale context, uncertain
+outcomes, duplicate approvals, receipts, scripted turns and mocked HTTP/SSE.
+Live database concurrency and live model evaluation remain unverified.
 
 ## Admin ledger confirmation
 

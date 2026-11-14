@@ -5,7 +5,12 @@
 // RPC, and all notification/audit orchestration.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { AppError, NotFoundError, BusinessRuleError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ForbiddenError, ValidationError, ConflictError } = require('../utils/errors');
+const { z } = require('zod');
+const {
+  eventContainerCreationDataSchema, containerCreationContextSchema,
+  eventContainerCreationStateSchema, buildEventContainerCreationState,
+} = require('../validators/workspace.validator');
 const { generatePublicToken } = require('../utils/crypto');
 const { generateUploadUrl }   = require('./storage.service');
 const notification = require('./notification.service');
@@ -71,7 +76,147 @@ async function listContainers({ workspaceId, typeFilter, statusFilter, sortQuery
   return { containers, meta: { total: containers.length, active_count: activeCount } };
 }
 
-async function createContainer({ workspaceId, data, actorMemberId, actorCtx }) {
+const containerCreationCallerSchema = z.object({
+  workspaceId: z.string().uuid(), callerId: z.string().uuid(),
+  userId: z.string().uuid(), isAdmin: z.boolean(),
+}).strict();
+const reviewedContainerCreationSchema = z.object({
+  userId: z.string().uuid(), isAdmin: z.boolean(),
+  expected: containerCreationContextSchema, containerId: z.string().uuid(),
+}).strict();
+const containerCreationWorkspaceSchema = z.object({
+  id: z.string().uuid(), name: containerCreationContextSchema.shape.workspace_name,
+  updated_at: z.string().datetime({ offset: true }),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+});
+const containerCreationMemberSchema = z.object({
+  id: z.string().uuid(), workspace_id: z.string().uuid(), user_id: z.string().uuid(),
+  role: z.enum(['member', 'admin']), is_active: z.boolean(), is_proxy: z.boolean(),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+});
+const containerCreationTimestampsSchema = z.object({
+  created_at: z.string().max(35).datetime({ offset: true }),
+  updated_at: z.string().max(35).datetime({ offset: true }),
+});
+const containerCreationUnavailable = () => new AppError(
+  'Container creation is unavailable. Please try again.', 503, 'CONTAINER_CREATION_UNAVAILABLE',
+);
+
+async function containerCreationOperation(operation) {
+  let response;
+  try { response = await operation(); } catch { throw containerCreationUnavailable(); }
+  if (!response || typeof response !== 'object' || Array.isArray(response)
+      || !Object.hasOwn(response, 'data') || !Object.hasOwn(response, 'error')) {
+    throw containerCreationUnavailable();
+  }
+  return response;
+}
+
+async function readContainerCreationRow(operation) {
+  const response = await containerCreationOperation(operation);
+  if (response.error !== null || (response.data !== null
+      && (typeof response.data !== 'object' || Array.isArray(response.data)))) {
+    throw containerCreationUnavailable();
+  }
+  return response.data;
+}
+
+/** Read the actual workspace/admin eligibility; agent handlers never query. */
+async function getContainerCreationContext({ workspaceId, callerId, userId, isAdmin }) {
+  if (!containerCreationCallerSchema.safeParse({ workspaceId, callerId, userId, isAdmin }).success) {
+    throw new ValidationError('Invalid container creation context');
+  }
+  if (!isAdmin) throw new ForbiddenError('Only workspace admins can create containers');
+
+  const workspaceRaw = await readContainerCreationRow(() => supabaseAdmin.from('workspaces')
+    .select('id, name, updated_at, deleted_at').eq('id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (!workspaceRaw) throw new NotFoundError('Workspace not found');
+  const workspace = containerCreationWorkspaceSchema.safeParse(workspaceRaw);
+  if (!workspace.success || workspace.data.id !== workspaceId) throw containerCreationUnavailable();
+  if (workspace.data.deleted_at !== null) throw new NotFoundError('Workspace not found');
+
+  const memberRaw = await readContainerCreationRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, deleted_at')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('role', 'admin').eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (!memberRaw) throw new ForbiddenError('Active admin membership required');
+  const member = containerCreationMemberSchema.safeParse(memberRaw);
+  if (!member.success) throw containerCreationUnavailable();
+  if (member.data.id !== callerId || member.data.workspace_id !== workspaceId || member.data.user_id !== userId
+      || member.data.role !== 'admin' || !member.data.is_active || member.data.is_proxy || member.data.deleted_at !== null) {
+    throw new ForbiddenError('Workspace admin membership changed. Please retry.');
+  }
+
+  return containerCreationContextSchema.parse({
+    workspace_id: workspaceId, workspace_name: workspace.data.name, workspace_updated_at: workspace.data.updated_at,
+    actor_member_id: callerId, member_role: member.data.role,
+  });
+}
+
+async function createReviewedContainer({ workspaceId, data, actorMemberId, actorCtx, reviewedCreation }) {
+  const reviewed = reviewedContainerCreationSchema.safeParse(reviewedCreation);
+  const approved = eventContainerCreationDataSchema.safeParse(data);
+  if (!reviewed.success || !approved.success || !containerCreationCallerSchema.safeParse({
+    workspaceId, callerId: actorMemberId, userId: reviewed.data?.userId, isAdmin: reviewed.data?.isAdmin,
+  }).success) throw new ValidationError('Invalid reviewed container creation');
+  if (!reviewed.data.isAdmin) throw new ForbiddenError('Only workspace admins can create containers');
+  const expected = reviewed.data.expected;
+  if (expected.workspace_id !== workspaceId || expected.actor_member_id !== actorMemberId) {
+    throw new ForbiddenError('Container creation must use the reviewed workspace and admin');
+  }
+
+  let current;
+  try {
+    current = await getContainerCreationContext({ workspaceId, callerId: actorMemberId,
+      userId: reviewed.data.userId, isAdmin: reviewed.data.isAdmin });
+  } catch (err) {
+    if (['NOT_FOUND', 'FORBIDDEN'].includes(err.code)) {
+      throw new ConflictError('The reviewed container creation is no longer available');
+    }
+    throw err;
+  }
+  if (JSON.stringify(current) !== JSON.stringify(expected)) {
+    throw new ConflictError('The workspace or creation eligibility changed since review');
+  }
+
+  const state = buildEventContainerCreationState({ data: approved.data, workspaceId,
+    containerId: reviewed.data.containerId, actorMemberId });
+  const { container_id: containerId, ...values } = state;
+  const createdAt = new Date().toISOString();
+  // Reuse the existing PK for the server-owned ID. A duplicate or uncertain
+  // insert never triggers a replay/repair path or repeats side effects.
+  const response = await containerCreationOperation(() => supabaseAdmin.from('containers')
+    .insert({ id: containerId, ...values, created_at: createdAt, updated_at: createdAt })
+    .select().single());
+  if (response.error !== null || !response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
+    throw containerCreationUnavailable();
+  }
+  const raw = response.data;
+  const actual = eventContainerCreationStateSchema.safeParse(Object.fromEntries(
+    Object.keys(eventContainerCreationStateSchema.shape).map((field) => [field, field === 'container_id' ? raw.id : raw[field]]),
+  ));
+  const timestamps = containerCreationTimestampsSchema.safeParse(raw);
+  if (!actual.success || JSON.stringify(actual.data) !== JSON.stringify(state) || !timestamps.success
+      || Date.parse(timestamps.data.created_at) !== Date.parse(createdAt)
+      || Date.parse(timestamps.data.updated_at) !== Date.parse(createdAt)) {
+    throw containerCreationUnavailable();
+  }
+
+  try {
+    await audit.log({
+      ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId, required: true,
+      action: AUDIT_ACTIONS.CONTAINER_CREATED, targetType: 'container', targetId: containerId,
+      metadata: { name: state.name, container_type: state.container_type },
+    });
+  } catch { throw containerCreationUnavailable(); }
+  return raw;
+}
+
+async function createContainer({ workspaceId, data, actorMemberId, actorCtx, reviewedCreation }) {
+  if (reviewedCreation !== undefined) {
+    return createReviewedContainer({ workspaceId, data, actorMemberId, actorCtx, reviewedCreation });
+  }
+  // Existing HTTP callers keep their route-gated validation and defaults.
   const { data: container, error } = await supabaseAdmin
     .from('containers')
     .insert({
@@ -545,6 +690,7 @@ async function getPublicContainer({ publicToken }) {
 
 module.exports = {
   listContainers,
+  getContainerCreationContext,
   createContainer,
   getContainer,
   updateContainer,

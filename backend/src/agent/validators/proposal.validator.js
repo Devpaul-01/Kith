@@ -1,6 +1,10 @@
 const { z } = require('zod');
 const { updateProfileSchema, profileSnapshotFieldsSchema, contactSnapshotSchema } = require('../../validators/auth.validator');
 const {
+  eventContainerCreationDataSchema, containerCreationContextSchema,
+  eventContainerCreationStateSchema, buildEventContainerCreationState,
+} = require('../../validators/workspace.validator');
+const {
   createTaskSchema, updateTaskSchema, selfLedgerAmountSchema,
   selfLedgerContextSchema, selfLedgerSubmissionDataSchema,
   entryConfirmationSnapshotSchema, entryConfirmationContextSchema,
@@ -169,6 +173,44 @@ function ledgerConfirmationResultMatches(proposal, result) {
   })) === JSON.stringify(proposal.after);
 }
 
+const containerCreationArgumentsSchema = eventContainerCreationDataSchema
+  .omit({ container_type: true }).partial({
+    subtitle: true, description: true, enable_money: true, enable_tasks: true,
+    event_date: true, event_type: true, event_type_category: true,
+  });
+const containerCreationBeforeSchema = containerCreationContextSchema.extend({ container: z.null() });
+const containerCreationAfterSchema = eventContainerCreationStateSchema.extend({
+  created_at: z.literal('on_approval'), updated_at: z.literal('on_approval'),
+});
+const containerCreationResultSchema = eventContainerCreationStateSchema.extend({
+  created_at: z.string().max(35).datetime({ offset: true }),
+  updated_at: z.string().max(35).datetime({ offset: true }),
+}).refine((value) => Date.parse(value.created_at) === Date.parse(value.updated_at),
+  'A new container must use the same creation and update time');
+const CONTAINER_CREATION_SUMMARY = 'Create a new event container in this workspace.';
+
+function containerCreationParametersFromArgs(args) {
+  return eventContainerCreationDataSchema.parse({
+    ...containerCreationArgumentsSchema.parse(args), container_type: 'event',
+  });
+}
+
+function containerCreationAfter(context, data, containerId) {
+  const current = containerCreationContextSchema.parse(context);
+  return containerCreationAfterSchema.parse({
+    ...buildEventContainerCreationState({ data, workspaceId: current.workspace_id,
+      containerId, actorMemberId: current.actor_member_id }),
+    created_at: 'on_approval', updated_at: 'on_approval',
+  });
+}
+
+function containerCreationResultMatches(proposal, result) {
+  const parsed = containerCreationResultSchema.safeParse(result);
+  return parsed.success && JSON.stringify(containerCreationAfterSchema.parse({
+    ...parsed.data, created_at: 'on_approval', updated_at: 'on_approval',
+  })) === JSON.stringify(proposal.after);
+}
+
 function profileProposalSummary(parameters) {
   const labels = PROFILE_UPDATE_FIELDS.filter((field) => Object.hasOwn(parameters, field))
     .map((field) => PROFILE_FIELD_LABELS[field]);
@@ -230,12 +272,19 @@ const confirmLedgerEntryProposalSchema = z.object({
   before: entryConfirmationContextSchema, after: ledgerConfirmationAfterSchema,
   expires_at: z.string().datetime(),
 }).strict();
+const createContainerProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('create_container'), tier: z.literal(3),
+  summary: z.literal(CONTAINER_CREATION_SUMMARY), parameters: eventContainerCreationDataSchema,
+  before: containerCreationBeforeSchema, after: containerCreationAfterSchema,
+  expires_at: z.string().datetime(),
+}).strict();
 
 const proposalSchema = z.union([
   singleNotificationProposalSchema, allNotificationsProposalSchema, updateProfileProposalSchema, deleteContactProposalSchema,
   updateTaskProposalSchema,
   createSelfLedgerProposalSchema,
   confirmLedgerEntryProposalSchema,
+  createContainerProposalSchema,
 ]).superRefine((value, ctx) => {
   if (value.tool === 'mark_notification_read' && value.parameters.notification_id !== value.before.id) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Notification target mismatch' });
@@ -292,6 +341,13 @@ const proposalSchema = z.union([
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Ledger confirmation mismatch' });
     }
   }
+  if (value.tool === 'create_container') {
+    const { container, ...context } = value.before;
+    if (value.after.container_id !== value.id
+        || JSON.stringify(value.after) !== JSON.stringify(containerCreationAfter(context, value.parameters, value.id))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Container creation mismatch' });
+    }
+  }
 });
 
 const proposalResultSchema = z.union([
@@ -299,6 +355,7 @@ const proposalResultSchema = z.union([
   taskProgressResultSchema,
   selfLedgerResultSchema,
   ledgerConfirmationResultSchema,
+  containerCreationResultSchema,
 ]);
 const proposalRecordSchema = z.object({
   version: z.literal(1), scope: z.string().regex(/^[a-f0-9]{64}$/), proposal: proposalSchema,
@@ -351,6 +408,9 @@ const proposalRecordSchema = z.object({
   } else if (record.proposal.tool === 'confirm_ledger_entry'
       && !ledgerConfirmationResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Ledger confirmation result mismatch' });
+  } else if (record.proposal.tool === 'create_container'
+      && !containerCreationResultMatches(record.proposal, record.result)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Container creation result mismatch' });
   }
 });
 
@@ -388,6 +448,9 @@ const ledgerConfirmationStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('confirm_ledger_entry'),
   container_id: z.string().uuid(), entry_id: z.string().uuid(),
 }).strict();
+const containerCreationStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('create_container'), container_id: z.string().uuid(),
+}).strict();
 const proposalStatusSchema = z.union([
   ...incompleteStatuses.map((status) => singleStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => singleStatusFields.extend({ status: z.literal(status), result: notificationReadResultSchema })),
@@ -406,6 +469,11 @@ const proposalStatusSchema = z.union([
     status: z.literal(status), result: ledgerConfirmationResultSchema,
   }).refine((value) => value.entry_id === value.result.entry_id && value.container_id === value.result.container_id,
     'Ledger confirmation receipt target mismatch')),
+  ...incompleteStatuses.map((status) => containerCreationStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => containerCreationStatusFields.extend({
+    status: z.literal(status), result: containerCreationResultSchema,
+  }).refine((value) => value.container_id === value.result.container_id,
+    'Container creation receipt target mismatch')),
 ]);
 
 // A missing record never inherits a result or target from historical data.
@@ -457,6 +525,15 @@ module.exports = {
   ledgerConfirmationAfter,
   ledgerConfirmationResultMatches,
   LEDGER_CONFIRMATION_SUMMARY,
+  containerCreationContextSchema,
+  containerCreationArgumentsSchema,
+  containerCreationBeforeSchema,
+  containerCreationAfterSchema,
+  containerCreationResultSchema,
+  containerCreationParametersFromArgs,
+  containerCreationAfter,
+  containerCreationResultMatches,
+  CONTAINER_CREATION_SUMMARY,
   profileProposalSummary,
   proposalSchema,
   proposalRecordSchema,

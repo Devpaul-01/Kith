@@ -26,7 +26,10 @@ explicit current-request ledger-entry selection enables Tier 3
 `confirm_ledger_entry` for one pending, proof-free base-currency contribution
 in an active event container. Its full card binds the reviewed financial values
 to the confirmed state and authenticated admin; confirmation time is generated
-on approval. Other writes and voice are still pending.
+on approval. Admins can also request Tier 3 `create_container` for a new event
+with basic metadata/date and money/task tracking flags. Creation needs no
+existing entity selection; its full card fixes the new ID, creator, defaults
+and complete resulting state. Other writes and voice are still pending.
 
 Current work prioritizes the core money, task, member, participant and dispute
 flow. Do not add or polish tools marked Lower-Priority in the architecture;
@@ -646,6 +649,8 @@ Tier 0/1 reads. Chat also offers the Tier 2 mark-all and profile proposal tools;
 an explicit validated notification, contact, task or container selection
 additionally offers the matching proposal tool. A verified `selected_ledger_entry`
 pair offers Tier 3 `confirm_ledger_entry` only to admins. Proposal definitions
+include Tier 3 `create_container` for admins without an entity selection; its
+draft reads fresh workspace/admin state only when creation is requested. They
 are role-filtered before provider exposure, with role checks in the loop,
 proposal decisions/receipts and domain handlers. Historical proposal tool names
 also require the current role. All create approval cards stored by the server.
@@ -849,7 +854,8 @@ explicit notification selection adds the single-notification definition.
 An explicit contact selection adds the contact deletion definition.
 Own-task and eligible-container selections add their Tier 2 definitions.
 An admin's verified ledger-entry selection adds the Tier 3 confirmation
-definition. Injected proposal support must also satisfy the definition's role
+definition. Admin chat also offers the Tier 3 new-event creation definition
+without a selection. Injected proposal support must also satisfy the definition's role
 requirement before a provider call.
 These are handled by a separate proposal callback that cannot execute the
 write. Every read execution still passes through `executeReadTool` and the
