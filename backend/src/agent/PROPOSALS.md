@@ -1,9 +1,12 @@
 # Tier 2 proposals
 
 The available agent writes are Tier 2 `mark_notification_read`,
-`mark_all_notifications_read`, `update_my_profile`, `delete_contact`, and `update_task`.
+`mark_all_notifications_read`, `update_my_profile`, `delete_contact`, `update_task`,
+and `create_ledger_entry` for a self contribution.
 Notification actions are scoped to the caller in the current workspace.
 Task progress changes are scoped to the caller's own assignment in that workspace.
+Self contributions are scoped to their own money-enabled participation in an
+active event container and always remain pending for admin review.
 Profile and contact changes affect the authenticated user's Kith account
 across all workspaces. The backend requires a proposal and a separate
 approval request. Chat text and model tool calls
@@ -92,6 +95,77 @@ A mark-all card instead contains the server-selected IDs and exact count:
   "expires_at": "<server-generated-ISO-timestamp>"
 }
 ```
+
+## Self contributions
+
+After the user explicitly selects an eligible container, send its ID with the
+current chat request:
+
+```json
+{
+  "message": "Submit my NGN 5,000 contribution to the selected container by bank transfer.",
+  "selected_container_id": "<container-uuid>",
+  "conversation_id": null
+}
+```
+
+Only that verified request offers `create_ledger_entry` to the model. Its
+arguments are `amount` (positive plain decimal text), `currency`, and optional
+`payment_method`/`note`. Amounts may contain at most 13 integer digits and two
+decimal places; signs, commas, exponents, excess precision and numeric JSON
+values are rejected. Text normalization removes leading zeros and pads cents
+without rounding. Supported payment methods are `cash`, `bank_transfer`,
+`mobile_money` and `other`; notes have at most 500 characters. Either optional
+field may be null, and omitted fields become null.
+
+This milestone supports self contributions in the workspace's freshly read
+base currency, in active event containers with money tracking enabled for both
+the container and the caller's participation. The authenticated membership
+must be active, non-deleted and non-proxy. Admins use their real role and follow
+the same pending-submission rule. Recurring cycles, foreign currency, expenses,
+crypto, acting on behalf of others, force overrides and uploads are outside
+this tool. IDs in chat text, search candidates and historical selections do
+not select a target; ambiguous container names require an explicit choice.
+
+The server fixes the contributor and container, copies the exact amount into
+`original_amount` and `base_amount`, and fixes `entry_type: contribution`,
+`cycle_id: null`, `is_crypto: false`, `status: pending`, and null confirmation
+fields. The card shows the reviewed eligibility context and complete pending
+entry values. Container names and notes remain untrusted display data. The
+model cannot supply IDs, a base amount, status, an idempotency key or force.
+
+Proposal creation audits and pauses without inserting an entry. Approval uses
+the existing separate endpoint with an empty `{}` body. The service refreshes
+workspace currency, member identity/role, container eligibility and own
+participation during selection, draft creation and approval, then again before
+the native insertion. Changed currency, container identity/version or
+participation invalidates the card. These service checks are not atomic with
+the INSERT; stronger protection against concurrent eligibility changes needs
+a database/RPC design decision and live integration coverage.
+
+The native ledger idempotency key is generated from the server proposal ID.
+Existing rows and unique-key race winners must match the exact workspace,
+container, contributor/recorder, amounts, currency, note, payment method and
+pending state before being returned. Native idempotency must be enabled for
+this tool. Repeated approval of one card returns the same verified result
+without repeating the entry, notifications or audits. Separately approved
+proposals represent separate submissions; the keyed path does not use the
+existing ten-minute duplicate heuristic.
+
+Successful submission keeps the existing notification and ledger-submitted
+audit flow. Agent proposal/approval audits target the container; the executed
+audit targets the newly created ledger entry. Receipts expose the entry ID,
+stored amounts as exact decimal text, currency, pending state and recorded
+timestamp, without proofs or internal idempotency keys. They confirm submission
+and do not imply admin confirmation. Transport, result-verification or
+notification/audit uncertainty after insertion retains an irreversible
+execution claim; the backend does not repeat or try to repair that money write.
+
+Unit coverage includes strict amount validation, role/scope/eligibility
+denials, exact replay binding, stale approvals, uncertain outcomes, scripted
+model turns, real-service query boundaries, and mocked HTTP/SSE workflows.
+Live Postgres concurrency and live model behavior remain integration/evaluation
+work.
 
 ## Own task progress
 

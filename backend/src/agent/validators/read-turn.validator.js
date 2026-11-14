@@ -24,6 +24,7 @@ const chatInputSchema = readTurnInputSchema.extend({
   selected_notification_id: z.string().uuid().transform((id) => id.toLowerCase()).optional(),
   selected_contact_id: z.string().uuid().transform((id) => id.toLowerCase()).optional(),
   selected_task: taskTargetSchema.optional(),
+  selected_container_id: z.string().uuid().transform((id) => id.toLowerCase()).optional(),
 });
 
 const providerToolCallSchema = z.object({

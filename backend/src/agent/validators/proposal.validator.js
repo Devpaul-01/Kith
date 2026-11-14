@@ -1,6 +1,9 @@
 const { z } = require('zod');
 const { updateProfileSchema, profileSnapshotFieldsSchema, contactSnapshotSchema } = require('../../validators/auth.validator');
-const { createTaskSchema, updateTaskSchema } = require('../../validators/ledger.validator');
+const {
+  createTaskSchema, updateTaskSchema, selfLedgerAmountSchema,
+  selfLedgerContextSchema, selfLedgerSubmissionDataSchema,
+} = require('../../validators/ledger.validator');
 
 const MAX_BULK_NOTIFICATION_IDS = 100;
 const PROPOSAL_LIMITS = Object.freeze({
@@ -101,6 +104,39 @@ function taskProposalSummary(parameters) {
     : 'Set the selected task to in progress.';
 }
 
+const selfLedgerArgumentsSchema = z.object({
+  amount: selfLedgerAmountSchema,
+  currency: selfLedgerSubmissionDataSchema.shape.original_currency,
+  payment_method: selfLedgerSubmissionDataSchema.shape.payment_method.removeDefault().optional(),
+  note: selfLedgerSubmissionDataSchema.shape.note.removeDefault().optional(),
+}).strict();
+const selfLedgerParametersSchema = selfLedgerSubmissionDataSchema.extend({ container_id: z.string().uuid() });
+const selfLedgerAfterSchema = selfLedgerParametersSchema.extend({
+  payment_method: selfLedgerSubmissionDataSchema.shape.payment_method.removeDefault(),
+  note: selfLedgerSubmissionDataSchema.shape.note.removeDefault(),
+  cycle_id: z.null(), is_crypto: z.literal(false),
+  status: z.literal('pending'), confirmed_at: z.null(), confirmed_by: z.null(),
+});
+const selfLedgerResultSchema = selfLedgerAfterSchema.extend({
+  entry_id: z.string().uuid(), recorded_at: z.string().datetime({ offset: true }),
+});
+const SELF_LEDGER_SUMMARY = 'Submit your contribution to the selected container for admin review.';
+
+function selfLedgerParametersFromArgs(selection, args) {
+  const selected = selfLedgerContextSchema.parse(selection);
+  const requested = selfLedgerArgumentsSchema.parse(args);
+  return selfLedgerParametersSchema.parse({
+    container_id: selected.container_id, contributor_id: selected.contributor_id,
+    entry_type: 'contribution', original_amount: requested.amount, base_amount: requested.amount,
+    original_currency: requested.currency, payment_method: requested.payment_method ?? null,
+    note: requested.note ?? null, cycle_id: null, is_crypto: false,
+  });
+}
+
+function selfLedgerAfter(parameters) {
+  return selfLedgerAfterSchema.parse({ ...parameters, status: 'pending', confirmed_at: null, confirmed_by: null });
+}
+
 function profileProposalSummary(parameters) {
   const labels = PROFILE_UPDATE_FIELDS.filter((field) => Object.hasOwn(parameters, field))
     .map((field) => PROFILE_FIELD_LABELS[field]);
@@ -150,10 +186,17 @@ const updateTaskProposalSchema = z.object({
   after: taskProgressAfterSchema,
   expires_at: z.string().datetime(),
 }).strict();
+const createSelfLedgerProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('create_ledger_entry'), tier: z.literal(2),
+  summary: z.literal(SELF_LEDGER_SUMMARY), parameters: selfLedgerParametersSchema,
+  before: selfLedgerContextSchema, after: selfLedgerAfterSchema,
+  expires_at: z.string().datetime(),
+}).strict();
 
 const proposalSchema = z.union([
   singleNotificationProposalSchema, allNotificationsProposalSchema, updateProfileProposalSchema, deleteContactProposalSchema,
   updateTaskProposalSchema,
+  createSelfLedgerProposalSchema,
 ]).superRefine((value, ctx) => {
   if (value.tool === 'mark_notification_read' && value.parameters.notification_id !== value.before.id) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Notification target mismatch' });
@@ -192,11 +235,21 @@ const proposalSchema = z.union([
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task progress change mismatch' });
     }
   }
+  if (value.tool === 'create_ledger_entry') {
+    if (value.parameters.container_id !== value.before.container_id
+        || value.parameters.contributor_id !== value.before.contributor_id
+        || value.parameters.original_currency !== value.before.base_currency
+        || value.parameters.original_amount !== value.parameters.base_amount
+        || JSON.stringify(value.after) !== JSON.stringify(selfLedgerAfter(value.parameters))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Self contribution mismatch' });
+    }
+  }
 });
 
 const proposalResultSchema = z.union([
   notificationReadResultSchema, notificationBulkReadResultSchema, profileUpdateResultSchema, contactDeletionResultSchema,
   taskProgressResultSchema,
+  selfLedgerResultSchema,
 ]);
 const proposalRecordSchema = z.object({
   version: z.literal(1), scope: z.string().regex(/^[a-f0-9]{64}$/), proposal: proposalSchema,
@@ -236,6 +289,16 @@ const proposalRecordSchema = z.object({
         || record.result.completion_note !== record.proposal.after.completion_note
         || (record.result.status === 'in_progress' && record.result.completed_at !== record.proposal.before.completed_at))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task progress result mismatch' });
+  } else if (record.proposal.tool === 'create_ledger_entry') {
+    const result = selfLedgerResultSchema.safeParse(record.result);
+    if (!result.success) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Self contribution result mismatch' });
+    } else {
+      const { entry_id, recorded_at, ...after } = result.data;
+      if (JSON.stringify(after) !== JSON.stringify(record.proposal.after)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Self contribution result mismatch' });
+      }
+    }
   }
 });
 
@@ -265,6 +328,10 @@ const taskStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('update_task'),
   task_id: z.string().uuid(), container_id: z.string().uuid(),
 }).strict();
+const selfLedgerStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('create_ledger_entry'),
+  container_id: z.string().uuid(), contributor_id: z.string().uuid(),
+}).strict();
 const proposalStatusSchema = z.union([
   ...incompleteStatuses.map((status) => singleStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => singleStatusFields.extend({ status: z.literal(status), result: notificationReadResultSchema })),
@@ -276,6 +343,8 @@ const proposalStatusSchema = z.union([
   ...['audit_pending', 'executed'].map((status) => contactStatusFields.extend({ status: z.literal(status), result: contactDeletionResultSchema })),
   ...incompleteStatuses.map((status) => taskStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => taskStatusFields.extend({ status: z.literal(status), result: taskProgressResultSchema })),
+  ...incompleteStatuses.map((status) => selfLedgerStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => selfLedgerStatusFields.extend({ status: z.literal(status), result: selfLedgerResultSchema })),
 ]);
 
 // A missing record never inherits a result or target from historical data.
@@ -312,6 +381,13 @@ module.exports = {
   taskProgressParametersSchema,
   taskProgressResultSchema,
   taskProposalSummary,
+  selfLedgerContextSchema,
+  selfLedgerArgumentsSchema,
+  selfLedgerParametersSchema,
+  selfLedgerResultSchema,
+  selfLedgerParametersFromArgs,
+  selfLedgerAfter,
+  SELF_LEDGER_SUMMARY,
   profileProposalSummary,
   proposalSchema,
   proposalRecordSchema,

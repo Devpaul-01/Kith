@@ -5,7 +5,12 @@
 // entries rule, and file verification exactly as designed.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { AppError, NotFoundError, BusinessRuleError, ConflictError, ForbiddenError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ConflictError, ForbiddenError, ValidationError } = require('../utils/errors');
+const { z } = require('zod');
+const { SUPPORTED_CURRENCIES } = require('../validators/auth.validator');
+const {
+  selfLedgerContextSchema, selfLedgerSubmissionDataSchema, normalizeSelfLedgerAmount,
+} = require('../validators/ledger.validator');
 const { generateUploadUrl, generateDownloadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 const notification = require('./notification.service');
 const audit        = require('./audit.service');
@@ -163,21 +168,192 @@ async function validateContributorForContainer({ workspaceId, containerId, contr
   return { participant, isProxy: !!member?.is_proxy };
 }
 
-async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, force, idempotencyKey, actorDisplayName, actorCtx }) {
+const selfLedgerCallerSchema = z.object({
+  workspaceId: z.string().uuid(), containerId: z.string().uuid(),
+  callerId: z.string().uuid(), userId: z.string().uuid(), isAdmin: z.boolean(),
+}).strict();
+const selfSubmissionSchema = z.object({
+  userId: z.string().uuid(), expected: selfLedgerContextSchema,
+}).strict();
+const agentLedgerKeySchema = z.string().length(42)
+  .regex(/^agent:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/);
+const selfLedgerWorkspaceRowSchema = z.object({
+  id: z.string().uuid(), base_currency: z.enum(SUPPORTED_CURRENCIES),
+});
+const selfLedgerMemberRowSchema = z.object({
+  id: z.string().uuid(), workspace_id: z.string().uuid(), user_id: z.string().uuid(),
+  role: z.enum(['member', 'admin']), is_active: z.boolean(), is_proxy: z.boolean(),
+});
+const selfLedgerContainerRowSchema = z.object({
+  id: z.string().uuid(), workspace_id: z.string().uuid(), name: z.string().min(1).max(200),
+  container_type: z.enum(['event', 'recurring']),
+  status: z.enum(['active', 'completed', 'archived', 'cancelled']),
+  enable_money: z.boolean(), updated_at: z.string().datetime({ offset: true }),
+});
+const selfLedgerParticipantRowSchema = z.object({
+  id: z.string().uuid(), container_id: z.string().uuid(),
+  workspace_member_id: z.string().uuid(), money_enabled: z.boolean(),
+});
+const selfLedgerStoredIdentitySchema = z.object({
+  id: z.string().uuid(), recorded_at: z.string().datetime({ offset: true }),
+});
+const selfLedgerUnavailable = () => new AppError(
+  'Ledger submissions are unavailable. Please try again.', 503, 'LEDGER_UNAVAILABLE',
+);
+
+async function selfLedgerOperation(operation) {
+  let response;
+  try { response = await operation(); } catch { throw selfLedgerUnavailable(); }
+  if (!response || typeof response !== 'object'
+      || !Object.hasOwn(response, 'data') || !Object.hasOwn(response, 'error')) {
+    throw selfLedgerUnavailable();
+  }
+  return response;
+}
+
+async function readSelfLedgerRow(operation) {
+  const response = await selfLedgerOperation(operation);
+  if (response.error !== null || (response.data !== null
+      && (typeof response.data !== 'object' || Array.isArray(response.data)))) {
+    throw selfLedgerUnavailable();
+  }
+  return response.data;
+}
+
+/** Read only the caller's submission eligibility; tools never query directly. */
+async function getSelfSubmissionContext({ workspaceId, containerId, callerId, userId, isAdmin }) {
+  if (!selfLedgerCallerSchema.safeParse({ workspaceId, containerId, callerId, userId, isAdmin }).success) {
+    throw new ValidationError('Invalid self ledger context');
+  }
+  const workspaceRaw = await readSelfLedgerRow(() => supabaseAdmin.from('workspaces')
+    .select('id, base_currency').eq('id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (!workspaceRaw) throw new NotFoundError('Workspace not found');
+  const workspace = selfLedgerWorkspaceRowSchema.safeParse(workspaceRaw);
+  if (!workspace.success || workspace.data.id !== workspaceId) throw selfLedgerUnavailable();
+
+  const memberRaw = await readSelfLedgerRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (!memberRaw) throw new ForbiddenError('Active workspace membership required');
+  const member = selfLedgerMemberRowSchema.safeParse(memberRaw);
+  if (!member.success) throw selfLedgerUnavailable();
+  if (member.data.id !== callerId || member.data.workspace_id !== workspaceId
+      || member.data.user_id !== userId || !member.data.is_active || member.data.is_proxy
+      || member.data.role !== (isAdmin ? 'admin' : 'member')) {
+    throw new ForbiddenError('Workspace membership changed. Please retry.');
+  }
+
+  const containerRaw = await readSelfLedgerRow(() => supabaseAdmin.from('containers')
+    .select('id, workspace_id, name, container_type, status, enable_money, updated_at')
+    .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (!containerRaw) throw new NotFoundError('Container not found');
+  const container = selfLedgerContainerRowSchema.safeParse(containerRaw);
+  if (!container.success || container.data.id !== containerId || container.data.workspace_id !== workspaceId) {
+    throw selfLedgerUnavailable();
+  }
+  if (container.data.container_type !== 'event' || container.data.status !== 'active' || !container.data.enable_money) {
+    throw new BusinessRuleError('Self contributions require an active event container with money tracking enabled');
+  }
+
+  const participantRaw = await readSelfLedgerRow(() => supabaseAdmin.from('container_participants')
+    .select('id, container_id, workspace_member_id, money_enabled')
+    .eq('container_id', containerId).eq('workspace_member_id', callerId).maybeSingle());
+  if (!participantRaw) throw new BusinessRuleError('You must be a participant in this container');
+  const participant = selfLedgerParticipantRowSchema.safeParse(participantRaw);
+  if (!participant.success || participant.data.container_id !== containerId || participant.data.workspace_member_id !== callerId) {
+    throw selfLedgerUnavailable();
+  }
+  if (!participant.data.money_enabled) throw new BusinessRuleError('Money tracking must be enabled for your participation');
+
+  return selfLedgerContextSchema.parse({
+    workspace_id: workspaceId, base_currency: workspace.data.base_currency,
+    container_id: containerId, container_name: container.data.name,
+    container_type: container.data.container_type, container_status: container.data.status,
+    enable_money: container.data.enable_money, container_updated_at: container.data.updated_at,
+    contributor_id: callerId, member_role: member.data.role,
+    participant_id: participant.data.id, money_enabled: participant.data.money_enabled,
+  });
+}
+
+async function assertSelfSubmissionCurrent({ workspaceId, containerId, callerId, isAdmin, selfSubmission }) {
+  let current;
+  try {
+    current = await getSelfSubmissionContext({ workspaceId, containerId, callerId, isAdmin, userId: selfSubmission.userId });
+  } catch (err) {
+    if (['NOT_FOUND', 'FORBIDDEN', 'BUSINESS_RULE_VIOLATION'].includes(err.code)) {
+      throw new ConflictError('The reviewed ledger submission is no longer available');
+    }
+    throw err;
+  }
+  if (Object.keys(selfLedgerContextSchema.shape).some((field) => !Object.is(current[field], selfSubmission.expected[field]))) {
+    throw new ConflictError('The ledger submission context changed since it was reviewed');
+  }
+}
+
+function verifySelfLedgerEntry({ entry, workspaceId, containerId, callerId, data, idempotencyKey, inserted = false }) {
+  const matches = selfLedgerStoredIdentitySchema.safeParse(entry).success
+    && entry.workspace_id === workspaceId && entry.container_id === containerId
+    && entry.contributor_id === callerId && entry.recorded_by === callerId
+    && entry.entry_type === data.entry_type && entry.original_currency === data.original_currency
+    && normalizeSelfLedgerAmount(entry.original_amount) === data.original_amount
+    && normalizeSelfLedgerAmount(entry.base_amount) === data.base_amount
+    && entry.payment_method === data.payment_method && entry.note === data.note
+    && entry.cycle_id === null && entry.is_crypto === false && entry.status === 'pending'
+    && entry.confirmed_at === null && entry.confirmed_by === null && entry.corrects_entry_id === null
+    && entry.idempotency_key === idempotencyKey;
+  if (!matches) {
+    if (inserted) {
+      throw new AppError('The ledger submission result could not be verified.', 503, 'LEDGER_SUBMISSION_INDETERMINATE');
+    }
+    throw new ConflictError('The ledger submission key belongs to a different or changed entry');
+  }
+}
+
+async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, force, idempotencyKey, actorDisplayName, actorCtx, selfSubmission }) {
+  if (selfSubmission !== undefined) {
+    const options = selfSubmissionSchema.safeParse(selfSubmission);
+    const submission = selfLedgerSubmissionDataSchema.safeParse(data);
+    if (!options.success || !submission.success
+        || !selfLedgerCallerSchema.safeParse({ workspaceId, containerId, callerId, isAdmin, userId: options.data?.userId }).success
+        || (force !== undefined && force !== false) || !agentLedgerKeySchema.safeParse(idempotencyKey).success) {
+      throw new ValidationError('Invalid self ledger submission');
+    }
+    selfSubmission = options.data;
+    data = submission.data;
+    if (selfSubmission.expected.workspace_id !== workspaceId || selfSubmission.expected.container_id !== containerId
+        || selfSubmission.expected.contributor_id !== callerId || data.contributor_id !== callerId
+        || selfSubmission.expected.member_role !== (isAdmin ? 'admin' : 'member')) {
+      throw new ForbiddenError('Only your own contribution can use self submission');
+    }
+    if (data.original_currency !== selfSubmission.expected.base_currency || data.original_amount !== data.base_amount) {
+      throw new ValidationError('Self contributions must use the workspace base currency without conversion');
+    }
+    if (!IDEMPOTENCY_ENABLED) throw selfLedgerUnavailable();
+    await assertSelfSubmissionCurrent({ workspaceId, containerId, callerId, isAdmin, selfSubmission });
+  }
+
   if (idempotencyKey && IDEMPOTENCY_ENABLED) {
-    const { data: existing, error: idempErr } = await supabaseAdmin
+    const lookup = () => supabaseAdmin
       .from('ledger_entries')
       .select('*')
       .eq('idempotency_key', idempotencyKey)
       .eq('workspace_id', workspaceId)
       .maybeSingle();
-
-    if (idempErr) {
-      logger.error('Idempotency-key lookup failed', { idempotencyKey, workspaceId, error: idempErr.message });
-      throw new Error(idempErr.message);
+    let existing;
+    if (selfSubmission) {
+      existing = await readSelfLedgerRow(lookup);
+    } else {
+      const { data: existingRow, error: idempErr } = await lookup();
+      if (idempErr) {
+        logger.error('Idempotency-key lookup failed', { idempotencyKey, workspaceId, error: idempErr.message });
+        throw new Error(idempErr.message);
+      }
+      existing = existingRow;
     }
 
     if (existing) {
+      if (selfSubmission) verifySelfLedgerEntry({ entry: existing, workspaceId, containerId, callerId, data, idempotencyKey });
       return { entry: existing, idempotent: true };
     }
   }
@@ -201,20 +377,22 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
 
   const contributorId = isAdmin ? data.contributor_id : callerId;
 
-  const { participant, isProxy } = await validateContributorForContainer({ workspaceId, containerId, contributorId, isAdmin });
-
-  if (data.cycle_id) {
-    const { data: cycle } = await supabaseAdmin
-      .from('container_cycles')
-      .select('id')
-      .eq('id', data.cycle_id)
-      .eq('container_id', containerId)
-      .maybeSingle();
-    if (!cycle) throw new BusinessRuleError('Cycle does not belong to this container');
+  let isProxy = false;
+  if (!selfSubmission) {
+    ({ isProxy } = await validateContributorForContainer({ workspaceId, containerId, contributorId, isAdmin }));
+    if (data.cycle_id) {
+      const { data: cycle } = await supabaseAdmin
+        .from('container_cycles')
+        .select('id')
+        .eq('id', data.cycle_id)
+        .eq('container_id', containerId)
+        .maybeSingle();
+      if (!cycle) throw new BusinessRuleError('Cycle does not belong to this container');
+    }
   }
 
   const now    = new Date().toISOString();
-  const status = isAdmin ? 'confirmed' : 'pending';
+  const status = selfSubmission ? 'pending' : (isAdmin ? 'confirmed' : 'pending');
 
   let entry;
 
@@ -226,7 +404,8 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
     // replay. This path was independently verified under concurrency
     // (scripts/experiments/m2-idempotency-race.js — 9/9 runs, 0
     // violations) and is unchanged by this fix.
-    const { data: inserted, error: entryErr } = await supabaseAdmin
+    if (selfSubmission) await assertSelfSubmissionCurrent({ workspaceId, containerId, callerId, isAdmin, selfSubmission });
+    const insert = () => supabaseAdmin
       .from('ledger_entries')
       .insert({
         workspace_id:      workspaceId,
@@ -248,17 +427,28 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
       })
       .select()
       .single();
+    const { data: inserted, error: entryErr } = selfSubmission
+      ? await selfLedgerOperation(insert) : await insert();
 
     if (entryErr) {
       // Lost an idempotency race: a concurrent request with the same key inserted first.
       // Return that entry (idempotent replay) instead of surfacing a 409.
       if (entryErr.code === '23505') {
-        const { data: winner } = await supabaseAdmin
+        const findWinner = () => supabaseAdmin
           .from('ledger_entries').select('*')
           .eq('idempotency_key', idempotencyKey).eq('workspace_id', workspaceId).maybeSingle();
-        if (winner) return { entry: winner, idempotent: true };
+        const winner = selfSubmission ? await readSelfLedgerRow(findWinner) : (await findWinner()).data;
+        if (winner) {
+          if (selfSubmission) verifySelfLedgerEntry({ entry: winner, workspaceId, containerId, callerId, data, idempotencyKey });
+          return { entry: winner, idempotent: true };
+        }
       }
+      if (selfSubmission) throw selfLedgerUnavailable();
       throw new Error(entryErr.message);
+    }
+    if (selfSubmission) {
+      if (entryErr !== null) throw selfLedgerUnavailable();
+      verifySelfLedgerEntry({ entry: inserted, workspaceId, containerId, callerId, data, idempotencyKey, inserted: true });
     }
     entry = inserted;
   } else {
@@ -311,33 +501,49 @@ async function createEntry({ workspaceId, containerId, data, isAdmin, callerId, 
   }
 
   if (status === 'pending') {
-    const { data: admins } = await supabaseAdmin
+    const findAdmins = () => supabaseAdmin
       .from('workspace_members')
       .select('id')
       .eq('workspace_id', workspaceId)
       .eq('role', 'admin')
       .eq('is_active', true);
+    const adminResponse = selfSubmission ? await selfLedgerOperation(findAdmins) : await findAdmins();
+    if (selfSubmission && (adminResponse.error !== null || !Array.isArray(adminResponse.data)
+        || adminResponse.data.some((member) => !z.object({ id: z.string().uuid() }).safeParse(member).success))) {
+      throw selfLedgerUnavailable();
+    }
+    const admins = adminResponse.data;
 
-    await notification.send({
-      type:          'contribution_submitted',
-      workspaceId,
-      recipientIds:  (admins || []).map((a) => a.id),
-      referenceType: 'ledger_entry',
-      referenceId:   entry.id,
-      variables: {
-        actor:     actorDisplayName,
-        amount:    `${data.original_amount} ${data.original_currency}`,
-        container: containerId,
-      },
-    });
+    try {
+      await notification.send({
+        type:          'contribution_submitted',
+        workspaceId,
+        recipientIds:  (admins || []).map((a) => a.id),
+        referenceType: 'ledger_entry',
+        referenceId:   entry.id,
+        variables: {
+          actor:     actorDisplayName,
+          amount:    `${data.original_amount} ${data.original_currency}`,
+          container: containerId,
+        },
+      });
+    } catch (err) {
+      if (selfSubmission) throw selfLedgerUnavailable();
+      throw err;
+    }
   }
 
-  await audit.log({
-    ...actorCtx,
-    action:     status === 'confirmed' ? AUDIT_ACTIONS.LEDGER_CONFIRMED : AUDIT_ACTIONS.LEDGER_SUBMITTED,
-    targetType: 'ledger_entry',
-    targetId:   entry.id,
-  });
+  try {
+    await audit.log({
+      ...actorCtx,
+      action:     status === 'confirmed' ? AUDIT_ACTIONS.LEDGER_CONFIRMED : AUDIT_ACTIONS.LEDGER_SUBMITTED,
+      targetType: 'ledger_entry',
+      targetId:   entry.id,
+    });
+  } catch (err) {
+    if (selfSubmission) throw selfLedgerUnavailable();
+    throw err;
+  }
 
   return { entry, idempotent: false };
 }
@@ -616,6 +822,7 @@ async function exportLedger({ workspaceId, containerId, from, to }) {
 module.exports = {
   listEntries,
   getEntry,
+  getSelfSubmissionContext,
   createEntry,
   updateEntry,
   deleteEntry,

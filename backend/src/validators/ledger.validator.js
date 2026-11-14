@@ -47,6 +47,52 @@ const setTargetSchema = z.object({
 
 // ── Ledger ────────────────────────────────────────────────────────
 
+// The self-submission path uses decimal text matching numeric(15,2). Format
+// normalization only removes leading zeroes and pads cents; it never rounds.
+const selfLedgerAmountSchema = z.string().max(16)
+  .regex(/^\d{1,13}(?:\.\d{1,2})?$/, 'Use a plain amount with at most two decimal places')
+  .refine((value) => value === value.trim(), 'Amount must not contain surrounding whitespace')
+  .refine((value) => /[1-9]/.test(value), 'Amount must be positive')
+  .transform((value) => {
+    const [whole, fraction = ''] = value.split('.');
+    return `${whole.replace(/^0+(?=\d)/, '')}.${fraction.padEnd(2, '0')}`;
+  });
+
+function normalizeSelfLedgerAmount(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  if (typeof value === 'number' && !Number.isFinite(value)) return null;
+  const parsed = selfLedgerAmountSchema.safeParse(typeof value === 'number' ? String(value) : value);
+  return parsed.success ? parsed.data : null;
+}
+
+const selfLedgerContextSchema = z.object({
+  workspace_id: z.string().uuid(),
+  base_currency: z.enum(SUPPORTED_CURRENCIES),
+  container_id: z.string().uuid(),
+  container_name: z.string().min(1).max(200),
+  container_type: z.literal('event'),
+  container_status: z.literal('active'),
+  enable_money: z.literal(true),
+  container_updated_at: z.string().datetime({ offset: true }),
+  contributor_id: z.string().uuid(),
+  member_role: z.enum(['member', 'admin']),
+  participant_id: z.string().uuid(),
+  money_enabled: z.literal(true),
+}).strict();
+
+// Remains a ZodObject so proposal validators can pick/extend its fields.
+const selfLedgerSubmissionDataSchema = z.object({
+  entry_type: z.literal('contribution'),
+  contributor_id: z.string().uuid(),
+  original_amount: selfLedgerAmountSchema,
+  original_currency: z.enum(SUPPORTED_CURRENCIES),
+  base_amount: selfLedgerAmountSchema,
+  payment_method: z.enum(['cash', 'bank_transfer', 'mobile_money', 'other']).nullable().default(null),
+  note: z.string().min(1).max(500).nullable().default(null),
+  cycle_id: z.null().default(null),
+  is_crypto: z.literal(false).default(false),
+}).strict();
+
 const createLedgerEntrySchema = z.object({
   entry_type: z.enum(['contribution', 'expense']),
   contributor_id: z.string().uuid().optional(),
@@ -193,6 +239,10 @@ module.exports = {
   addParticipantsFromGroupSchema,
   updateParticipantSchema,
   setTargetSchema,
+  selfLedgerAmountSchema,
+  normalizeSelfLedgerAmount,
+  selfLedgerContextSchema,
+  selfLedgerSubmissionDataSchema,
   createLedgerEntrySchema,
   updateLedgerEntrySchema,
   uploadFileSchema,

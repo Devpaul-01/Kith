@@ -80,7 +80,7 @@ async function logAction({ record, context, actorCtx, stage, required = true, er
   // taken from audit.fromReq. None of this metadata is offered to the model.
   const domain = proposals.getDomain(record.proposal.tool);
   if (!domain) throw unavailable();
-  const target = domain.getAuditTarget(record.proposal, context);
+  const target = domain.getAuditTarget(record.proposal, context, record.result);
   await audit.log({
     id: record.auditIds[stage], required,
     workspaceId: context.workspace.id, actorUserId: context.userId, actorMemberId: context.member.id,

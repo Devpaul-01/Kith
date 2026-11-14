@@ -19,7 +19,10 @@ notifications, plus account-wide profile changes through `update_my_profile`.
 An explicit contact selection also enables `delete_contact` for one personal
 account contact. An explicit current-request task selection enables Tier 2
 `update_task` to start or complete the caller's own active, unconfirmed task,
-optionally updating its completion note. Other writes and voice are still pending.
+optionally updating its completion note. Selecting an eligible event container
+also enables Tier 2 `create_ledger_entry`: an exact base-currency self contribution
+that remains pending for admin review, including for admin callers. Other writes
+and voice are still pending.
 
 Current work prioritizes the core money, task, member, participant and dispute
 flow. Do not add or polish tools marked Lower-Priority in the architecture;
@@ -44,7 +47,7 @@ workspaces; the other search scopes are described below.
 
 No result contains an automatically resolved ID. Write proposals must enforce
 the user's entity selection separately from action approval. Selected
-notification, contact and task flows require explicit client selection for the
+notification, contact, task and self-contribution flows require explicit client selection for the
 current request.
 `has_more` means further candidates were omitted; refine the query or increase
 the limit. All returned names, titles, notes, reasons and descriptions remain

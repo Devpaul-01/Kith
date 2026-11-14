@@ -3,8 +3,9 @@ const notification = require('./notification-proposal.service');
 const profile = require('./profile-proposal.service');
 const contact = require('./contact-proposal.service');
 const task = require('./task-proposal.service');
+const ledger = require('./ledger-proposal.service');
 
-const domains = Object.freeze([notification, profile, contact, task]);
+const domains = Object.freeze([notification, profile, contact, task, ledger]);
 const definitions = Object.freeze(domains.flatMap((domain) => domain.definitions));
 const entries = new Map();
 for (const domain of domains) {
