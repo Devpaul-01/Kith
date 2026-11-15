@@ -4,7 +4,12 @@
 // set_contributor_target_atomic RPC usage.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { AppError, NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ConflictError, ForbiddenError, ValidationError } = require('../utils/errors');
+const {
+  participantAdditionDataSchema, participantAdditionContextSchema, participantAdditionRowSchema,
+  participantAdditionCallerSchema, reviewedParticipantAdditionSchema,
+  buildParticipantAdditionState, participantAdditionState,
+} = require('../validators/participant-addition.validator');
 const audit = require('./audit.service');
 const logger = require('../utils/logger');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
@@ -157,7 +162,130 @@ async function listParticipants({ workspaceId, containerId, pagination }) {
   });
 }
 
-async function addParticipants({ workspaceId, containerId, participants, actorMemberId, actorCtx }) {
+const additionUnavailable = () => new AppError('Participant addition is unavailable. Please try again.', 503, 'PARTICIPANT_ADDITION_UNAVAILABLE');
+
+async function additionOperation(operation) {
+  try {
+    const response = await operation();
+    if (!response || response.error !== null || !Object.hasOwn(response, 'data')) throw additionUnavailable();
+    return response.data;
+  } catch { throw additionUnavailable(); }
+}
+async function readAdditionRow(operation) {
+  const row = await additionOperation(operation);
+  if (row !== null && (typeof row !== 'object' || Array.isArray(row))) throw additionUnavailable();
+  return row;
+}
+
+/** Fresh eligibility for an explicitly selected member/container pair. */
+async function getParticipantAdditionContext({ workspaceId, containerId, memberId, callerId, userId, isAdmin }) {
+  if (!participantAdditionCallerSchema.safeParse({ workspaceId, containerId, memberId, callerId, userId, isAdmin }).success) {
+    throw new ValidationError('Invalid participant addition context');
+  }
+  if (!isAdmin) throw new ForbiddenError('Only workspace admins can add participants');
+  const workspace = await readAdditionRow(() => supabaseAdmin.from('workspaces')
+    .select('id, name, updated_at, deleted_at').eq('id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (workspace === null) throw new NotFoundError('Workspace not found');
+  if (workspace.id !== workspaceId || workspace.deleted_at !== null) throw additionUnavailable();
+
+  const actor = await readAdditionRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, deleted_at')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('role', 'admin').eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (!actor || actor.id !== callerId || actor.workspace_id !== workspaceId || actor.user_id !== userId
+      || actor.role !== 'admin' || actor.is_active !== true || actor.is_proxy !== false || actor.deleted_at !== null) {
+    throw new ForbiddenError('Active workspace admin membership required');
+  }
+  const container = await readAdditionRow(() => supabaseAdmin.from('containers')
+    .select('id, workspace_id, name, container_type, status, enable_money, enable_tasks, updated_at, deleted_at')
+    .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (container === null) throw new NotFoundError('Container not found');
+  if (container.id !== containerId || container.workspace_id !== workspaceId || container.deleted_at !== null) throw additionUnavailable();
+  if (container.container_type !== 'event' || container.status !== 'active') {
+    throw new BusinessRuleError('Participant addition requires an active event container');
+  }
+  const member = await readAdditionRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, display_name, role, is_active, is_proxy, updated_at, deleted_at')
+    .eq('id', memberId).eq('workspace_id', workspaceId).eq('is_active', true)
+    .eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (member === null) throw new NotFoundError('Member not found');
+  if (member.id !== memberId || member.workspace_id !== workspaceId || member.deleted_at !== null) throw additionUnavailable();
+  if (member.is_active !== true || member.is_proxy !== false || !['member', 'admin'].includes(member.role)) {
+    throw new BusinessRuleError('The selected member must have active non-proxy workspace membership');
+  }
+  const existing = await readAdditionRow(() => supabaseAdmin.from('container_participants')
+    .select('id, container_id, workspace_member_id').eq('container_id', containerId)
+    .eq('workspace_member_id', memberId).maybeSingle());
+  if (existing !== null) {
+    if (existing.container_id !== containerId || existing.workspace_member_id !== memberId) throw additionUnavailable();
+    throw new BusinessRuleError('The selected member already participates in this container');
+  }
+  const context = participantAdditionContextSchema.safeParse({
+    workspace_id: workspaceId, workspace_name: workspace.name, workspace_updated_at: workspace.updated_at,
+    actor_member_id: callerId, member_role: actor.role,
+    container_id: containerId, container_name: container.name, container_type: container.container_type,
+    container_status: container.status, enable_money: container.enable_money, enable_tasks: container.enable_tasks,
+    container_updated_at: container.updated_at,
+    workspace_member_id: memberId, display_name: member.display_name, selected_member_role: member.role,
+    selected_member_active: member.is_active, selected_member_proxy: member.is_proxy,
+    selected_member_updated_at: member.updated_at, participant: null,
+  });
+  if (!context.success) throw additionUnavailable();
+  return context.data;
+}
+
+async function addReviewedParticipant({ workspaceId, containerId, participants, actorMemberId, actorCtx, reviewedAddition }) {
+  const reviewed = reviewedParticipantAdditionSchema.safeParse(reviewedAddition);
+  const requested = participantAdditionDataSchema.array().length(1).safeParse(participants);
+  if (!reviewed.success || !requested.success) throw new ValidationError('One reviewed participant without targets, roles or notes is required');
+  if (!reviewed.data.isAdmin) throw new ForbiddenError('Only workspace admins can add participants');
+  const data = requested.data[0];
+  const expected = reviewed.data.expected;
+  if (expected.workspace_id !== workspaceId || expected.container_id !== containerId
+      || expected.workspace_member_id !== data.workspace_member_id || expected.actor_member_id !== actorMemberId) {
+    throw new ForbiddenError('Participant addition must use the reviewed workspace, member, container and admin');
+  }
+  if ((data.money_enabled && !expected.enable_money) || (data.tasks_enabled && !expected.enable_tasks)) {
+    throw new BusinessRuleError('Participant tracking must be enabled in the reviewed container');
+  }
+  let current;
+  try {
+    current = await getParticipantAdditionContext({ workspaceId, containerId, memberId: data.workspace_member_id,
+      callerId: actorMemberId, userId: reviewed.data.userId, isAdmin: reviewed.data.isAdmin });
+  } catch (err) {
+    if (['NOT_FOUND', 'FORBIDDEN', 'BUSINESS_RULE_VIOLATION'].includes(err.code)) {
+      throw new ConflictError('The reviewed participant addition is no longer available');
+    }
+    throw err;
+  }
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new ConflictError('Participant addition eligibility changed since review');
+  const planned = buildParticipantAdditionState({ data, containerId,
+    participantId: reviewed.data.participantId, actorMemberId });
+  const { participant_id: id, ...values } = planned;
+  const addedAt = new Date().toISOString();
+  const inserted = await additionOperation(() => supabaseAdmin.from('container_participants')
+    .upsert([{ id, ...values, added_at: addedAt }], { onConflict: 'container_id,workspace_member_id', ignoreDuplicates: true })
+    .select());
+  if (!Array.isArray(inserted)) throw additionUnavailable();
+  // Only a confirmed empty result proves that duplicate-ignore made no change.
+  if (inserted.length === 0) throw new ConflictError('The selected member was added before this approval');
+  if (inserted.length !== 1) throw additionUnavailable();
+  const result = participantAdditionRowSchema.safeParse(participantAdditionState(inserted[0]));
+  if (!result.success || Date.parse(result.data.added_at) !== Date.parse(addedAt)
+      || Object.keys(planned).some((field) => !Object.is(result.data[field], planned[field]))) throw additionUnavailable();
+  try {
+    await audit.log({ ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId,
+      action: AUDIT_ACTIONS.CONTAINER_PARTICIPANTS_ADDED, targetType: 'container', targetId: containerId,
+      metadata: { added_count: 1, skipped_already_present: 0, skipped_invalid_member: 0 }, required: true });
+  } catch { throw additionUnavailable(); }
+  return { added: inserted, skipped_already_present: 0, skipped_invalid_member: 0 };
+}
+
+async function addParticipants({ workspaceId, containerId, participants, actorMemberId, actorCtx, reviewedAddition }) {
+  if (reviewedAddition !== undefined) {
+    return addReviewedParticipant({ workspaceId, containerId, participants, actorMemberId, actorCtx, reviewedAddition });
+  }
+  // Ordinary HTTP callers keep their existing batch and optional-target behavior.
   const { data: container, error: containerError } = await supabaseAdmin
     .from('containers')
     .select('enable_money, enable_tasks, status')
@@ -452,4 +580,4 @@ async function overrideCycle({ workspaceId, containerId, cycleId, data, actorMem
   return override;
 }
 
-module.exports = { listParticipants, addParticipants, addParticipantsFromGroup, updateParticipant, removeParticipant, setTarget, getTargetHistory, getCycleTargets, overrideCycle };
+module.exports = { listParticipants, getParticipantAdditionContext, addParticipants, addParticipantsFromGroup, updateParticipant, removeParticipant, setTarget, getTargetHistory, getCycleTargets, overrideCycle };
