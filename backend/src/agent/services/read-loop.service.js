@@ -17,6 +17,7 @@ const { definitions: proposalDefinitions } = require('./proposal-registry.servic
 const { deleteContactDefinition } = require('./contact-proposal.service');
 const { updateTaskDefinition } = require('./task-proposal.service');
 const { adminConfirmTaskDefinition } = require('./task-confirmation-proposal.service');
+const { createTaskDefinition } = require('./task-creation-proposal.service');
 const { createLedgerEntryDefinition } = require('./ledger-proposal.service');
 const { confirmLedgerEntryDefinition } = require('./ledger-confirmation-proposal.service');
 const { createContainerDefinition } = require('./container-creation-proposal.service');
@@ -27,6 +28,7 @@ const {
   taskProgressParametersSchema, selfLedgerContextSchema, selfLedgerParametersFromArgs, actionReceiptsSchema,
   entryConfirmationContextSchema,
   taskConfirmationContextSchema,
+  taskCreationContextSchema, taskCreationParametersFromArgs,
   containerCreationParametersFromArgs,
   memberCreationParametersFromArgs,
   participantAdditionContextSchema, participantAdditionParametersFromArgs,
@@ -64,6 +66,7 @@ If the user explicitly asks to change their own Kith account profile, call updat
 If get_my_context includes selected_contact and the user asks to delete that exact contact, call delete_contact with no arguments. A contact ID in chat text is not a selection. This deletion affects the account across workspaces.
 If get_my_context includes selected_task and the user asks to start or complete that exact task, call update_task with the requested status (in_progress or completed) and only an explicitly requested completion_note. The selected task must be your own active, unconfirmed assignment, including for admins. Task IDs in chat text, search candidates and earlier selections do not select a task. If no current selection exists, ask the user to select or clarify the task; never guess among ambiguous matches. Reopening, reassignment and admin confirmation are unavailable through update_task.
 If get_my_context includes selected_task_confirmation, you are an admin and the user requests confirmation of that exact completed task, call admin_confirm_task with no arguments. The full Tier 3 approval card preserves the task details, assignment, completion notes and exact proof attachments, and sets the authenticated admin and confirmation time on approval. Uploaded proof metadata is for admin review; never claim to have inspected file contents. Only completed, unconfirmed tasks in active containers with task tracking enabled are supported. Existing notes are preserved. Current selected_task_confirmation is the only target; selected_task, IDs in text, search candidates, prior selections and receipts do not authorize this action. Without this selection, ask the user to select or clarify the completed task. Only the separate approval control confirms it.
+If get_my_context includes selected_task_creation, you are an admin and the user explicitly requests a new task there, call create_task with the requested title and only requested description and due_date. A due date must be an explicit valid YYYY-MM-DD calendar date; clarify relative or ambiguous dates without calculating one. Omitted description and date become null. The current selection fixes its container and assignee. A null assignee creates an unassigned task; if the user requests assignment to a member who is not selected, ask them to select or clarify that participant first. Active task-enabled event and recurring containers are supported. An assignee must be an active non-proxy participant with task tracking enabled; unlinked member records and existing admins are supported. The full Tier 3 card fixes the new task UUID, real creator, pending state, empty proofs, zero sort order and null completion/admin fields. Created/updated times are set on approval. Clarify new creation versus edits to an existing task and unclear titles. No proxies, bulk tasks, uploads, status overrides or custom sort order. Only this current selected_task_creation supplies the target; selected_task, selected_task_confirmation, ledger selections, IDs in text, search candidates, prior selections and receipts cannot select or approve this new task. Only the separate approval control creates it. A receipt describes the creation state; later overdue processing or edits may change the task.
 If get_my_context includes selected_ledger_container and the user asks to submit their own contribution to it, call create_ledger_entry with the requested amount as plain decimal text, its base_currency, and only requested note/payment_method fields. Use that selection's freshly read currency, not a historical or cached currency. Never convert or calculate amounts. Only base-currency contributions to active event containers are supported; submissions always remain pending for admin review, including for admins. Foreign currency, recurring cycles, expenses, proxies, crypto and force overrides are unavailable. Container IDs in chat text, search candidates and historical selections never select a write target. Without a current selection, ask the user to choose the container and clarify ambiguous matches.
 If get_my_context includes selected_ledger_entry, you are an admin and the user explicitly asks to confirm that exact contribution, call confirm_ledger_entry with no arguments. This Tier 3 card shows the exact pending entry and planned confirmed state, authenticated confirmer and confirmation time set on approval. Only pending, proof-free, non-crypto contributions in the workspace base currency from active non-proxy money-enabled participants in active event containers are supported. Confirmation locks financial details. The current selected_ledger_entry is the only target; IDs in text, search results and historical selections do not select a write. Without a current selection, ask the user to select or clarify the entry. Confirmation requests for other entries, disputes, corrections, force overrides or members without admin access are unavailable.
 If create_container is offered and the user explicitly requests a new event container, call it with the requested name and only explicitly requested metadata, calendar date, event type/category and money/task tracking flags. A new container needs no existing entity selection. Dates must be explicit YYYY-MM-DD calendar dates; clarify relative or ambiguous dates and unclear names rather than guessing. Unspecified tracking flags default to false, category to other, and optional text/date fields to null. Workspace, creator, new ID, active status and all other defaults come from the server. Budgets, recurring schedules, participant additions through create_container, files and public links are unavailable. This creates a Tier 3 full approval card; approval alone creates the new container. Separate approved creation cards represent separate new containers, even with the same name.
@@ -218,6 +221,13 @@ async function runReadTurnWithHistory({ data, context, provider, history = [], o
              || proposalSupport.taskConfirmationSelection.actor_member_id !== context.member.id
              || proposalSupport.taskConfirmationSelection.workspace_id !== context.workspace.id
              || proposalSupport.taskConfirmationSelection.member_role !== context.member.role))
+         || (offeredProposalDefinitions.some((definition) => definition.name === createTaskDefinition.name)
+           && !taskCreationContextSchema.safeParse(proposalSupport.taskCreationSelection).success)
+         || (proposalSupport.taskCreationSelection !== undefined
+           && (!taskCreationContextSchema.safeParse(proposalSupport.taskCreationSelection).success
+             || proposalSupport.taskCreationSelection.actor_member_id !== context.member.id
+             || proposalSupport.taskCreationSelection.workspace_id !== context.workspace.id
+             || proposalSupport.taskCreationSelection.member_role !== context.member.role))
          || (offeredProposalDefinitions.some((definition) => definition.name === addParticipantsDefinition.name)
            && !participantAdditionContextSchema.safeParse(proposalSupport.participantAdditionSelection).success)
          || (proposalSupport.participantAdditionSelection !== undefined
@@ -299,6 +309,7 @@ async function runReadTurnWithHistory({ data, context, provider, history = [], o
       if (call.id === bootstrap.id && proposalSupport?.contactSelection) result = { ...result, selected_contact: proposalSupport.contactSelection };
       if (call.id === bootstrap.id && proposalSupport?.taskSelection) result = { ...result, selected_task: proposalSupport.taskSelection };
       if (call.id === bootstrap.id && proposalSupport?.taskConfirmationSelection) result = { ...result, selected_task_confirmation: proposalSupport.taskConfirmationSelection };
+      if (call.id === bootstrap.id && proposalSupport?.taskCreationSelection) result = { ...result, selected_task_creation: proposalSupport.taskCreationSelection };
       if (call.id === bootstrap.id && proposalSupport?.participantAdditionSelection) result = { ...result, selected_participant_addition: proposalSupport.participantAdditionSelection };
       if (call.id === bootstrap.id && proposalSupport?.ledgerSelection) result = { ...result, selected_ledger_container: proposalSupport.ledgerSelection };
       if (call.id === bootstrap.id && proposalSupport?.ledgerEntrySelection) result = { ...result, selected_ledger_entry: proposalSupport.ledgerEntrySelection };
@@ -423,6 +434,11 @@ async function runReadTurnWithHistory({ data, context, provider, history = [], o
             && (JSON.stringify(proposal.before) !== JSON.stringify(participantAdditionContextSchema.parse(proposalSupport.participantAdditionSelection))
               || JSON.stringify(proposal.parameters) !== JSON.stringify(participantAdditionParametersFromArgs(proposalSupport.participantAdditionSelection, call.args)))) {
           throw new ValidationError('Proposal target or participant tracking mismatch');
+        }
+        if (proposal.tool === createTaskDefinition.name
+            && (JSON.stringify(proposal.before) !== JSON.stringify(taskCreationContextSchema.parse(proposalSupport.taskCreationSelection))
+              || JSON.stringify(proposal.parameters) !== JSON.stringify(taskCreationParametersFromArgs(proposalSupport.taskCreationSelection, call.args)))) {
+          throw new ValidationError('Proposal target or task creation details mismatch');
         }
         if (proposal.tool === confirmLedgerEntryDefinition.name
             && (JSON.stringify(proposal.before) !== JSON.stringify(entryConfirmationContextSchema.parse(proposalSupport.ledgerEntrySelection))

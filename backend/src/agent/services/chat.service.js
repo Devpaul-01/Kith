@@ -12,6 +12,7 @@ const { updateMyProfileDefinition } = require('./profile-proposal.service');
 const { selectContact, deleteContactDefinition } = require('./contact-proposal.service');
 const { selectTask, updateTaskDefinition } = require('./task-proposal.service');
 const { selectTaskConfirmation, adminConfirmTaskDefinition } = require('./task-confirmation-proposal.service');
+const { selectTaskCreation, createTaskDefinition } = require('./task-creation-proposal.service');
 const { selectLedgerContainer, createLedgerEntryDefinition } = require('./ledger-proposal.service');
 const { selectLedgerEntry, confirmLedgerEntryDefinition } = require('./ledger-confirmation-proposal.service');
 const { createContainerDefinition } = require('./container-creation-proposal.service');
@@ -51,6 +52,9 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
   const taskConfirmationSelection = input.data.selected_task_confirmation === undefined ? undefined
     : await selectTaskConfirmation({ context: actorContext,
       containerId: input.data.selected_task_confirmation.container_id, taskId: input.data.selected_task_confirmation.task_id });
+  const taskCreationSelection = input.data.selected_task_creation === undefined ? undefined
+    : await selectTaskCreation({ context: actorContext,
+      containerId: input.data.selected_task_creation.container_id, assigneeId: input.data.selected_task_creation.assignee_id });
   const participantAdditionSelection = input.data.selected_participant_addition === undefined ? undefined
     : await selectParticipantAddition({ context: actorContext,
       containerId: input.data.selected_participant_addition.container_id, memberId: input.data.selected_participant_addition.member_id });
@@ -67,6 +71,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
       ...(contactSelection ? [deleteContactDefinition] : []),
       ...(taskSelection ? [updateTaskDefinition] : []),
       ...(taskConfirmationSelection ? [adminConfirmTaskDefinition] : []),
+      ...(taskCreationSelection ? [createTaskDefinition] : []),
       ...(participantAdditionSelection ? [addParticipantsDefinition] : []),
       ...(ledgerSelection ? [createLedgerEntryDefinition] : []),
       ...(ledgerEntrySelection ? [confirmLedgerEntryDefinition] : []),
@@ -78,6 +83,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     ...(contactSelection ? { contactSelection } : {}),
     ...(taskSelection ? { taskSelection } : {}),
     ...(taskConfirmationSelection ? { taskConfirmationSelection } : {}),
+    ...(taskCreationSelection ? { taskCreationSelection } : {}),
     ...(participantAdditionSelection ? { participantAdditionSelection } : {}),
     ...(ledgerSelection ? { ledgerSelection } : {}),
     ...(ledgerEntrySelection ? { ledgerEntrySelection } : {}),
@@ -88,6 +94,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
         : name === createLedgerEntryDefinition.name ? ledgerSelection
         : name === updateTaskDefinition.name ? taskSelection
         : name === adminConfirmTaskDefinition.name ? taskConfirmationSelection
+        : name === createTaskDefinition.name ? taskCreationSelection
         : name === addParticipantsDefinition.name ? participantAdditionSelection
         : name === deleteContactDefinition.name ? contactSelection : selection,
       args, turnId, actorCtx, signal,

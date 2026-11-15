@@ -51,7 +51,17 @@ Tier 3 `add_participants` for one active non-proxy member in an active event.
 The full card fixes the new participation ID, authenticated adder and defaults,
 with optional money/task tracking flags. Existing workspace roles are preserved.
 See [participant additions](PROPOSALS.md#participant-additions) for the selection,
-approval and receipt contract. Other writes and voice are still pending.
+approval and receipt contract.
+
+An admin's current `selected_task_creation` container and optional assignee
+enables Tier 3 `create_task` for one new task in an active task-enabled event
+or recurring container. An assignee must be an active non-proxy participant
+with task tracking enabled; an omitted assignee leaves the task unassigned.
+The model supplies the title, optional description and explicit calendar due
+date. The full card fixes the task ID, creator and complete pending state;
+separate approval creates it. See [task creation](PROPOSALS.md#task-creation)
+for the API, audit, notification and failure contract. Other writes and voice
+are still pending.
 
 Current work prioritizes the core money, task, member, participant and dispute
 flow. Do not add or polish tools marked Lower-Priority in the architecture;
@@ -676,6 +686,12 @@ verified `selected_participant_addition: { container_id, member_id }` pair
 offers Tier 3 `add_participants`. The latter
 requires an active event and active non-proxy workspace member; its model
 arguments contain only optional `money_enabled` and `tasks_enabled` flags.
+A verified `selected_task_creation: { container_id, assignee_id? }` offers
+Tier 3 `create_task` to admins. Its container must be active with tasks enabled;
+an optional assignee must be an active non-proxy member/admin participating
+there with tasks enabled. Omitted or null `assignee_id` means unassigned.
+The model supplies only `title`, optional `description` and an explicit
+`YYYY-MM-DD` `due_date`. See [task creation](PROPOSALS.md#task-creation).
 Proposal definitions include Tier 3 `create_container` and `create_member`
 for admins without an
 entity selection; their drafts read fresh workspace/admin state only when
@@ -889,6 +905,12 @@ An admin's verified current member/event pair adds Tier 3 `add_participants`.
 Both IDs come from `selected_participant_addition`; the model supplies only
 requested tracking flags. Search results, historical selections and receipts
 cannot offer or approve the tool on a later request.
+An admin's verified current `selected_task_creation` adds Tier 3 `create_task`.
+Its container and optional assignee come only from the current client
+selection. The server freezes the selection and nested assignee; the loop
+binds the complete reviewed context and canonical task parameters to the
+proposal callback's result before returning a card. IDs in other selections,
+prose, search candidates, history and receipts cannot select this creation.
 Admin chat also offers Tier 3 event and member creation definitions
 without a selection. Injected proposal support must also satisfy the definition's role
 requirement before a provider call.
@@ -1078,6 +1100,12 @@ Profile proposal tests cover exact changed fields, current membership,
 conditional updates, audit events, receipts and retry idempotency. They also
 check that activity timestamps and unrelated profile edits do not invalidate
 a card, while changes to reviewed fields do.
+Task creation tests cover live-service query boundaries with mocked Supabase,
+complete pending defaults, current admin/assignee eligibility, proposal
+expiry and stale state, uncertain insertion/audit results, duplicate approval,
+scoped receipts and scripted JSON/SSE flows. Related-row checks and INSERT
+still need live Postgres/Redis concurrency coverage as documented in
+[task creation](PROPOSALS.md#task-creation).
 Contact deletion tests cover ownership, full reviewed-state comparisons,
 conditional conflicts and receipts that never restore selection. Live
 database/PostgREST, model and deployed-proxy verification remain pending. The existing `ioredis-mock`

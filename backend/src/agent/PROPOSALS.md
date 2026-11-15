@@ -13,6 +13,8 @@ Tier 3 `create_member` creates an ordinary member record or a proxy managed by
 the requesting admin, also through a full card without an existing selection.
 An admin's explicit `selected_participant_addition` member/event pair enables
 Tier 3 `add_participants` for one eligible non-proxy workspace member.
+An admin's explicit `selected_task_creation` container and optional assignee
+enables Tier 3 `create_task` for one new pending task.
 Notification actions are scoped to the caller in the current workspace.
 Task progress changes are scoped to the caller's own assignment in that workspace.
 Self contributions are scoped to their own money-enabled participation in an
@@ -332,6 +334,112 @@ them still require live Postgres/Redis integration coverage and a broader
 transactional design decision. Unit tests cover role/scope/eligibility,
 complete defaults, stale and duplicate approvals, uncertain outcomes,
 receipt binding, scripted turns and mocked JSON/SSE flows.
+
+## Task creation
+
+An admin selects a container and, optionally, one assignee for the current
+authenticated chat request:
+
+```json
+{
+  "message": "Create Buy groceries for the selected member, due 2026-12-01.",
+  "selected_task_creation": {
+    "container_id": "<container-uuid>",
+    "assignee_id": "<workspace-member-uuid>"
+  },
+  "conversation_id": null
+}
+```
+
+Omitting `assignee_id` or passing null creates an unassigned task. Only this
+verified current selection offers `create_task`. The container must be an
+active, non-deleted, task-enabled event or recurring container in the current
+workspace. An assignee must be an active, non-deleted, non-proxy member/admin
+of that workspace with existing `tasks_enabled` participation in the
+container. A member record without a linked login is eligible. Search
+candidates, UUIDs in prose, other task/ledger selections, old selections and
+receipts cannot supply either ID. Ambiguous names or a requested assignee
+that is not selected require clarification and a current selection.
+
+Strict model arguments contain `title`, optional `description` and optional
+`due_date`. Titles are trimmed to 1–200 characters; descriptions are trimmed
+to at most 2,000 characters, with omitted or empty descriptions becoming
+null. NUL and unpaired surrogates are rejected. Dates must be valid explicit
+`YYYY-MM-DD` calendar dates or null; omitted dates become null and explicit
+past dates are allowed. Relative or ambiguous dates require clarification.
+Proxies, bulk creation, proof uploads, custom sorting and status/admin
+overrides are outside this tool's scope. Each separately approved card
+represents one new task.
+
+The full Tier 3 `before` card contains workspace identity/name/version,
+authenticated admin, container name/type/status/task setting/version,
+optional assignee name/role/eligibility/member version and participation
+ID/creation time, plus `task: null`. Names and task text remain untrusted
+display data. The complete `after` projection is:
+
+```json
+{
+  "task_id": "<proposal-uuid>",
+  "container_id": "<container-uuid>",
+  "title": "Buy groceries",
+  "description": null,
+  "assigned_to": "<workspace-member-uuid>",
+  "due_date": "2026-12-01",
+  "status": "pending",
+  "completed_at": null,
+  "completed_by": null,
+  "completion_note": null,
+  "proofs": [],
+  "sort_order": 0,
+  "created_by": "<authenticated-admin-member-uuid>",
+  "deleted_at": null,
+  "admin_confirmed_at": null,
+  "admin_confirmed_by": null,
+  "admin_note": null,
+  "created_at": "on_approval",
+  "updated_at": "on_approval"
+}
+```
+
+The proposal UUID fixes the new task UUID. Both timestamps are generated
+together on approval; successful results verify every field and both stored
+timestamps. The draft checks the eventual executed record against the
+existing 16 KiB limit. Status and conversation receipts bind `task_id` to
+`proposal_id`, and identify `container_id` and nullable `assigned_to`, even
+before execution. Verified results carry the full creation state. Receipts
+describe the past creation; later overdue processing or edits can change the
+task's current state. They never restore selection or authorize another write.
+
+The five-minute card uses the existing separate approval endpoint with strict
+empty `{}` input. Handlers explicitly check admin access. Approval revalidates
+the full reviewed context; the opt-in `task.service.js#createTask` branch
+rereads the active non-proxy admin and exact user link, workspace, container,
+optional member and participation immediately before INSERT. Changed names
+or versions, replacement participation, lost eligibility or revoked admin
+access invalidate the reviewed creation before insertion.
+
+The fixed primary key and Redis execution claim prevent repeated approval
+from creating another task. INSERT errors, including primary-key conflicts,
+transport uncertainty, malformed/mismatched stored state and required native
+audit failures retain an indeterminate claim. Approval never retries that
+insertion. Saved successful results can finish final agent auditing without
+another task write.
+
+The native `task.created` audit is required before assignment notification.
+It records the title, agent origin and proposal ID. Agent
+proposed/approved/executed/rejected audits target the new task and include the
+full reviewed before/after state. Assigned tasks use the existing notification
+sender with dedup key `task_assigned:<task-id>`; notification failures are
+logged and do not invalidate a verified, audited creation. Unassigned tasks
+have no assignment notification.
+
+Fresh related-row checks, INSERT and auditing are separate operations. Live
+Postgres/Redis integration coverage is still needed for concurrent eligibility
+changes and partial failures across those operations; stronger transactional
+guarantees need a separate design decision. Unit coverage includes explicit
+role checks, assigned/unassigned defaults, stale/duplicate approvals,
+uncertain outcomes, bound records/receipts, scripted turns and mocked JSON/SSE
+flows. This milestone requires no schema changes or new dependencies.
 
 ## Admin ledger confirmation
 
