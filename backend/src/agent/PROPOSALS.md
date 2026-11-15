@@ -5,6 +5,8 @@ The available agent writes are Tier 2 `mark_notification_read`,
 and `create_ledger_entry` for a self contribution.
 Admins can also request Tier 3 `confirm_ledger_entry` for an explicitly selected
 eligible contribution, with a full before/after approval card.
+An admin's explicit `selected_task_confirmation` enables Tier 3
+`admin_confirm_task` for a completed, unconfirmed task, including uploaded proofs.
 Tier 3 `create_container` creates a new event through a full approval card and
 requires no existing entity selection.
 Tier 3 `create_member` creates an ordinary member record or a proxy managed by
@@ -439,6 +441,67 @@ and cannot be retried as a fresh execution of that proposal.
 Unit tests cover handlers, scripted model turns, mocked HTTP/SSE workflows and
 the real task service with a mocked database. Live Postgres concurrency and live
 model behavior still require integration/evaluation coverage.
+
+## Admin task confirmation
+
+After an admin explicitly selects a completed task, send its task/container
+pair in the current chat request:
+
+```json
+{
+  "message": "Confirm completion of the selected task.",
+  "selected_task_confirmation": {
+    "container_id": "<container-uuid>",
+    "task_id": "<task-uuid>"
+  },
+  "conversation_id": null
+}
+```
+
+Only this request offers `admin_confirm_task`, with strict empty `{}` model
+arguments. The server verifies the current active non-proxy admin, non-deleted
+workspace and task, and active task-enabled container. Both event and recurring
+containers are supported. An assignee must still have a non-deleted membership
+in this workspace; unassigned tasks are supported. The stored completer can
+differ from the assignee. This confirms an existing completed state.
+
+The full Tier 3 card preserves every stored task field: title, description,
+assignment, due date, completion details, notes, ordering, creator/timestamps,
+deletion state and exact ordered proof metadata. Each proof contains its stored
+workspace/task file path, name, size, MIME type, uploader and upload time.
+References must use the existing scoped upload path and metadata shape;
+signed/external URLs and unknown proof fields are rejected. Attachments and
+text remain untrusted data. File contents are reviewed by the admin through
+existing file access; this tool reads metadata and does not inspect the bytes.
+
+The planned state sets `admin_confirmed_by` to the authenticated admin and
+shows `admin_confirmed_at` and `updated_at` as `on_approval`. Existing notes,
+proofs, completion state and assignment are preserved. Receipts replace those
+markers with verified stored timestamps; the database update trigger can give
+`updated_at` a different instant from `admin_confirmed_at`.
+
+Approval uses the existing separate endpoint with an empty `{}` body. Fresh
+service reads recheck eligibility and the reviewed task; a conditional UPDATE
+matches every task field, including proofs, deletion, confirmation fields and
+version. Changed attachments, notes, assignment or task/container state make
+the card stale. Related workspace/admin/container/assignee checks are separate
+from the task UPDATE, so concurrent related-row changes still need live
+Postgres integration coverage and a broader transactional design decision.
+
+The draft checks the eventual executed record against the existing 16 KiB
+storage limit, including repeated proof metadata and the receipt. A task that
+exceeds this limit must be confirmed through the task interface. Successful
+execution requires the native `task.confirmed` audit and retains existing
+best-effort assignee notifications, plus the agent's proposal/decision audits.
+Duplicate approvals return the same result; transport, returned-state or
+post-update audit uncertainty retains the execution claim and never retries
+the mutation. Only an explicit successful zero-row UPDATE proves no change.
+
+`selected_task` continues to select the caller's active task for Tier 2
+progress. It does not select a completed task for admin confirmation. Chat
+text, search candidates, earlier selections, historical cards and receipts
+never restore either selection or approve an action. Status and follow-up
+receipts remain scoped to the current authenticated admin and workspace.
 
 ## Profile updates
 

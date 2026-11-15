@@ -37,7 +37,14 @@ to `member`, account link to null, manager and complete stored defaults. No
 existing entity selection is needed. A separate approval creates the member;
 it does not create a login, send an invitation or add container participation.
 See [member creation](PROPOSALS.md#member-creation) for the reviewed fields,
-proxy audit and failure contract. Other writes and voice are still pending.
+proxy audit and failure contract.
+An admin's current `selected_task_confirmation` also enables Tier 3
+`admin_confirm_task` for a completed, unconfirmed task in an active task-enabled
+container, including uploaded proofs. The full card binds every task field and
+the exact attachment metadata, preserves notes, and records the authenticated
+admin on approval. Proof bytes are reviewed through existing file access.
+See [task confirmation](PROPOSALS.md#admin-task-confirmation) for selection,
+receipt and failure contracts. Other writes and voice are still pending.
 
 Current work prioritizes the core money, task, member, participant and dispute
 flow. Do not add or polish tools marked Lower-Priority in the architecture;
@@ -863,7 +870,9 @@ explicit notification selection adds the single-notification definition.
 An explicit contact selection adds the contact deletion definition.
 Own-task and eligible-container selections add their Tier 2 definitions.
 An admin's verified ledger-entry selection adds the Tier 3 confirmation
-definition. Admin chat also offers Tier 3 event and member creation definitions
+definition. A separate completed-task selection adds Tier 3 `admin_confirm_task`;
+own-task progress selection retains its Tier 2 contract.
+Admin chat also offers Tier 3 event and member creation definitions
 without a selection. Injected proposal support must also satisfy the definition's role
 requirement before a provider call.
 These are handled by a separate proposal callback that cannot execute the

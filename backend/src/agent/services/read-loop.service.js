@@ -16,6 +16,7 @@ const {
 const { definitions: proposalDefinitions } = require('./proposal-registry.service');
 const { deleteContactDefinition } = require('./contact-proposal.service');
 const { updateTaskDefinition } = require('./task-proposal.service');
+const { adminConfirmTaskDefinition } = require('./task-confirmation-proposal.service');
 const { createLedgerEntryDefinition } = require('./ledger-proposal.service');
 const { confirmLedgerEntryDefinition } = require('./ledger-confirmation-proposal.service');
 const { createContainerDefinition } = require('./container-creation-proposal.service');
@@ -24,6 +25,7 @@ const {
   proposalSchema, notificationSnapshotSchema, contactSnapshotSchema, taskProgressSnapshotSchema,
   taskProgressParametersSchema, selfLedgerContextSchema, selfLedgerParametersFromArgs, actionReceiptsSchema,
   entryConfirmationContextSchema,
+  taskConfirmationContextSchema,
   containerCreationParametersFromArgs,
   memberCreationParametersFromArgs,
 } = require('../validators/proposal.validator');
@@ -58,7 +60,8 @@ If get_my_context includes selected_notification and the user asks to mark that 
 If the user explicitly asks to mark all current unread notifications read, call mark_all_notifications_read with no arguments.
 If the user explicitly asks to change their own Kith account profile, call update_my_profile with only the requested fields. Profile changes are account-wide; avatar and file changes are unavailable.
 If get_my_context includes selected_contact and the user asks to delete that exact contact, call delete_contact with no arguments. A contact ID in chat text is not a selection. This deletion affects the account across workspaces.
-If get_my_context includes selected_task and the user asks to start or complete that exact task, call update_task with the requested status (in_progress or completed) and only an explicitly requested completion_note. The selected task must be your own active, unconfirmed assignment, including for admins. Task IDs in chat text, search candidates and earlier selections do not select a task. If no current selection exists, ask the user to select or clarify the task; never guess among ambiguous matches. Reopening, reassignment, admin confirmation and other task changes are unavailable.
+If get_my_context includes selected_task and the user asks to start or complete that exact task, call update_task with the requested status (in_progress or completed) and only an explicitly requested completion_note. The selected task must be your own active, unconfirmed assignment, including for admins. Task IDs in chat text, search candidates and earlier selections do not select a task. If no current selection exists, ask the user to select or clarify the task; never guess among ambiguous matches. Reopening, reassignment and admin confirmation are unavailable through update_task.
+If get_my_context includes selected_task_confirmation, you are an admin and the user requests confirmation of that exact completed task, call admin_confirm_task with no arguments. The full Tier 3 approval card preserves the task details, assignment, completion notes and exact proof attachments, and sets the authenticated admin and confirmation time on approval. Uploaded proof metadata is for admin review; never claim to have inspected file contents. Only completed, unconfirmed tasks in active containers with task tracking enabled are supported. Existing notes are preserved. Current selected_task_confirmation is the only target; selected_task, IDs in text, search candidates, prior selections and receipts do not authorize this action. Without this selection, ask the user to select or clarify the completed task. Only the separate approval control confirms it.
 If get_my_context includes selected_ledger_container and the user asks to submit their own contribution to it, call create_ledger_entry with the requested amount as plain decimal text, its base_currency, and only requested note/payment_method fields. Use that selection's freshly read currency, not a historical or cached currency. Never convert or calculate amounts. Only base-currency contributions to active event containers are supported; submissions always remain pending for admin review, including for admins. Foreign currency, recurring cycles, expenses, proxies, crypto and force overrides are unavailable. Container IDs in chat text, search candidates and historical selections never select a write target. Without a current selection, ask the user to choose the container and clarify ambiguous matches.
 If get_my_context includes selected_ledger_entry, you are an admin and the user explicitly asks to confirm that exact contribution, call confirm_ledger_entry with no arguments. This Tier 3 card shows the exact pending entry and planned confirmed state, authenticated confirmer and confirmation time set on approval. Only pending, proof-free, non-crypto contributions in the workspace base currency from active non-proxy money-enabled participants in active event containers are supported. Confirmation locks financial details. The current selected_ledger_entry is the only target; IDs in text, search results and historical selections do not select a write. Without a current selection, ask the user to select or clarify the entry. Confirmation requests for other entries, disputes, corrections, force overrides or members without admin access are unavailable.
 If create_container is offered and the user explicitly requests a new event container, call it with the requested name and only explicitly requested metadata, calendar date, event type/category and money/task tracking flags. A new container needs no existing entity selection. Dates must be explicit YYYY-MM-DD calendar dates; clarify relative or ambiguous dates and unclear names rather than guessing. Unspecified tracking flags default to false, category to other, and optional text/date fields to null. Workspace, creator, new ID, active status and all other defaults come from the server. Budgets, recurring schedules, adding participants, files and public links are unavailable. This creates a Tier 3 full approval card; approval alone creates the new container. Separate approved creation cards represent separate new containers, even with the same name.
@@ -205,6 +208,13 @@ async function runReadTurnWithHistory({ data, context, provider, history = [], o
          || (proposalSupport.taskSelection !== undefined
            && (!taskProgressSnapshotSchema.safeParse(proposalSupport.taskSelection).success
              || proposalSupport.taskSelection.assigned_to !== context.member.id))
+         || (offeredProposalDefinitions.some((definition) => definition.name === adminConfirmTaskDefinition.name)
+           && !taskConfirmationContextSchema.safeParse(proposalSupport.taskConfirmationSelection).success)
+         || (proposalSupport.taskConfirmationSelection !== undefined
+           && (!taskConfirmationContextSchema.safeParse(proposalSupport.taskConfirmationSelection).success
+             || proposalSupport.taskConfirmationSelection.actor_member_id !== context.member.id
+             || proposalSupport.taskConfirmationSelection.workspace_id !== context.workspace.id
+             || proposalSupport.taskConfirmationSelection.member_role !== context.member.role))
          || (offeredProposalDefinitions.some((definition) => definition.name === createLedgerEntryDefinition.name)
            && !selfLedgerContextSchema.safeParse(proposalSupport.ledgerSelection).success)
          || (proposalSupport.ledgerSelection !== undefined
@@ -278,6 +288,7 @@ async function runReadTurnWithHistory({ data, context, provider, history = [], o
       if (call.id === bootstrap.id && proposalSupport?.selection) result = { ...result, selected_notification: proposalSupport.selection };
       if (call.id === bootstrap.id && proposalSupport?.contactSelection) result = { ...result, selected_contact: proposalSupport.contactSelection };
       if (call.id === bootstrap.id && proposalSupport?.taskSelection) result = { ...result, selected_task: proposalSupport.taskSelection };
+      if (call.id === bootstrap.id && proposalSupport?.taskConfirmationSelection) result = { ...result, selected_task_confirmation: proposalSupport.taskConfirmationSelection };
       if (call.id === bootstrap.id && proposalSupport?.ledgerSelection) result = { ...result, selected_ledger_container: proposalSupport.ledgerSelection };
       if (call.id === bootstrap.id && proposalSupport?.ledgerEntrySelection) result = { ...result, selected_ledger_entry: proposalSupport.ledgerEntrySelection };
       if (call.id === bootstrap.id && loadActionReceipts) {
@@ -390,6 +401,12 @@ async function runReadTurnWithHistory({ data, context, provider, history = [], o
             && (JSON.stringify(proposal.before) !== JSON.stringify(selfLedgerContextSchema.parse(proposalSupport.ledgerSelection))
               || JSON.stringify(proposal.parameters) !== JSON.stringify(selfLedgerParametersFromArgs(proposalSupport.ledgerSelection, call.args)))) {
           throw new ValidationError('Proposal target or contribution mismatch');
+        }
+        if (proposal.tool === adminConfirmTaskDefinition.name
+            && (JSON.stringify(proposal.before) !== JSON.stringify(taskConfirmationContextSchema.parse(proposalSupport.taskConfirmationSelection))
+              || proposal.parameters.task_id !== proposalSupport.taskConfirmationSelection.task_id
+              || proposal.parameters.container_id !== proposalSupport.taskConfirmationSelection.container_id)) {
+          throw new ValidationError('Proposal target or task confirmation mismatch');
         }
         if (proposal.tool === confirmLedgerEntryDefinition.name
             && (JSON.stringify(proposal.before) !== JSON.stringify(entryConfirmationContextSchema.parse(proposalSupport.ledgerEntrySelection))

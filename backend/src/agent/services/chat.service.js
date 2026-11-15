@@ -11,6 +11,7 @@ const {
 const { updateMyProfileDefinition } = require('./profile-proposal.service');
 const { selectContact, deleteContactDefinition } = require('./contact-proposal.service');
 const { selectTask, updateTaskDefinition } = require('./task-proposal.service');
+const { selectTaskConfirmation, adminConfirmTaskDefinition } = require('./task-confirmation-proposal.service');
 const { selectLedgerContainer, createLedgerEntryDefinition } = require('./ledger-proposal.service');
 const { selectLedgerEntry, confirmLedgerEntryDefinition } = require('./ledger-confirmation-proposal.service');
 const { createContainerDefinition } = require('./container-creation-proposal.service');
@@ -46,6 +47,9 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
   const taskSelection = input.data.selected_task === undefined ? undefined
     : await selectTask({ context: actorContext,
       containerId: input.data.selected_task.container_id, taskId: input.data.selected_task.task_id });
+  const taskConfirmationSelection = input.data.selected_task_confirmation === undefined ? undefined
+    : await selectTaskConfirmation({ context: actorContext,
+      containerId: input.data.selected_task_confirmation.container_id, taskId: input.data.selected_task_confirmation.task_id });
   const ledgerSelection = input.data.selected_container_id === undefined ? undefined
     : await selectLedgerContainer({ context: actorContext, containerId: input.data.selected_container_id });
   const ledgerEntrySelection = input.data.selected_ledger_entry === undefined ? undefined
@@ -58,6 +62,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
       updateMyProfileDefinition,
       ...(contactSelection ? [deleteContactDefinition] : []),
       ...(taskSelection ? [updateTaskDefinition] : []),
+      ...(taskConfirmationSelection ? [adminConfirmTaskDefinition] : []),
       ...(ledgerSelection ? [createLedgerEntryDefinition] : []),
       ...(ledgerEntrySelection ? [confirmLedgerEntryDefinition] : []),
       createContainerDefinition,
@@ -67,6 +72,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     ...(selection ? { selection } : {}),
     ...(contactSelection ? { contactSelection } : {}),
     ...(taskSelection ? { taskSelection } : {}),
+    ...(taskConfirmationSelection ? { taskConfirmationSelection } : {}),
     ...(ledgerSelection ? { ledgerSelection } : {}),
     ...(ledgerEntrySelection ? { ledgerEntrySelection } : {}),
     create: ({ name, args, turnId }) => createProposal({
@@ -75,6 +81,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
         : name === confirmLedgerEntryDefinition.name ? ledgerEntrySelection
         : name === createLedgerEntryDefinition.name ? ledgerSelection
         : name === updateTaskDefinition.name ? taskSelection
+        : name === adminConfirmTaskDefinition.name ? taskConfirmationSelection
         : name === deleteContactDefinition.name ? contactSelection : selection,
       args, turnId, actorCtx, signal,
     }),
