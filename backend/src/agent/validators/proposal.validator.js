@@ -1,5 +1,9 @@
 const { z } = require('zod');
 const {
+  participantAdditionTargetSchema, participantAdditionDataSchema, participantAdditionContextSchema,
+  participantAdditionStateSchema, participantAdditionRowSchema, buildParticipantAdditionState,
+} = require('../../validators/participant-addition.validator');
+const {
   taskConfirmationStateSchema, taskConfirmationSnapshotSchema, taskConfirmationContextSchema,
 } = require('../../validators/task-confirmation.validator');
 const { updateProfileSchema, profileSnapshotFieldsSchema, contactSnapshotSchema } = require('../../validators/auth.validator');
@@ -140,6 +144,33 @@ function taskConfirmationResultMatches(proposal, result) {
   const parsed = taskConfirmationResultSchema.safeParse(result);
   return parsed.success && JSON.stringify(taskConfirmationAfterSchema.parse({
     ...parsed.data, admin_confirmed_at: 'on_approval', updated_at: 'on_approval',
+  })) === JSON.stringify(proposal.after);
+}
+
+const participantAdditionArgumentsSchema = participantAdditionDataSchema.omit({ workspace_member_id: true });
+const participantAdditionParametersSchema = participantAdditionDataSchema.extend({ container_id: z.string().uuid() });
+const participantAdditionAfterSchema = participantAdditionStateSchema.extend({ added_at: z.literal('on_approval') });
+const PARTICIPANT_ADDITION_SUMMARY = 'Add the selected member to the selected event container.';
+
+function participantAdditionParametersFromArgs(selection, args) {
+  const selected = participantAdditionContextSchema.parse(selection);
+  return participantAdditionParametersSchema.parse({
+    ...participantAdditionArgumentsSchema.parse(args), container_id: selected.container_id,
+    workspace_member_id: selected.workspace_member_id,
+  });
+}
+function participantAdditionAfter(selection, parameters, participantId) {
+  const selected = participantAdditionContextSchema.parse(selection);
+  const { container_id, ...data } = participantAdditionParametersSchema.parse(parameters);
+  return participantAdditionAfterSchema.parse({
+    ...buildParticipantAdditionState({ data, containerId: container_id,
+      participantId, actorMemberId: selected.actor_member_id }), added_at: 'on_approval',
+  });
+}
+function participantAdditionResultMatches(proposal, result) {
+  const parsed = participantAdditionRowSchema.safeParse(result);
+  return parsed.success && JSON.stringify(participantAdditionAfterSchema.parse({
+    ...parsed.data, added_at: 'on_approval',
   })) === JSON.stringify(proposal.after);
 }
 
@@ -338,6 +369,12 @@ const confirmTaskProposalSchema = z.object({
   before: taskConfirmationContextSchema, after: taskConfirmationAfterSchema,
   expires_at: z.string().datetime(),
 }).strict();
+const addParticipantProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('add_participants'), tier: z.literal(3),
+  summary: z.literal(PARTICIPANT_ADDITION_SUMMARY), parameters: participantAdditionParametersSchema,
+  before: participantAdditionContextSchema, after: participantAdditionAfterSchema,
+  expires_at: z.string().datetime(),
+}).strict();
 const createSelfLedgerProposalSchema = z.object({
   id: z.string().uuid(), tool: z.literal('create_ledger_entry'), tier: z.literal(2),
   summary: z.literal(SELF_LEDGER_SUMMARY), parameters: selfLedgerParametersSchema,
@@ -367,6 +404,7 @@ const proposalSchema = z.union([
   singleNotificationProposalSchema, allNotificationsProposalSchema, updateProfileProposalSchema, deleteContactProposalSchema,
   updateTaskProposalSchema,
   confirmTaskProposalSchema,
+  addParticipantProposalSchema,
   createSelfLedgerProposalSchema,
   confirmLedgerEntryProposalSchema,
   createContainerProposalSchema,
@@ -415,6 +453,14 @@ const proposalSchema = z.union([
         || JSON.stringify(value.after) !== JSON.stringify(taskConfirmationAfter(value.before)))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task confirmation mismatch' });
   }
+  if (value.tool === 'add_participants'
+      && (value.parameters.container_id !== value.before.container_id
+        || value.parameters.workspace_member_id !== value.before.workspace_member_id
+        || (value.parameters.money_enabled && !value.before.enable_money)
+        || (value.parameters.tasks_enabled && !value.before.enable_tasks)
+        || JSON.stringify(value.after) !== JSON.stringify(participantAdditionAfter(value.before, value.parameters, value.id)))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Participant addition mismatch' });
+  }
   if (value.tool === 'create_ledger_entry') {
     if (value.parameters.container_id !== value.before.container_id
         || value.parameters.contributor_id !== value.before.contributor_id
@@ -453,6 +499,7 @@ const proposalResultSchema = z.union([
   notificationReadResultSchema, notificationBulkReadResultSchema, profileUpdateResultSchema, contactDeletionResultSchema,
   taskProgressResultSchema,
   taskConfirmationResultSchema,
+  participantAdditionRowSchema,
   selfLedgerResultSchema,
   ledgerConfirmationResultSchema,
   containerCreationResultSchema,
@@ -512,6 +559,9 @@ const proposalRecordSchema = z.object({
   } else if (record.proposal.tool === 'admin_confirm_task'
       && !taskConfirmationResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task confirmation result mismatch' });
+  } else if (record.proposal.tool === 'add_participants'
+      && !participantAdditionResultMatches(record.proposal, record.result)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Participant addition result mismatch' });
   } else if (record.proposal.tool === 'create_container'
       && !containerCreationResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Container creation result mismatch' });
@@ -548,6 +598,10 @@ const taskStatusFields = z.object({
   task_id: z.string().uuid(), container_id: z.string().uuid(),
 }).strict();
 const taskConfirmationStatusFields = taskStatusFields.extend({ tool: z.literal('admin_confirm_task') });
+const participantAdditionStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('add_participants'),
+  participant_id: z.string().uuid(), container_id: z.string().uuid(), workspace_member_id: z.string().uuid(),
+}).strict();
 const selfLedgerStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('create_ledger_entry'),
   container_id: z.string().uuid(), contributor_id: z.string().uuid(),
@@ -578,6 +632,12 @@ const proposalStatusSchema = z.union([
     status: z.literal(status), result: taskConfirmationResultSchema,
   }).refine((value) => value.task_id === value.result.task_id && value.container_id === value.result.container_id,
     'Task confirmation receipt target mismatch')),
+  ...incompleteStatuses.map((status) => participantAdditionStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => participantAdditionStatusFields.extend({
+    status: z.literal(status), result: participantAdditionRowSchema,
+  }).refine((value) => value.participant_id === value.proposal_id && value.participant_id === value.result.participant_id
+      && value.container_id === value.result.container_id && value.workspace_member_id === value.result.workspace_member_id,
+  'Participant addition receipt target mismatch')),
   ...incompleteStatuses.map((status) => selfLedgerStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => selfLedgerStatusFields.extend({ status: z.literal(status), result: selfLedgerResultSchema })),
   ...incompleteStatuses.map((status) => ledgerConfirmationStatusFields.extend({ status: z.literal(status) })),
@@ -638,6 +698,15 @@ module.exports = {
   taskConfirmationAfter,
   taskConfirmationResultMatches,
   TASK_CONFIRMATION_SUMMARY,
+  participantAdditionTargetSchema,
+  participantAdditionDataSchema,
+  participantAdditionContextSchema,
+  participantAdditionArgumentsSchema,
+  participantAdditionRowSchema,
+  participantAdditionParametersFromArgs,
+  participantAdditionAfter,
+  participantAdditionResultMatches,
+  PARTICIPANT_ADDITION_SUMMARY,
   selfLedgerContextSchema,
   selfLedgerArgumentsSchema,
   selfLedgerParametersSchema,
