@@ -5,6 +5,10 @@ const {
   eventContainerCreationStateSchema, buildEventContainerCreationState,
 } = require('../../validators/workspace.validator');
 const {
+  memberCreationDataSchema, memberCreationContextSchema,
+  memberCreationStateSchema, buildMemberCreationState,
+} = require('../../validators/member-creation.validator');
+const {
   createTaskSchema, updateTaskSchema, selfLedgerAmountSchema,
   selfLedgerContextSchema, selfLedgerSubmissionDataSchema,
   entryConfirmationSnapshotSchema, entryConfirmationContextSchema,
@@ -211,6 +215,44 @@ function containerCreationResultMatches(proposal, result) {
   })) === JSON.stringify(proposal.after);
 }
 
+const memberCreationArgumentsSchema = memberCreationDataSchema.partial({
+  is_proxy: true, relationship_to_head: true, relationship_category: true,
+  date_of_birth: true, admin_notes: true,
+});
+const memberCreationBeforeSchema = memberCreationContextSchema.extend({ member: z.null() });
+const memberCreationAfterSchema = memberCreationStateSchema.extend({
+  joined_at: z.literal('on_approval'),
+  created_at: z.literal('on_approval'), updated_at: z.literal('on_approval'),
+});
+const memberCreationResultSchema = memberCreationStateSchema.extend({
+  joined_at: z.string().max(35).datetime({ offset: true }),
+  created_at: z.string().max(35).datetime({ offset: true }),
+  updated_at: z.string().max(35).datetime({ offset: true }),
+}).refine((value) => Date.parse(value.joined_at) === Date.parse(value.created_at)
+    && Date.parse(value.created_at) === Date.parse(value.updated_at),
+  'A new member must use the same joining, creation and update time');
+const MEMBER_CREATION_SUMMARY = 'Create a new member in this workspace.';
+
+function memberCreationParametersFromArgs(args) {
+  return memberCreationDataSchema.parse(memberCreationArgumentsSchema.parse(args));
+}
+
+function memberCreationAfter(context, data, memberId) {
+  const current = memberCreationContextSchema.parse(context);
+  return memberCreationAfterSchema.parse({
+    ...buildMemberCreationState({ data, workspaceId: current.workspace_id,
+      memberId, actorMemberId: current.actor_member_id }),
+    joined_at: 'on_approval', created_at: 'on_approval', updated_at: 'on_approval',
+  });
+}
+
+function memberCreationResultMatches(proposal, result) {
+  const parsed = memberCreationResultSchema.safeParse(result);
+  return parsed.success && JSON.stringify(memberCreationAfterSchema.parse({
+    ...parsed.data, joined_at: 'on_approval', created_at: 'on_approval', updated_at: 'on_approval',
+  })) === JSON.stringify(proposal.after);
+}
+
 function profileProposalSummary(parameters) {
   const labels = PROFILE_UPDATE_FIELDS.filter((field) => Object.hasOwn(parameters, field))
     .map((field) => PROFILE_FIELD_LABELS[field]);
@@ -278,6 +320,12 @@ const createContainerProposalSchema = z.object({
   before: containerCreationBeforeSchema, after: containerCreationAfterSchema,
   expires_at: z.string().datetime(),
 }).strict();
+const createMemberProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('create_member'), tier: z.literal(3),
+  summary: z.literal(MEMBER_CREATION_SUMMARY), parameters: memberCreationDataSchema,
+  before: memberCreationBeforeSchema, after: memberCreationAfterSchema,
+  expires_at: z.string().datetime(),
+}).strict();
 
 const proposalSchema = z.union([
   singleNotificationProposalSchema, allNotificationsProposalSchema, updateProfileProposalSchema, deleteContactProposalSchema,
@@ -285,6 +333,7 @@ const proposalSchema = z.union([
   createSelfLedgerProposalSchema,
   confirmLedgerEntryProposalSchema,
   createContainerProposalSchema,
+  createMemberProposalSchema,
 ]).superRefine((value, ctx) => {
   if (value.tool === 'mark_notification_read' && value.parameters.notification_id !== value.before.id) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Notification target mismatch' });
@@ -348,6 +397,13 @@ const proposalSchema = z.union([
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Container creation mismatch' });
     }
   }
+  if (value.tool === 'create_member') {
+    const { member, ...context } = value.before;
+    if (value.after.member_id !== value.id
+        || JSON.stringify(value.after) !== JSON.stringify(memberCreationAfter(context, value.parameters, value.id))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Member creation mismatch' });
+    }
+  }
 });
 
 const proposalResultSchema = z.union([
@@ -356,6 +412,7 @@ const proposalResultSchema = z.union([
   selfLedgerResultSchema,
   ledgerConfirmationResultSchema,
   containerCreationResultSchema,
+  memberCreationResultSchema,
 ]);
 const proposalRecordSchema = z.object({
   version: z.literal(1), scope: z.string().regex(/^[a-f0-9]{64}$/), proposal: proposalSchema,
@@ -411,6 +468,9 @@ const proposalRecordSchema = z.object({
   } else if (record.proposal.tool === 'create_container'
       && !containerCreationResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Container creation result mismatch' });
+  } else if (record.proposal.tool === 'create_member'
+      && !memberCreationResultMatches(record.proposal, record.result)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Member creation result mismatch' });
   }
 });
 
@@ -451,6 +511,9 @@ const ledgerConfirmationStatusFields = z.object({
 const containerCreationStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('create_container'), container_id: z.string().uuid(),
 }).strict();
+const memberCreationStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('create_member'), member_id: z.string().uuid(),
+}).strict();
 const proposalStatusSchema = z.union([
   ...incompleteStatuses.map((status) => singleStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => singleStatusFields.extend({ status: z.literal(status), result: notificationReadResultSchema })),
@@ -474,6 +537,11 @@ const proposalStatusSchema = z.union([
     status: z.literal(status), result: containerCreationResultSchema,
   }).refine((value) => value.container_id === value.result.container_id,
     'Container creation receipt target mismatch')),
+  ...incompleteStatuses.map((status) => memberCreationStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => memberCreationStatusFields.extend({
+    status: z.literal(status), result: memberCreationResultSchema,
+  }).refine((value) => value.member_id === value.proposal_id && value.member_id === value.result.member_id,
+    'Member creation receipt target mismatch')),
 ]);
 
 // A missing record never inherits a result or target from historical data.
@@ -534,6 +602,15 @@ module.exports = {
   containerCreationAfter,
   containerCreationResultMatches,
   CONTAINER_CREATION_SUMMARY,
+  memberCreationContextSchema,
+  memberCreationArgumentsSchema,
+  memberCreationBeforeSchema,
+  memberCreationAfterSchema,
+  memberCreationResultSchema,
+  memberCreationParametersFromArgs,
+  memberCreationAfter,
+  memberCreationResultMatches,
+  MEMBER_CREATION_SUMMARY,
   profileProposalSummary,
   proposalSchema,
   proposalRecordSchema,

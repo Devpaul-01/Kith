@@ -7,6 +7,8 @@ Admins can also request Tier 3 `confirm_ledger_entry` for an explicitly selected
 eligible contribution, with a full before/after approval card.
 Tier 3 `create_container` creates a new event through a full approval card and
 requires no existing entity selection.
+Tier 3 `create_member` creates an ordinary member record or a proxy managed by
+the requesting admin, also through a full card without an existing selection.
 Notification actions are scoped to the caller in the current workspace.
 Task progress changes are scoped to the caller's own assignment in that workspace.
 Self contributions are scoped to their own money-enabled participation in an
@@ -170,6 +172,77 @@ coverage. Unit checks cover explicit permission denial, normalized/fixed state,
 Unicode and size boundaries, strict args/approval, stale context, uncertain
 outcomes, duplicate approvals, receipts, scripted turns and mocked HTTP/SSE.
 Live database concurrency and live model evaluation remain unverified.
+
+## Member creation
+
+An admin can request a new member through the existing chat endpoint:
+
+```json
+{
+  "message": "Create a proxy member named Chika Okafor, managed by me, with relationship cousin.",
+  "conversation_id": null
+}
+```
+
+`create_member` accepts only `display_name` and optional `is_proxy`,
+`relationship_to_head`, `relationship_category`, `date_of_birth` and
+`admin_notes`. Names are trimmed and use the existing 2–80 character limit;
+relationship text and notes are limited to 100 and 1,000 characters. Optional
+text is trimmed, with omitted or empty text stored as null. NUL and unpaired
+Unicode surrogates are rejected; valid emoji pairs are supported. Birth dates
+must be explicit valid `YYYY-MM-DD` calendar dates. The model must clarify
+unclear requests and cannot calculate a birth date from an age.
+
+The default is an ordinary member (`is_proxy: false`); a proxy requires explicit
+proxy intent. Its manager is the requesting admin. Selecting another manager
+is not supported in this milestone. Category defaults to `other`, and the
+optional birth date defaults to null. The server fixes `role: member`,
+`user_id: null`, active status, invitation/activity fields and contribution
+counters. Creating this record does not create or link a login, send an
+invitation, add participants or upload files. Requests to invite an existing
+user or alter an existing member need clarification rather than silently
+creating a duplicate. Separate approved creation cards create separate records,
+including when display names match.
+
+The Tier 3 card's `before` shows the freshly read workspace identity/name/version,
+the current admin and `member: null`. Its `after` shows the complete new member
+state, including the server-owned member UUID (the proposal UUID), proxy manager
+and all fixed fields. `joined_at`, `created_at` and `updated_at` are
+`on_approval`; successful receipts contain their actual stored timestamps.
+Names, relationship text and admin notes remain untrusted display data.
+Draft creation verifies that the complete eventual executed record fits the
+existing 16 KiB storage limit, including the result copy and bookkeeping.
+
+Approval uses the existing separate endpoint with strict empty `{}` input.
+The handler rechecks admin access and reviewed context. The opt-in
+`member.service.js#createMember` path then rereads the live, active, non-proxy,
+non-deleted admin membership and non-deleted workspace before inserting the
+exact reviewed state. It verifies every returned business field and all three
+timestamps. The ordinary member HTTP creation path keeps its existing behavior.
+
+The normal `member.created` audit is required. A proxy also receives a
+`proxy_actions` record with that action enum, its member ID, authenticated
+manager and agent/proposal metadata. The existing agent proposed/approved/
+executed/rejected audits target the preallocated member UUID and retain the
+full reviewed before/after state. Status and conversation receipts use
+`member_id` and return the verified new-member state after successful execution.
+They report that past creation and never grant account access or select a
+target for another write.
+
+The Redis execution claim prevents repeated approval from inserting twice;
+the member primary key also prevents another insert using the same proposal ID.
+Insert uncertainty, returned-state mismatches and failures in either native
+audit retain an indeterminate claim. The executor never repeats that insertion.
+A saved successful result can finish final agent auditing without another write.
+
+Fresh eligibility checks, member insertion and auditing are separate operations.
+Concurrent revocation or a crash between these operations can leave an applied
+member with an uncertain receipt or incomplete audit. Stronger transactional
+guarantees need a separate database design decision. Unit tests cover permission
+and field boundaries, ordinary/proxy cards, stale and duplicate approvals,
+uncertain outcomes, receipts, scripted clarification and mocked JSON/SSE flows.
+Live PostgreSQL/Redis concurrency and model behavior remain integration and
+evaluation work. No schema changes or dependencies are required.
 
 ## Admin ledger confirmation
 

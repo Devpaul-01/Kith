@@ -14,6 +14,7 @@ const { selectTask, updateTaskDefinition } = require('./task-proposal.service');
 const { selectLedgerContainer, createLedgerEntryDefinition } = require('./ledger-proposal.service');
 const { selectLedgerEntry, confirmLedgerEntryDefinition } = require('./ledger-confirmation-proposal.service');
 const { createContainerDefinition } = require('./container-creation-proposal.service');
+const { createMemberDefinition } = require('./member-creation-proposal.service');
 const { createProposal, getProposalReceipts } = require('./proposal.service');
 const { extractProposalReferences } = require('./proposal-history.service');
 
@@ -60,6 +61,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
       ...(ledgerSelection ? [createLedgerEntryDefinition] : []),
       ...(ledgerEntrySelection ? [confirmLedgerEntryDefinition] : []),
       createContainerDefinition,
+      createMemberDefinition,
     ].filter((definition) => definition.minRole === 'member'
       || (definition.minRole === 'admin' && actorContext.member.role === 'admin'))),
     ...(selection ? { selection } : {}),
@@ -69,7 +71,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     ...(ledgerEntrySelection ? { ledgerEntrySelection } : {}),
     create: ({ name, args, turnId }) => createProposal({
       context: actorContext, tool: name,
-      selection: name === createContainerDefinition.name ? undefined
+      selection: [createContainerDefinition.name, createMemberDefinition.name].includes(name) ? undefined
         : name === confirmLedgerEntryDefinition.name ? ledgerEntrySelection
         : name === createLedgerEntryDefinition.name ? ledgerSelection
         : name === updateTaskDefinition.name ? taskSelection

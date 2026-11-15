@@ -5,7 +5,12 @@
 // insert.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { AppError, NotFoundError, BusinessRuleError, ForbiddenError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ForbiddenError, ValidationError, ConflictError } = require('../utils/errors');
+const { z } = require('zod');
+const {
+  memberCreationDataSchema, memberCreationContextSchema,
+  memberCreationStateSchema, buildMemberCreationState,
+} = require('../validators/member-creation.validator');
 const audit = require('./audit.service');
 const notification = require('./notification.service');
 const logger = require('../utils/logger');
@@ -112,7 +117,166 @@ async function listMembers({ workspaceId, isAdmin, search, filterRole, filterPro
   return { members, meta };
 }
 
-async function createMember({ workspaceId, data, actorCtx }) {
+const memberCreationCallerSchema = z.object({
+  workspaceId: z.string().uuid(), callerId: z.string().uuid(),
+  userId: z.string().uuid(), isAdmin: z.boolean(),
+}).strict();
+const reviewedMemberCreationSchema = z.object({
+  userId: z.string().uuid(), isAdmin: z.boolean(),
+  expected: memberCreationContextSchema, memberId: z.string().uuid(),
+}).strict();
+const memberCreationWorkspaceSchema = z.object({
+  id: z.string().uuid(), name: memberCreationContextSchema.shape.workspace_name,
+  updated_at: z.string().datetime({ offset: true }),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+});
+const memberCreationActorSchema = z.object({
+  id: z.string().uuid(), workspace_id: z.string().uuid(), user_id: z.string().uuid(),
+  role: z.enum(['member', 'admin']), is_active: z.boolean(), is_proxy: z.boolean(),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+});
+const memberCreationTimestampsSchema = z.object({
+  joined_at: z.string().max(35).datetime({ offset: true }),
+  created_at: z.string().max(35).datetime({ offset: true }),
+  updated_at: z.string().max(35).datetime({ offset: true }),
+});
+const memberCreationUnavailable = () => new AppError(
+  'Member creation is unavailable. Please try again.', 503, 'MEMBER_CREATION_UNAVAILABLE',
+);
+
+async function memberCreationOperation(operation) {
+  let response;
+  try { response = await operation(); } catch { throw memberCreationUnavailable(); }
+  if (!response || typeof response !== 'object' || Array.isArray(response)
+      || !Object.hasOwn(response, 'data') || !Object.hasOwn(response, 'error')) {
+    throw memberCreationUnavailable();
+  }
+  return response;
+}
+
+async function readMemberCreationRow(operation) {
+  const response = await memberCreationOperation(operation);
+  if (response.error !== null || (response.data !== null
+      && (typeof response.data !== 'object' || Array.isArray(response.data)))) {
+    throw memberCreationUnavailable();
+  }
+  return response.data;
+}
+
+/** Freshly scoped eligibility for reviewed creation; agent handlers never query. */
+async function getMemberCreationContext({ workspaceId, callerId, userId, isAdmin }) {
+  if (!memberCreationCallerSchema.safeParse({ workspaceId, callerId, userId, isAdmin }).success) {
+    throw new ValidationError('Invalid member creation context');
+  }
+  if (!isAdmin) throw new ForbiddenError('Only workspace admins can create members');
+
+  const workspaceRaw = await readMemberCreationRow(() => supabaseAdmin.from('workspaces')
+    .select('id, name, updated_at, deleted_at').eq('id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (!workspaceRaw) throw new NotFoundError('Workspace not found');
+  const workspace = memberCreationWorkspaceSchema.safeParse(workspaceRaw);
+  if (!workspace.success || workspace.data.id !== workspaceId) throw memberCreationUnavailable();
+  if (workspace.data.deleted_at !== null) throw new NotFoundError('Workspace not found');
+
+  const actorRaw = await readMemberCreationRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, deleted_at')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('role', 'admin').eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (!actorRaw) throw new ForbiddenError('Active admin membership required');
+  const actor = memberCreationActorSchema.safeParse(actorRaw);
+  if (!actor.success) throw memberCreationUnavailable();
+  if (actor.data.id !== callerId || actor.data.workspace_id !== workspaceId || actor.data.user_id !== userId
+      || actor.data.role !== 'admin' || !actor.data.is_active || actor.data.is_proxy || actor.data.deleted_at !== null) {
+    throw new ForbiddenError('Workspace admin membership changed. Please retry.');
+  }
+
+  return memberCreationContextSchema.parse({
+    workspace_id: workspaceId, workspace_name: workspace.data.name, workspace_updated_at: workspace.data.updated_at,
+    actor_member_id: callerId, member_role: actor.data.role,
+  });
+}
+
+async function createReviewedMember({ workspaceId, data, actorCtx, reviewedCreation }) {
+  const reviewed = reviewedMemberCreationSchema.safeParse(reviewedCreation);
+  const approved = memberCreationDataSchema.safeParse(data);
+  const callerId = actorCtx?.actorMemberId;
+  if (!reviewed.success || !approved.success || !memberCreationCallerSchema.safeParse({
+    workspaceId, callerId, userId: reviewed.data?.userId, isAdmin: reviewed.data?.isAdmin,
+  }).success) throw new ValidationError('Invalid reviewed member creation');
+  if (!reviewed.data.isAdmin) throw new ForbiddenError('Only workspace admins can create members');
+  const expected = reviewed.data.expected;
+  if (expected.workspace_id !== workspaceId || expected.actor_member_id !== callerId) {
+    throw new ForbiddenError('Member creation must use the reviewed workspace and admin');
+  }
+
+  let current;
+  try {
+    current = await getMemberCreationContext({ workspaceId, callerId,
+      userId: reviewed.data.userId, isAdmin: reviewed.data.isAdmin });
+  } catch (err) {
+    if (['NOT_FOUND', 'FORBIDDEN'].includes(err.code)) {
+      throw new ConflictError('The reviewed member creation is no longer available');
+    }
+    throw err;
+  }
+  if (JSON.stringify(current) !== JSON.stringify(expected)) {
+    throw new ConflictError('The workspace or creation eligibility changed since review');
+  }
+
+  const state = buildMemberCreationState({ data: approved.data, workspaceId,
+    memberId: reviewed.data.memberId, actorMemberId: callerId });
+  const { member_id: memberId, ...values } = state;
+  const createdAt = new Date().toISOString();
+  // The proposal owns this PK. A duplicate or uncertain insert cannot become
+  // another new member, and no repair/replay path repeats its side effects.
+  const response = await memberCreationOperation(() => supabaseAdmin.from('workspace_members')
+    .insert({ id: memberId, ...values, joined_at: createdAt, created_at: createdAt, updated_at: createdAt })
+    .select().single());
+  if (response.error !== null || !response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
+    throw memberCreationUnavailable();
+  }
+  const raw = response.data;
+  const actual = memberCreationStateSchema.safeParse(Object.fromEntries(
+    Object.keys(memberCreationStateSchema.shape).map((field) => [field, field === 'member_id' ? raw.id : raw[field]]),
+  ));
+  const timestamps = memberCreationTimestampsSchema.safeParse(raw);
+  if (!actual.success || JSON.stringify(actual.data) !== JSON.stringify(state) || !timestamps.success
+      || Object.values(timestamps.data).some((value) => Date.parse(value) !== Date.parse(createdAt))) {
+    throw memberCreationUnavailable();
+  }
+
+  try {
+    await audit.log({
+      ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId: callerId, required: true,
+      action: AUDIT_ACTIONS.MEMBER_CREATED, targetType: 'workspace_member', targetId: memberId,
+      metadata: { display_name: state.display_name, is_proxy: state.is_proxy },
+    });
+    if (state.is_proxy) {
+      const proxyAction = {
+        id: memberId, workspace_id: workspaceId, proxy_member_id: memberId,
+        managed_by_id: callerId, action_type: AUDIT_ACTIONS.MEMBER_CREATED, target_id: memberId,
+        action_details: { display_name: state.display_name, agent_initiated: true, proposal_id: memberId },
+        created_at: createdAt,
+      };
+      const proxyResponse = await memberCreationOperation(() => supabaseAdmin.from('proxy_actions')
+        .insert(proxyAction).select('id').single());
+      if (proxyResponse.error !== null || !proxyResponse.data
+          || Array.isArray(proxyResponse.data) || proxyResponse.data.id !== memberId) {
+        throw memberCreationUnavailable();
+      }
+    }
+  } catch {
+    // A member may already exist. Even a downstream ConflictError must not
+    // tell the approval layer that retrying a new action is safe.
+    throw memberCreationUnavailable();
+  }
+  return raw;
+}
+
+async function createMember({ workspaceId, data, actorCtx, reviewedCreation }) {
+  if (reviewedCreation !== undefined) {
+    return createReviewedMember({ workspaceId, data, actorCtx, reviewedCreation });
+  }
+  // Existing HTTP callers retain their route-gated validation and defaults.
   if (data.is_proxy && data.proxy_managed_by) {
     const { data: adminCheck } = await supabaseAdmin
       .from('workspace_members').select('id').eq('id', data.proxy_managed_by).eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).maybeSingle();
@@ -383,6 +547,7 @@ async function getMemberEngagement({ workspaceId }) {
 module.exports = {
   getActiveMembership,
   listMembers,
+  getMemberCreationContext,
   createMember,
   getMember,
   updateMember,
