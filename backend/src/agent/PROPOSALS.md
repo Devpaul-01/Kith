@@ -11,6 +11,8 @@ Tier 3 `create_container` creates a new event through a full approval card and
 requires no existing entity selection.
 Tier 3 `create_member` creates an ordinary member record or a proxy managed by
 the requesting admin, also through a full card without an existing selection.
+An admin's explicit `selected_participant_addition` member/event pair enables
+Tier 3 `add_participants` for one eligible non-proxy workspace member.
 Notification actions are scoped to the caller in the current workspace.
 Task progress changes are scoped to the caller's own assignment in that workspace.
 Self contributions are scoped to their own money-enabled participation in an
@@ -245,6 +247,91 @@ and field boundaries, ordinary/proxy cards, stale and duplicate approvals,
 uncertain outcomes, receipts, scripted clarification and mocked JSON/SSE flows.
 Live PostgreSQL/Redis concurrency and model behavior remain integration and
 evaluation work. No schema changes or dependencies are required.
+
+## Participant additions
+
+An admin explicitly selects one existing workspace member and one event for
+the current chat request:
+
+```json
+{
+  "message": "Add the selected member to the selected event with money tracking.",
+  "selected_participant_addition": {
+    "container_id": "<container-uuid>",
+    "member_id": "<workspace-member-uuid>"
+  },
+  "conversation_id": null
+}
+```
+
+Only this verified current pair offers `add_participants`. The member must be
+active, non-deleted and non-proxy in this workspace; either a member or admin
+membership is eligible, including a record without a linked login. The
+container must be an active, non-deleted event in the same workspace. Existing
+participation is rejected. Names, search candidates, UUIDs in prose, old
+selections and receipts do not select either target. Ambiguous names require
+the user to choose the member and event before requesting the card.
+
+Strict model arguments contain only optional `money_enabled` and
+`tasks_enabled`. Both default to false; a requested true flag requires the
+corresponding event feature to be enabled. No targets, amounts, participant
+notes, custom participation roles, group/bulk additions, proxies or recurring
+pools are supported. Participation does not change the workspace member role,
+create an account or send an invitation. Recurring additions need a separate
+design because existing cycle overrides can generate contribution targets.
+
+The full Tier 3 `before` card contains workspace identity/name/version, the
+authenticated admin, event name/type/status/features/version, selected member
+name/role/eligibility/version and `participant: null`. Text remains untrusted
+display data. The complete `after` projection is:
+
+```json
+{
+  "participant_id": "<proposal-uuid>",
+  "container_id": "<container-uuid>",
+  "workspace_member_id": "<workspace-member-uuid>",
+  "money_enabled": true,
+  "tasks_enabled": false,
+  "role": null,
+  "notes": null,
+  "exclude_from_public": false,
+  "added_by": "<authenticated-admin-member-uuid>",
+  "added_at": "on_approval"
+}
+```
+
+The proposal UUID fixes the new participation UUID. `added_at` is generated
+on approval; verified receipts contain its stored ISO timestamp and every
+field shown above. Status and conversation receipts identify `participant_id`,
+`container_id` and `workspace_member_id` and report the past action. They never
+restore a selection or authorize another write. The draft checks the complete
+eventual executed record against the existing 16 KiB storage limit.
+
+Approval uses the existing separate endpoint with strict empty `{}` input.
+The handler explicitly checks admin access and revalidates the full selection.
+The opt-in `participant.service.js#addParticipants` branch rereads the live,
+active non-proxy admin and exact user link, workspace, member, event and absent
+participation before inserting the reviewed state. Names or versions changing,
+lost eligibility or a member added elsewhere invalidate the card. The ordinary
+participant HTTP path keeps its existing behavior.
+
+The Redis execution claim prevents repeated approval from inserting again.
+The existing unique member/container pair uses duplicate-ignore upsert,
+preserving any existing participant. Only an explicit successful empty result
+proves that insertion made no change and produces a stale proposal. Database
+errors, transport uncertainty, malformed or mismatched returned state and
+post-insert required audit failures retain an indeterminate claim. This
+proposal never retries the insertion. Saved successful results can complete
+final agent auditing without another participant write.
+
+The native `container.participants_added` audit is required. Agent
+proposed/approved/executed/rejected audits target the event and include the
+full reviewed before/after state. Fresh related-row checks, insertion and
+auditing are separate operations; concurrency and partial failures across
+them still require live Postgres/Redis integration coverage and a broader
+transactional design decision. Unit tests cover role/scope/eligibility,
+complete defaults, stale and duplicate approvals, uncertain outcomes,
+receipt binding, scripted turns and mocked JSON/SSE flows.
 
 ## Admin ledger confirmation
 

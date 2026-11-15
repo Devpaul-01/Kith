@@ -44,7 +44,14 @@ container, including uploaded proofs. The full card binds every task field and
 the exact attachment metadata, preserves notes, and records the authenticated
 admin on approval. Proof bytes are reviewed through existing file access.
 See [task confirmation](PROPOSALS.md#admin-task-confirmation) for selection,
-receipt and failure contracts. Other writes and voice are still pending.
+receipt and failure contracts.
+
+An admin's current `selected_participant_addition` member/event pair enables
+Tier 3 `add_participants` for one active non-proxy member in an active event.
+The full card fixes the new participation ID, authenticated adder and defaults,
+with optional money/task tracking flags. Existing workspace roles are preserved.
+See [participant additions](PROPOSALS.md#participant-additions) for the selection,
+approval and receipt contract. Other writes and voice are still pending.
 
 Current work prioritizes the core money, task, member, participant and dispute
 flow. Do not add or polish tools marked Lower-Priority in the architecture;
@@ -663,8 +670,14 @@ workspace or actor. The tools executed immediately are still role-filtered
 Tier 0/1 reads. Chat also offers the Tier 2 mark-all and profile proposal tools;
 an explicit validated notification, contact, task or container selection
 additionally offers the matching proposal tool. A verified `selected_ledger_entry`
-pair offers Tier 3 `confirm_ledger_entry` only to admins. Proposal definitions
-include Tier 3 `create_container` and `create_member` for admins without an
+pair offers Tier 3 `confirm_ledger_entry` only to admins. A verified current
+`selected_task_confirmation` pair offers Tier 3 `admin_confirm_task`, and a
+verified `selected_participant_addition: { container_id, member_id }` pair
+offers Tier 3 `add_participants`. The latter
+requires an active event and active non-proxy workspace member; its model
+arguments contain only optional `money_enabled` and `tasks_enabled` flags.
+Proposal definitions include Tier 3 `create_container` and `create_member`
+for admins without an
 entity selection; their drafts read fresh workspace/admin state only when
 creation is requested. They
 are role-filtered before provider exposure, with role checks in the loop,
@@ -872,6 +885,10 @@ Own-task and eligible-container selections add their Tier 2 definitions.
 An admin's verified ledger-entry selection adds the Tier 3 confirmation
 definition. A separate completed-task selection adds Tier 3 `admin_confirm_task`;
 own-task progress selection retains its Tier 2 contract.
+An admin's verified current member/event pair adds Tier 3 `add_participants`.
+Both IDs come from `selected_participant_addition`; the model supplies only
+requested tracking flags. Search results, historical selections and receipts
+cannot offer or approve the tool on a later request.
 Admin chat also offers Tier 3 event and member creation definitions
 without a selection. Injected proposal support must also satisfy the definition's role
 requirement before a provider call.
