@@ -1,5 +1,9 @@
 const { z } = require('zod');
 const {
+  taskCreationTargetSchema, taskCreationDataSchema, taskCreationContextSchema,
+  taskCreationStateSchema, taskCreationResultSchema, buildTaskCreationState,
+} = require('../../validators/task-creation.validator');
+const {
   participantAdditionTargetSchema, participantAdditionDataSchema, participantAdditionContextSchema,
   participantAdditionStateSchema, participantAdditionRowSchema, buildParticipantAdditionState,
 } = require('../../validators/participant-addition.validator');
@@ -144,6 +148,35 @@ function taskConfirmationResultMatches(proposal, result) {
   const parsed = taskConfirmationResultSchema.safeParse(result);
   return parsed.success && JSON.stringify(taskConfirmationAfterSchema.parse({
     ...parsed.data, admin_confirmed_at: 'on_approval', updated_at: 'on_approval',
+  })) === JSON.stringify(proposal.after);
+}
+
+const taskCreationArgumentsSchema = taskCreationDataSchema.omit({ assigned_to: true });
+const taskCreationParametersSchema = taskCreationDataSchema.extend({ container_id: z.string().uuid() });
+const taskCreationAfterSchema = taskCreationStateSchema.extend({
+  created_at: z.literal('on_approval'), updated_at: z.literal('on_approval'),
+});
+const TASK_CREATION_SUMMARY = 'Create a task in the selected container.';
+
+function taskCreationParametersFromArgs(selection, args) {
+  const selected = taskCreationContextSchema.parse(selection);
+  return taskCreationParametersSchema.parse({
+    ...taskCreationArgumentsSchema.parse(args), container_id: selected.container_id,
+    assigned_to: selected.assignee?.member_id ?? null,
+  });
+}
+function taskCreationAfter(selection, parameters, taskId) {
+  const selected = taskCreationContextSchema.parse(selection);
+  const { container_id, ...data } = taskCreationParametersSchema.parse(parameters);
+  return taskCreationAfterSchema.parse({
+    ...buildTaskCreationState({ data, containerId: container_id, taskId, actorMemberId: selected.actor_member_id }),
+    created_at: 'on_approval', updated_at: 'on_approval',
+  });
+}
+function taskCreationResultMatches(proposal, result) {
+  const parsed = taskCreationResultSchema.safeParse(result);
+  return parsed.success && JSON.stringify(taskCreationAfterSchema.parse({
+    ...parsed.data, created_at: 'on_approval', updated_at: 'on_approval',
   })) === JSON.stringify(proposal.after);
 }
 
@@ -369,6 +402,11 @@ const confirmTaskProposalSchema = z.object({
   before: taskConfirmationContextSchema, after: taskConfirmationAfterSchema,
   expires_at: z.string().datetime(),
 }).strict();
+const createTaskProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('create_task'), tier: z.literal(3),
+  summary: z.literal(TASK_CREATION_SUMMARY), parameters: taskCreationParametersSchema,
+  before: taskCreationContextSchema, after: taskCreationAfterSchema, expires_at: z.string().datetime(),
+}).strict();
 const addParticipantProposalSchema = z.object({
   id: z.string().uuid(), tool: z.literal('add_participants'), tier: z.literal(3),
   summary: z.literal(PARTICIPANT_ADDITION_SUMMARY), parameters: participantAdditionParametersSchema,
@@ -404,6 +442,7 @@ const proposalSchema = z.union([
   singleNotificationProposalSchema, allNotificationsProposalSchema, updateProfileProposalSchema, deleteContactProposalSchema,
   updateTaskProposalSchema,
   confirmTaskProposalSchema,
+  createTaskProposalSchema,
   addParticipantProposalSchema,
   createSelfLedgerProposalSchema,
   confirmLedgerEntryProposalSchema,
@@ -453,6 +492,12 @@ const proposalSchema = z.union([
         || JSON.stringify(value.after) !== JSON.stringify(taskConfirmationAfter(value.before)))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task confirmation mismatch' });
   }
+  if (value.tool === 'create_task'
+      && (value.parameters.container_id !== value.before.container_id
+        || value.parameters.assigned_to !== (value.before.assignee?.member_id ?? null)
+        || JSON.stringify(value.after) !== JSON.stringify(taskCreationAfter(value.before, value.parameters, value.id)))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task creation mismatch' });
+  }
   if (value.tool === 'add_participants'
       && (value.parameters.container_id !== value.before.container_id
         || value.parameters.workspace_member_id !== value.before.workspace_member_id
@@ -499,6 +544,7 @@ const proposalResultSchema = z.union([
   notificationReadResultSchema, notificationBulkReadResultSchema, profileUpdateResultSchema, contactDeletionResultSchema,
   taskProgressResultSchema,
   taskConfirmationResultSchema,
+  taskCreationResultSchema,
   participantAdditionRowSchema,
   selfLedgerResultSchema,
   ledgerConfirmationResultSchema,
@@ -559,6 +605,9 @@ const proposalRecordSchema = z.object({
   } else if (record.proposal.tool === 'admin_confirm_task'
       && !taskConfirmationResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task confirmation result mismatch' });
+  } else if (record.proposal.tool === 'create_task'
+      && !taskCreationResultMatches(record.proposal, record.result)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task creation result mismatch' });
   } else if (record.proposal.tool === 'add_participants'
       && !participantAdditionResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Participant addition result mismatch' });
@@ -598,6 +647,10 @@ const taskStatusFields = z.object({
   task_id: z.string().uuid(), container_id: z.string().uuid(),
 }).strict();
 const taskConfirmationStatusFields = taskStatusFields.extend({ tool: z.literal('admin_confirm_task') });
+const taskCreationStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('create_task'), task_id: z.string().uuid(),
+  container_id: z.string().uuid(), assigned_to: z.string().uuid().nullable(),
+}).strict();
 const participantAdditionStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('add_participants'),
   participant_id: z.string().uuid(), container_id: z.string().uuid(), workspace_member_id: z.string().uuid(),
@@ -632,6 +685,13 @@ const proposalStatusSchema = z.union([
     status: z.literal(status), result: taskConfirmationResultSchema,
   }).refine((value) => value.task_id === value.result.task_id && value.container_id === value.result.container_id,
     'Task confirmation receipt target mismatch')),
+  ...incompleteStatuses.map((status) => taskCreationStatusFields.extend({ status: z.literal(status) })
+    .refine((value) => value.task_id === value.proposal_id, 'Task creation receipt ID mismatch')),
+  ...['audit_pending', 'executed'].map((status) => taskCreationStatusFields.extend({
+    status: z.literal(status), result: taskCreationResultSchema,
+  }).refine((value) => value.task_id === value.proposal_id && value.task_id === value.result.task_id
+      && value.container_id === value.result.container_id && value.assigned_to === value.result.assigned_to,
+  'Task creation receipt target mismatch')),
   ...incompleteStatuses.map((status) => participantAdditionStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => participantAdditionStatusFields.extend({
     status: z.literal(status), result: participantAdditionRowSchema,
@@ -698,6 +758,16 @@ module.exports = {
   taskConfirmationAfter,
   taskConfirmationResultMatches,
   TASK_CONFIRMATION_SUMMARY,
+  taskCreationTargetSchema,
+  taskCreationDataSchema,
+  taskCreationContextSchema,
+  taskCreationArgumentsSchema,
+  taskCreationAfterSchema,
+  taskCreationResultSchema,
+  taskCreationParametersFromArgs,
+  taskCreationAfter,
+  taskCreationResultMatches,
+  TASK_CREATION_SUMMARY,
   participantAdditionTargetSchema,
   participantAdditionDataSchema,
   participantAdditionContextSchema,
