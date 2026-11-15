@@ -8,12 +8,18 @@ const {
   taskConfirmationStateSchema, taskConfirmationSnapshotSchema, taskConfirmationContextSchema,
   taskConfirmationCallerSchema, reviewedTaskConfirmationSchema, taskConfirmationState,
 } = require('../validators/task-confirmation.validator');
+const {
+  taskCreationDataSchema, taskCreationAssigneeSchema, taskCreationContextSchema,
+  taskCreationResultSchema, taskCreationCallerSchema, reviewedTaskCreationSchema,
+  buildTaskCreationState, taskCreationState,
+} = require('../validators/task-creation.validator');
 const { generateUploadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 const notification           = require('./notification.service');
 const { exportTasksCSV }     = require('./export.service');
 const audit                  = require('./audit.service');
 const { AUDIT_ACTIONS }      = require('../constants/audit-actions');
 const { getSort }            = require('../utils/sorting');
+const logger                 = require('../utils/logger');
 
 async function assertWorkspaceContainer({ workspaceId, containerId }) {
   // Tasks have no workspace_id. Verify their parent before reading them.
@@ -99,7 +105,138 @@ async function getTask({ workspaceId, containerId, taskId, isAdmin, callerId }) 
   return shapeTask(task);
 }
 
-async function createTask({ workspaceId, containerId, data, actorMemberId, actorDisplayName, actorCtx }) {
+const taskCreationUnavailable = () => new AppError('Task creation is unavailable. Please try again.', 503, 'TASK_CREATION_UNAVAILABLE');
+
+async function taskCreationOperation(operation) {
+  try {
+    const response = await operation();
+    if (!response || response.error !== null || !Object.hasOwn(response, 'data')
+        || (response.data !== null && (typeof response.data !== 'object' || Array.isArray(response.data)))) {
+      throw taskCreationUnavailable();
+    }
+    return response.data;
+  } catch { throw taskCreationUnavailable(); }
+}
+
+/** Fresh eligibility for the explicitly selected task container and optional assignee. */
+async function getTaskCreationContext({ workspaceId, containerId, assigneeId = null, callerId, userId, isAdmin }) {
+  if (!taskCreationCallerSchema.safeParse({ workspaceId, containerId, assigneeId, callerId, userId, isAdmin }).success) {
+    throw new ValidationError('Invalid task creation context');
+  }
+  if (!isAdmin) throw new ForbiddenError('Only workspace admins can create tasks');
+  const workspace = await taskCreationOperation(() => supabaseAdmin.from('workspaces')
+    .select('id, name, updated_at, deleted_at').eq('id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (workspace === null) throw new NotFoundError('Workspace not found');
+  if (workspace.id !== workspaceId || workspace.deleted_at !== null) throw taskCreationUnavailable();
+  const actor = await taskCreationOperation(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, deleted_at')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('role', 'admin').eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (!actor || actor.id !== callerId || actor.workspace_id !== workspaceId || actor.user_id !== userId
+      || actor.role !== 'admin' || actor.is_active !== true || actor.is_proxy !== false || actor.deleted_at !== null) {
+    throw new ForbiddenError('Active workspace admin membership required');
+  }
+  const container = await taskCreationOperation(() => supabaseAdmin.from('containers')
+    .select('id, workspace_id, name, container_type, status, enable_tasks, updated_at, deleted_at')
+    .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (container === null) throw new NotFoundError('Container not found');
+  if (container.id !== containerId || container.workspace_id !== workspaceId || container.deleted_at !== null) {
+    throw taskCreationUnavailable();
+  }
+  if (container.status !== 'active' || container.enable_tasks !== true || !['event', 'recurring'].includes(container.container_type)) {
+    throw new BusinessRuleError('Task creation requires an active event or recurring container with task tracking enabled');
+  }
+  let assignee = null;
+  if (assigneeId !== null) {
+    const member = await taskCreationOperation(() => supabaseAdmin.from('workspace_members')
+      .select('id, workspace_id, display_name, role, is_active, is_proxy, updated_at, deleted_at')
+      .eq('id', assigneeId).eq('workspace_id', workspaceId).eq('is_active', true)
+      .eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+    if (member === null) throw new NotFoundError('Assigned member not found');
+    if (member.id !== assigneeId || member.workspace_id !== workspaceId || member.deleted_at !== null) throw taskCreationUnavailable();
+    if (member.is_active !== true || member.is_proxy !== false || !['member', 'admin'].includes(member.role)) {
+      throw new BusinessRuleError('Task assignment requires an active non-proxy workspace member');
+    }
+    const participant = await taskCreationOperation(() => supabaseAdmin.from('container_participants')
+      .select('id, container_id, workspace_member_id, tasks_enabled, added_at')
+      .eq('container_id', containerId).eq('workspace_member_id', assigneeId).maybeSingle());
+    if (participant === null) throw new BusinessRuleError('The assigned member must participate in the selected container');
+    if (participant.container_id !== containerId || participant.workspace_member_id !== assigneeId) throw taskCreationUnavailable();
+    if (participant.tasks_enabled !== true) throw new BusinessRuleError('Task tracking must be enabled for the assigned participant');
+    const selected = taskCreationAssigneeSchema.safeParse({
+      member_id: member.id, display_name: member.display_name, member_role: member.role,
+      is_active: member.is_active, is_proxy: member.is_proxy, member_updated_at: member.updated_at,
+      participant_id: participant.id, participant_added_at: participant.added_at, tasks_enabled: participant.tasks_enabled,
+    });
+    if (!selected.success) throw taskCreationUnavailable();
+    assignee = selected.data;
+  }
+  const context = taskCreationContextSchema.safeParse({
+    workspace_id: workspaceId, workspace_name: workspace.name, workspace_updated_at: workspace.updated_at,
+    actor_member_id: callerId, member_role: actor.role,
+    container_id: containerId, container_name: container.name, container_type: container.container_type,
+    container_status: container.status, enable_tasks: container.enable_tasks, container_updated_at: container.updated_at,
+    assignee, task: null,
+  });
+  if (!context.success) throw taskCreationUnavailable();
+  return context.data;
+}
+
+async function createReviewedTask({ workspaceId, containerId, data, actorMemberId, actorDisplayName, actorCtx, reviewedCreation }) {
+  const reviewed = reviewedTaskCreationSchema.safeParse(reviewedCreation);
+  const requested = taskCreationDataSchema.safeParse(data);
+  if (!reviewed.success || !requested.success) throw new ValidationError('Valid reviewed task details are required');
+  if (!reviewed.data.isAdmin) throw new ForbiddenError('Only workspace admins can create tasks');
+  const expected = reviewed.data.expected;
+  if (expected.workspace_id !== workspaceId || expected.container_id !== containerId
+      || expected.actor_member_id !== actorMemberId || (expected.assignee?.member_id ?? null) !== requested.data.assigned_to) {
+    throw new ForbiddenError('Task creation must use the reviewed workspace, container, assignee and admin');
+  }
+  let current;
+  try {
+    current = await getTaskCreationContext({ workspaceId, containerId, assigneeId: requested.data.assigned_to,
+      callerId: actorMemberId, userId: reviewed.data.userId, isAdmin: reviewed.data.isAdmin });
+  } catch (err) {
+    if (['NOT_FOUND', 'FORBIDDEN', 'BUSINESS_RULE_VIOLATION'].includes(err.code)) {
+      throw new ConflictError('The reviewed task creation is no longer available');
+    }
+    throw err;
+  }
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new ConflictError('Task creation eligibility changed since review');
+  const planned = buildTaskCreationState({ data: requested.data, containerId,
+    taskId: reviewed.data.taskId, actorMemberId });
+  const { task_id: id, ...values } = planned;
+  const createdAt = new Date().toISOString();
+  const row = await taskCreationOperation(() => supabaseAdmin.from('container_tasks')
+    .insert({ id, ...values, created_at: createdAt, updated_at: createdAt }).select().single());
+  // INSERT uncertainty, including a primary-key conflict, must retain the execution claim.
+  const result = taskCreationResultSchema.safeParse(taskCreationState(row));
+  if (!result.success || Date.parse(result.data.created_at) !== Date.parse(createdAt)
+      || Object.keys(planned).some((field) => JSON.stringify(result.data[field]) !== JSON.stringify(planned[field]))) {
+    throw taskCreationUnavailable();
+  }
+  try {
+    await audit.log({ ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId,
+      action: AUDIT_ACTIONS.TASK_CREATED, targetType: 'task', targetId: id,
+      metadata: { title: planned.title, agent_initiated: true, proposal_id: id }, required: true });
+  } catch { throw taskCreationUnavailable(); }
+  if (planned.assigned_to !== null) {
+    try {
+      await notification.send({ type: 'task_assigned', workspaceId, recipientIds: [planned.assigned_to],
+        referenceType: 'task', referenceId: id, variables: { actor: actorDisplayName, task_title: planned.title },
+        dedupKey: `task_assigned:${id}` });
+    } catch (err) {
+      logger.warn('Task creation assignment notification unavailable', { workspaceId, taskId: id, errorCode: err?.code });
+    }
+  }
+  return row;
+}
+
+async function createTask({ workspaceId, containerId, data, actorMemberId, actorDisplayName, actorCtx, reviewedCreation }) {
+  if (reviewedCreation !== undefined) {
+    return createReviewedTask({ workspaceId, containerId, data, actorMemberId, actorDisplayName, actorCtx, reviewedCreation });
+  }
+  // Ordinary HTTP callers retain the existing creation and assignment behavior.
   if (data.assigned_to) {
     const { data: check } = await supabaseAdmin
       .from('container_participants').select('id')
@@ -510,6 +647,7 @@ module.exports = {
   listTasks,
   getTask,
   createTask,
+  getTaskCreationContext,
   updateTask,
   reassignTask,
   overrideTaskStatus,
