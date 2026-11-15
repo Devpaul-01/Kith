@@ -3,7 +3,11 @@
 // fetchTask/shapeTask preserved as internal helpers.
 
 const { supabaseAdmin }      = require('../config/supabase');
-const { AppError, NotFoundError, BusinessRuleError, ForbiddenError, ConflictError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ForbiddenError, ConflictError, ValidationError } = require('../utils/errors');
+const {
+  taskConfirmationStateSchema, taskConfirmationSnapshotSchema, taskConfirmationContextSchema,
+  taskConfirmationCallerSchema, reviewedTaskConfirmationSchema, taskConfirmationState,
+} = require('../validators/task-confirmation.validator');
 const { generateUploadUrl, verifyUploadedFile, assertUploadPath } = require('./storage.service');
 const notification           = require('./notification.service');
 const { exportTasksCSV }     = require('./export.service');
@@ -238,7 +242,150 @@ async function overrideTaskStatus({ containerId, taskId, status, note, actorMemb
   return task;
 }
 
-async function adminConfirmTask({ workspaceId, containerId, taskId, note, actorMemberId, actorDisplayName, actorCtx }) {
+const confirmationUnavailable = () => new AppError('Task confirmation is unavailable. Please try again.', 503, 'TASK_CONFIRMATION_UNAVAILABLE');
+
+async function confirmationOperation(operation) {
+  try {
+    const response = await operation();
+    if (!response || response.error !== null || !Object.hasOwn(response, 'data')
+        || (response.data !== null && (typeof response.data !== 'object' || Array.isArray(response.data)))) {
+      throw confirmationUnavailable();
+    }
+    return response.data;
+  } catch { throw confirmationUnavailable(); }
+}
+
+/** Tasks have no workspace_id: check the real admin and scoped parent first. */
+async function getTaskConfirmationContext({ workspaceId, containerId, taskId, callerId, userId, isAdmin }) {
+  if (!taskConfirmationCallerSchema.safeParse({ workspaceId, containerId, taskId, callerId, userId, isAdmin }).success) {
+    throw new ValidationError('Invalid task confirmation context');
+  }
+  if (!isAdmin) throw new ForbiddenError('Only workspace admins can confirm tasks');
+
+  const workspace = await confirmationOperation(() => supabaseAdmin.from('workspaces')
+    .select('id, deleted_at').eq('id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (workspace === null) throw new NotFoundError('Workspace not found');
+  if (workspace.id !== workspaceId || workspace.deleted_at !== null) throw confirmationUnavailable();
+
+  const actor = await confirmationOperation(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, deleted_at')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('role', 'admin').eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (!actor || actor.id !== callerId || actor.workspace_id !== workspaceId || actor.user_id !== userId
+      || actor.role !== 'admin' || actor.is_active !== true || actor.is_proxy !== false || actor.deleted_at !== null) {
+    throw new ForbiddenError('Active workspace admin membership required');
+  }
+
+  const container = await confirmationOperation(() => supabaseAdmin.from('containers')
+    .select('id, workspace_id, name, status, enable_tasks, updated_at, deleted_at')
+    .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (container === null) throw new NotFoundError('Container not found');
+  if (container.id !== containerId || container.workspace_id !== workspaceId || container.deleted_at !== null) {
+    throw confirmationUnavailable();
+  }
+  if (container.status !== 'active' || container.enable_tasks !== true) {
+    throw new BusinessRuleError('Task confirmation requires an active container with task tracking enabled');
+  }
+
+  const task = await confirmationOperation(() => supabaseAdmin.from('container_tasks')
+    .select('*').eq('id', taskId).eq('container_id', containerId).is('deleted_at', null).maybeSingle());
+  if (task === null) throw new NotFoundError('Task not found');
+  if (task.id !== taskId || task.container_id !== containerId || task.deleted_at !== null) throw confirmationUnavailable();
+  if (task.status !== 'completed' || task.admin_confirmed_at !== null || task.admin_confirmed_by !== null) {
+    throw new BusinessRuleError('Only completed tasks without admin confirmation can be confirmed');
+  }
+  const snapshot = taskConfirmationContextSchema.safeParse({
+    ...taskConfirmationState(task), workspace_id: workspaceId, actor_member_id: callerId, member_role: actor.role,
+    container_name: container.name, container_status: container.status, enable_tasks: container.enable_tasks,
+    container_updated_at: container.updated_at,
+  });
+  if (!snapshot.success) throw confirmationUnavailable();
+  // Existing assignment writers can leave an ID from another workspace.
+  // Notifications trust their recipient IDs, so validate the recipient here.
+  if (snapshot.data.assigned_to !== null) {
+    const assignee = await confirmationOperation(() => supabaseAdmin.from('workspace_members')
+      .select('id, workspace_id').eq('id', snapshot.data.assigned_to)
+      .eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle());
+    if (assignee === null) throw new BusinessRuleError('The assigned member is no longer available in this workspace');
+    if (assignee.id !== snapshot.data.assigned_to || assignee.workspace_id !== workspaceId) throw confirmationUnavailable();
+  }
+  return snapshot.data;
+}
+
+async function confirmReviewedTask({ workspaceId, containerId, taskId, note, actorMemberId, actorDisplayName, actorCtx, reviewedConfirmation }) {
+  const reviewed = reviewedTaskConfirmationSchema.safeParse(reviewedConfirmation);
+  if (!reviewed.success || !taskConfirmationCallerSchema.safeParse({
+    workspaceId, containerId, taskId, callerId: actorMemberId,
+    userId: reviewed.data?.userId, isAdmin: reviewed.data?.isAdmin,
+  }).success) throw new ValidationError('Invalid reviewed task confirmation');
+  if (!reviewed.data.isAdmin) throw new ForbiddenError('Only workspace admins can confirm tasks');
+  const expected = reviewed.data.expected;
+  if (expected.workspace_id !== workspaceId || expected.container_id !== containerId
+      || expected.task_id !== taskId || expected.actor_member_id !== actorMemberId) {
+    throw new ForbiddenError('Task confirmation must use the reviewed workspace, task and admin');
+  }
+  if (note !== undefined && note !== expected.admin_note) throw new ValidationError('Task confirmation must preserve the reviewed admin note');
+
+  let current;
+  try {
+    current = await getTaskConfirmationContext({ workspaceId, containerId, taskId,
+      callerId: actorMemberId, userId: reviewed.data.userId, isAdmin: reviewed.data.isAdmin });
+  } catch (err) {
+    if (['NOT_FOUND', 'FORBIDDEN', 'BUSINESS_RULE_VIOLATION'].includes(err.code)) {
+      throw new ConflictError('The reviewed task confirmation is no longer available');
+    }
+    throw err;
+  }
+  if (JSON.stringify(current) !== JSON.stringify(expected)) {
+    throw new ConflictError('The task or confirmation eligibility changed since review');
+  }
+
+  const snapshot = taskConfirmationSnapshotSchema.parse(Object.fromEntries(
+    Object.keys(taskConfirmationSnapshotSchema.shape).map((field) => [field, expected[field]]),
+  ));
+  const confirmedAt = new Date().toISOString();
+  // Include every reviewed field in the UPDATE, especially proofs and deletion.
+  // JSONB equality ignores object-key order but preserves attachment array order.
+  const row = await confirmationOperation(() => {
+    let query = supabaseAdmin.from('container_tasks').update({
+      admin_confirmed_at: confirmedAt, admin_confirmed_by: actorMemberId, updated_at: confirmedAt,
+    });
+    for (const [field, value] of Object.entries(snapshot)) {
+      const column = field === 'task_id' ? 'id' : field;
+      query = value === null ? query.is(column, null)
+        : query.eq(column, field === 'proofs' ? JSON.stringify(value) : value);
+    }
+    return query.select().maybeSingle();
+  });
+  // Only an explicit successful zero-row response proves no mutation occurred.
+  if (row === null) throw new ConflictError('The task changed since it was reviewed');
+  const updated = taskConfirmationStateSchema.safeParse(taskConfirmationState(row));
+  const unchanged = updated.success && Object.keys(snapshot)
+    .filter((field) => !['admin_confirmed_at', 'admin_confirmed_by', 'updated_at'].includes(field))
+    .every((field) => JSON.stringify(updated.data[field]) === JSON.stringify(snapshot[field]));
+  if (!unchanged || updated.data.admin_confirmed_by !== actorMemberId
+      || Date.parse(updated.data.admin_confirmed_at) !== Date.parse(confirmedAt)) throw confirmationUnavailable();
+
+  try {
+    if (snapshot.assigned_to) {
+      await notification.send({ type: 'task_confirmed', workspaceId, recipientIds: [snapshot.assigned_to],
+        referenceType: 'task', referenceId: taskId,
+        variables: { actor: actorDisplayName, task_title: snapshot.title } });
+    }
+    await audit.log({
+      ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId,
+      action: AUDIT_ACTIONS.TASK_CONFIRMED, targetType: 'task', targetId: taskId,
+      metadata: { title: snapshot.title }, required: true,
+    });
+  } catch { throw confirmationUnavailable(); }
+  return row;
+}
+
+async function adminConfirmTask({ workspaceId, containerId, taskId, note, actorMemberId, actorDisplayName, actorCtx, reviewedConfirmation }) {
+  if (reviewedConfirmation !== undefined) {
+    return confirmReviewedTask({ workspaceId, containerId, taskId, note, actorMemberId, actorDisplayName, actorCtx, reviewedConfirmation });
+  }
+  // Ordinary HTTP callers retain their existing route-gated behavior.
   const task = await fetchTask(containerId, taskId);
   if (!task) throw new NotFoundError('Task not found');
   if (task.status !== 'completed') throw new BusinessRuleError('Only tasks with status "completed" can be confirmed');
@@ -366,6 +513,7 @@ module.exports = {
   updateTask,
   reassignTask,
   overrideTaskStatus,
+  getTaskConfirmationContext,
   adminConfirmTask,
   bulkCreateTasks,
   exportTasks,
