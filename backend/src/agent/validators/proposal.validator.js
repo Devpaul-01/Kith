@@ -1,4 +1,7 @@
 const { z } = require('zod');
+const {
+  taskConfirmationStateSchema, taskConfirmationSnapshotSchema, taskConfirmationContextSchema,
+} = require('../../validators/task-confirmation.validator');
 const { updateProfileSchema, profileSnapshotFieldsSchema, contactSnapshotSchema } = require('../../validators/auth.validator');
 const {
   eventContainerCreationDataSchema, containerCreationContextSchema,
@@ -111,6 +114,33 @@ function taskProposalSummary(parameters) {
   return parameters.status === 'completed'
     ? 'Mark the selected task as completed.'
     : 'Set the selected task to in progress.';
+}
+
+const taskConfirmationArgumentsSchema = z.object({}).strict();
+const taskConfirmationAfterSchema = taskConfirmationSnapshotSchema.extend({
+  admin_confirmed_at: z.literal('on_approval'), admin_confirmed_by: z.string().uuid(),
+  updated_at: z.literal('on_approval'),
+});
+const taskConfirmationResultSchema = taskConfirmationStateSchema.extend({
+  admin_confirmed_at: z.string().max(35).datetime({ offset: true }), admin_confirmed_by: z.string().uuid(),
+});
+const TASK_CONFIRMATION_SUMMARY = 'Confirm completion of the selected task.';
+
+function taskConfirmationAfter(selection) {
+  const selected = taskConfirmationContextSchema.parse(selection);
+  const snapshot = Object.fromEntries(Object.keys(taskConfirmationSnapshotSchema.shape)
+    .map((field) => [field, selected[field]]));
+  return taskConfirmationAfterSchema.parse({
+    ...snapshot, admin_confirmed_at: 'on_approval', admin_confirmed_by: selected.actor_member_id,
+    updated_at: 'on_approval',
+  });
+}
+
+function taskConfirmationResultMatches(proposal, result) {
+  const parsed = taskConfirmationResultSchema.safeParse(result);
+  return parsed.success && JSON.stringify(taskConfirmationAfterSchema.parse({
+    ...parsed.data, admin_confirmed_at: 'on_approval', updated_at: 'on_approval',
+  })) === JSON.stringify(proposal.after);
 }
 
 const selfLedgerArgumentsSchema = z.object({
@@ -302,6 +332,12 @@ const updateTaskProposalSchema = z.object({
   after: taskProgressAfterSchema,
   expires_at: z.string().datetime(),
 }).strict();
+const confirmTaskProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('admin_confirm_task'), tier: z.literal(3),
+  summary: z.literal(TASK_CONFIRMATION_SUMMARY), parameters: taskTargetSchema,
+  before: taskConfirmationContextSchema, after: taskConfirmationAfterSchema,
+  expires_at: z.string().datetime(),
+}).strict();
 const createSelfLedgerProposalSchema = z.object({
   id: z.string().uuid(), tool: z.literal('create_ledger_entry'), tier: z.literal(2),
   summary: z.literal(SELF_LEDGER_SUMMARY), parameters: selfLedgerParametersSchema,
@@ -330,6 +366,7 @@ const createMemberProposalSchema = z.object({
 const proposalSchema = z.union([
   singleNotificationProposalSchema, allNotificationsProposalSchema, updateProfileProposalSchema, deleteContactProposalSchema,
   updateTaskProposalSchema,
+  confirmTaskProposalSchema,
   createSelfLedgerProposalSchema,
   confirmLedgerEntryProposalSchema,
   createContainerProposalSchema,
@@ -372,6 +409,12 @@ const proposalSchema = z.union([
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task progress change mismatch' });
     }
   }
+  if (value.tool === 'admin_confirm_task'
+      && (value.parameters.task_id !== value.before.task_id
+        || value.parameters.container_id !== value.before.container_id
+        || JSON.stringify(value.after) !== JSON.stringify(taskConfirmationAfter(value.before)))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task confirmation mismatch' });
+  }
   if (value.tool === 'create_ledger_entry') {
     if (value.parameters.container_id !== value.before.container_id
         || value.parameters.contributor_id !== value.before.contributor_id
@@ -409,6 +452,7 @@ const proposalSchema = z.union([
 const proposalResultSchema = z.union([
   notificationReadResultSchema, notificationBulkReadResultSchema, profileUpdateResultSchema, contactDeletionResultSchema,
   taskProgressResultSchema,
+  taskConfirmationResultSchema,
   selfLedgerResultSchema,
   ledgerConfirmationResultSchema,
   containerCreationResultSchema,
@@ -465,6 +509,9 @@ const proposalRecordSchema = z.object({
   } else if (record.proposal.tool === 'confirm_ledger_entry'
       && !ledgerConfirmationResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Ledger confirmation result mismatch' });
+  } else if (record.proposal.tool === 'admin_confirm_task'
+      && !taskConfirmationResultMatches(record.proposal, record.result)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task confirmation result mismatch' });
   } else if (record.proposal.tool === 'create_container'
       && !containerCreationResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Container creation result mismatch' });
@@ -500,6 +547,7 @@ const taskStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('update_task'),
   task_id: z.string().uuid(), container_id: z.string().uuid(),
 }).strict();
+const taskConfirmationStatusFields = taskStatusFields.extend({ tool: z.literal('admin_confirm_task') });
 const selfLedgerStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('create_ledger_entry'),
   container_id: z.string().uuid(), contributor_id: z.string().uuid(),
@@ -525,6 +573,11 @@ const proposalStatusSchema = z.union([
   ...['audit_pending', 'executed'].map((status) => contactStatusFields.extend({ status: z.literal(status), result: contactDeletionResultSchema })),
   ...incompleteStatuses.map((status) => taskStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => taskStatusFields.extend({ status: z.literal(status), result: taskProgressResultSchema })),
+  ...incompleteStatuses.map((status) => taskConfirmationStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => taskConfirmationStatusFields.extend({
+    status: z.literal(status), result: taskConfirmationResultSchema,
+  }).refine((value) => value.task_id === value.result.task_id && value.container_id === value.result.container_id,
+    'Task confirmation receipt target mismatch')),
   ...incompleteStatuses.map((status) => selfLedgerStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => selfLedgerStatusFields.extend({ status: z.literal(status), result: selfLedgerResultSchema })),
   ...incompleteStatuses.map((status) => ledgerConfirmationStatusFields.extend({ status: z.literal(status) })),
@@ -578,6 +631,13 @@ module.exports = {
   taskProgressParametersSchema,
   taskProgressResultSchema,
   taskProposalSummary,
+  taskConfirmationContextSchema,
+  taskConfirmationArgumentsSchema,
+  taskConfirmationAfterSchema,
+  taskConfirmationResultSchema,
+  taskConfirmationAfter,
+  taskConfirmationResultMatches,
+  TASK_CONFIRMATION_SUMMARY,
   selfLedgerContextSchema,
   selfLedgerArgumentsSchema,
   selfLedgerParametersSchema,
