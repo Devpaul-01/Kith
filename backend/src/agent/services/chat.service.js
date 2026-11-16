@@ -15,6 +15,7 @@ const { selectTaskConfirmation, adminConfirmTaskDefinition } = require('./task-c
 const { selectTaskCreation, createTaskDefinition } = require('./task-creation-proposal.service');
 const { selectLedgerContainer, createLedgerEntryDefinition } = require('./ledger-proposal.service');
 const { selectLedgerEntry, confirmLedgerEntryDefinition } = require('./ledger-confirmation-proposal.service');
+const { selectDisputeContribution, raiseDisputeDefinition } = require('./dispute-raise-proposal.service');
 const { createContainerDefinition } = require('./container-creation-proposal.service');
 const { createMemberDefinition } = require('./member-creation-proposal.service');
 const { selectParticipantAddition, addParticipantsDefinition } = require('./participant-addition-proposal.service');
@@ -63,6 +64,10 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
   const ledgerEntrySelection = input.data.selected_ledger_entry === undefined ? undefined
     : await selectLedgerEntry({ context: actorContext,
       containerId: input.data.selected_ledger_entry.container_id, entryId: input.data.selected_ledger_entry.entry_id });
+  const disputeSelection = input.data.selected_dispute_entry === undefined ? undefined
+    : await selectDisputeContribution({ context: actorContext,
+      containerId: input.data.selected_dispute_entry.container_id, entryId: input.data.selected_dispute_entry.entry_id });
+  let proposalConversationId = null;
   const proposalSupport = {
     definitions: Object.freeze([
       ...(selection ? [markNotificationReadDefinition] : []),
@@ -75,6 +80,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
       ...(participantAdditionSelection ? [addParticipantsDefinition] : []),
       ...(ledgerSelection ? [createLedgerEntryDefinition] : []),
       ...(ledgerEntrySelection ? [confirmLedgerEntryDefinition] : []),
+      ...(disputeSelection ? [raiseDisputeDefinition] : []),
       createContainerDefinition,
       createMemberDefinition,
     ].filter((definition) => definition.minRole === 'member'
@@ -87,10 +93,12 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     ...(participantAdditionSelection ? { participantAdditionSelection } : {}),
     ...(ledgerSelection ? { ledgerSelection } : {}),
     ...(ledgerEntrySelection ? { ledgerEntrySelection } : {}),
+    ...(disputeSelection ? { disputeSelection } : {}),
     create: ({ name, args, turnId }) => createProposal({
       context: actorContext, tool: name,
       selection: [createContainerDefinition.name, createMemberDefinition.name].includes(name) ? undefined
         : name === confirmLedgerEntryDefinition.name ? ledgerEntrySelection
+        : name === raiseDisputeDefinition.name ? disputeSelection
         : name === createLedgerEntryDefinition.name ? ledgerSelection
         : name === updateTaskDefinition.name ? taskSelection
         : name === adminConfirmTaskDefinition.name ? taskConfirmationSelection
@@ -98,6 +106,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
         : name === addParticipantsDefinition.name ? participantAdditionSelection
         : name === deleteContactDefinition.name ? contactSelection : selection,
       args, turnId, actorCtx, signal,
+      ...(name === raiseDisputeDefinition.name ? { conversationId: proposalConversationId } : {}),
     }),
   };
   const loadActionReceipts = ({ history }) => getProposalReceipts({
@@ -109,7 +118,10 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
   return runConversationTurn({
     context: actorContext, conversationId: input.data.conversation_id,
     signal,
-    runTurn: ({ history }) => runReadTurnWithHistory({ data: turnData, context: actorContext, provider, history, onEvent, signal, proposalSupport, loadActionReceipts }),
+    runTurn: ({ history, conversationId }) => {
+      proposalConversationId = conversationId;
+      return runReadTurnWithHistory({ data: turnData, context: actorContext, provider, history, onEvent, signal, proposalSupport, loadActionReceipts });
+    },
   });
 }
 

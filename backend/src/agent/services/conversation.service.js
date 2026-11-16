@@ -67,7 +67,7 @@ async function runConversationTurn({ context, conversationId, runTurn, redisFact
     if (record.scope !== scope) throw missing();
 
     assertNotCancelled(signal);
-    const output = conversationResultSchema.safeParse(await runTurn({ history: record.turns }));
+    const output = conversationResultSchema.safeParse(await runTurn({ history: record.turns, conversationId: id }));
     assertNotCancelled(signal);
     if (!output.success) throw unavailable();
     const next = JSON.stringify({ version: 1, scope, turns: output.data.history });

@@ -1,7 +1,7 @@
 const { success } = require('../../utils/response');
 const audit = require('../../services/audit.service');
-const { decideProposal, getProposalStatus } = require('../services/proposal.service');
-const { emptyApprovalSchema, proposalIdSchema } = require('../validators/proposal.validator');
+const { decideProposal, confirmProposal, getProposalStatus } = require('../services/proposal.service');
+const { emptyApprovalSchema, secondaryConfirmationSchema, proposalIdSchema } = require('../validators/proposal.validator');
 
 const decision = (action) => async (req, res, next) => {
   try {
@@ -26,4 +26,16 @@ async function status(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { approve: decision('approve'), reject: decision('reject'), status };
+async function confirm(req, res, next) {
+  try {
+    const result = await confirmProposal({
+      context: { userId: req.user.id, member: req.member, workspace: req.workspace, requestId: req.requestId },
+      proposalId: proposalIdSchema.parse(req.params.proposalId), data: secondaryConfirmationSchema.parse(req.body),
+      actorCtx: audit.fromReq(req),
+    });
+    res.set('Cache-Control', 'no-store');
+    success(res, result);
+  } catch (err) { next(err); }
+}
+
+module.exports = { approve: decision('approve'), reject: decision('reject'), confirm, status };

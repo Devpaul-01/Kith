@@ -67,7 +67,7 @@ describe('server-owned conversation storage', () => {
     await redis.expire(key, 60);
     const runTurn = jest.fn(async ({ history }) => completed(history, 'The next reply.'));
     const second = await run({ conversationId: first.conversation_id.toUpperCase(), runTurn });
-    expect(runTurn).toHaveBeenCalledWith({ history: [turn()] });
+    expect(runTurn).toHaveBeenCalledWith({ history: [turn()], conversationId: first.conversation_id });
     expect(second.conversation_id).toBe(first.conversation_id);
     expect(JSON.parse(await redis.get(key)).turns).toEqual([turn(), turn('The next reply.')]);
     expect(await redis.ttl(key)).toBeGreaterThan(TTL.AGENT_CONVERSATION_SECONDS - 5);
