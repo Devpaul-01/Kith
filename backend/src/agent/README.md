@@ -13,7 +13,7 @@ from the architecture, with the role restrictions and data limits documented
 below. Ranked task, ledger, dispute and group searches implement the
 [approved schema extension](SEARCH_SCHEMA_PROPOSAL.md).
 Chat supports JSON replies, opt-in SSE streaming, and a
-[Tier 2/3 proposal/approval flow with status receipts](PROPOSALS.md) for
+[Tier 2/3/4 proposal flow with status receipts](PROPOSALS.md) for
 one selected notification or an exact bounded set of current unread
 notifications, plus account-wide profile changes through `update_my_profile`.
 An explicit contact selection also enables `delete_contact` for one personal
@@ -60,8 +60,17 @@ with task tracking enabled; an omitted assignee leaves the task unassigned.
 The model supplies the title, optional description and explicit calendar due
 date. The full card fixes the task ID, creator and complete pending state;
 separate approval creates it. See [task creation](PROPOSALS.md#task-creation)
-for the API, audit, notification and failure contract. Other writes and voice
-are still pending.
+for the API, audit, notification and failure contract.
+
+A member or admin's current `selected_dispute_entry` enables Tier 4
+`raise_dispute` for their own confirmed base-currency contribution in an
+active money-enabled event. Existing proofs are eligible but excluded from
+the reviewed financial projection. A full card binds the financial fields
+and requested reason. Approval returns a private token; a separate typed
+confirmation request is required to open the dispute. See
+[dispute creation](PROPOSALS.md#dispute-creation-and-secondary-confirmation)
+for the selection, two-step API, audit and failure contracts. Other writes
+and voice are still pending.
 
 Current work prioritizes the core money, task, member, participant and dispute
 flow. Do not add or polish tools marked Lower-Priority in the architecture;
@@ -692,6 +701,13 @@ an optional assignee must be an active non-proxy member/admin participating
 there with tasks enabled. Omitted or null `assignee_id` means unassigned.
 The model supplies only `title`, optional `description` and an explicit
 `YYYY-MM-DD` `due_date`. See [task creation](PROPOSALS.md#task-creation).
+A verified `selected_dispute_entry: { container_id, entry_id }` offers Tier 4
+`raise_dispute` for the caller's own confirmed contribution, including admins
+acting for themselves. Its strict model arguments contain only `reason`.
+The event must be active with money tracking enabled, and the positive
+non-crypto contribution must use the workspace base currency without a
+recurring cycle or correction link. The full card requires separate approval
+followed by typed confirmation; see [the two-step contract](PROPOSALS.md#dispute-creation-and-secondary-confirmation).
 Proposal definitions include Tier 3 `create_container` and `create_member`
 for admins without an
 entity selection; their drafts read fresh workspace/admin state only when
@@ -699,8 +715,8 @@ creation is requested. They
 are role-filtered before provider exposure, with role checks in the loop,
 proposal decisions/receipts and domain handlers. Historical proposal tool names
 also require the current role. All create approval cards stored by the server.
-Chat never executes or approves them; only the separate approval
-endpoint can apply an action.
+Chat never executes or approves them. Tier 2/3 approval can apply an action;
+Tier 4 approval only issues a token for the separate confirmation endpoint.
 
 The dedicated `agentLimiter` allows 10 requests per minute per authenticated
 user across all workspaces, using the shared Redis store with prefix
@@ -911,6 +927,14 @@ selection. The server freezes the selection and nested assignee; the loop
 binds the complete reviewed context and canonical task parameters to the
 proposal callback's result before returning a card. IDs in other selections,
 prose, search candidates, history and receipts cannot select this creation.
+The caller's verified current `selected_dispute_entry` adds Tier 4
+`raise_dispute`. The loop binds the complete current ownership/financial
+snapshot and requested reason to the returned card. It never receives an
+approval token or executes the dispute through a model call. The immutable
+selection and nested entry apply only to this request; fresh receipt statuses
+`awaiting_confirmation` and `confirmation_pending` do not certify a write.
+Conversation callbacks receive the server-owned `conversationId` alongside
+history, allowing sensitive audits to retain the actual conversation UUID.
 Admin chat also offers Tier 3 event and member creation definitions
 without a selection. Injected proposal support must also satisfy the definition's role
 requirement before a provider call.
@@ -1106,6 +1130,12 @@ expiry and stale state, uncertain insertion/audit results, duplicate approval,
 scoped receipts and scripted JSON/SSE flows. Related-row checks and INSERT
 still need live Postgres/Redis concurrency coverage as documented in
 [task creation](PROPOSALS.md#task-creation).
+Dispute creation tests cover the native service/RPC boundary, strict own-entry
+scope, nullable legacy fields, the token-bound two-step lifecycle, required
+secondary/native audits, fresh checks, reject/confirm races, expiry, uncertain
+results, token privacy and JSON/SSE continuation with actual conversation
+traces. Live Postgres/PostgREST/Redis atomicity, text casts and related-row
+races remain integration coverage.
 Contact deletion tests cover ownership, full reviewed-state comparisons,
 conditional conflicts and receipts that never restore selection. Live
 database/PostgREST, model and deployed-proxy verification remain pending. The existing `ioredis-mock`

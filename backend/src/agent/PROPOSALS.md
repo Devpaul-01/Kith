@@ -15,6 +15,9 @@ An admin's explicit `selected_participant_addition` member/event pair enables
 Tier 3 `add_participants` for one eligible non-proxy workspace member.
 An admin's explicit `selected_task_creation` container and optional assignee
 enables Tier 3 `create_task` for one new pending task.
+The caller's explicit `selected_dispute_entry` enables Tier 4 `raise_dispute`
+for their own confirmed base-currency contribution, through a full card,
+separate approval and a distinct typed confirmation request.
 Notification actions are scoped to the caller in the current workspace.
 Task progress changes are scoped to the caller's own assignment in that workspace.
 Self contributions are scoped to their own money-enabled participation in an
@@ -441,6 +444,166 @@ role checks, assigned/unassigned defaults, stale/duplicate approvals,
 uncertain outcomes, bound records/receipts, scripted turns and mocked JSON/SSE
 flows. This milestone requires no schema changes or new dependencies.
 
+## Dispute creation and secondary confirmation
+
+Members and admins explicitly select their own confirmed contribution for
+the current authenticated chat request:
+
+```json
+{
+  "message": "Dispute this contribution because the recorded amount does not match my payment.",
+  "selected_dispute_entry": {
+    "container_id": "<event-container-uuid>",
+    "entry_id": "<own-confirmed-entry-uuid>"
+  },
+  "conversation_id": null
+}
+```
+
+Only this verified current selection offers `raise_dispute`. The caller must
+have active, linked, non-proxy membership in the current workspace. Ownership
+is required even for admins. The contribution must be confirmed, positive,
+non-crypto and in the workspace base currency, with equal original/base
+amounts and no recurring cycle or correction link. Its event must be active,
+non-deleted and money-enabled. No open dispute may already exist. Current
+container participation is not required to dispute a historical contribution.
+Pending entries, expenses, recurring pools, proxies, bulk/on-behalf actions
+and dispute resolution are outside this tool's scope.
+
+Strict model arguments contain only the requested `reason`, trimmed to
+5–1,000 characters. NUL and unpaired surrogates are rejected. Missing or
+ambiguous reasons require clarification. Names, IDs in prose, searches,
+other selections, previous cards, receipts and messages saying “confirm”
+cannot supply the selection or either decision.
+
+Existing uploaded proofs do not prevent raising a dispute. Proof metadata
+and private idempotency keys are excluded from this approval projection;
+the tool never uploads, inspects or claims to preserve attachment contents.
+The existing ledger immutability trigger freezes confirmed financial fields
+while allowing proofs to change. Restricting this tool to confirmed entries
+and excluding mutable proofs allows the existing RPC to remain in use
+without a schema change. Nullable legacy recording/confirmation fields are
+preserved exactly.
+
+The full Tier 4 `before` contains workspace identity/name/currency/version,
+authenticated caller identity/name/role/version, event identity/name/type/
+status/money setting/version, all reviewed immutable entry fields and
+`dispute: null`. The `after` contains that same entry with `status: disputed`
+and the complete new dispute state:
+
+```json
+{
+  "dispute_id": "on_confirmation",
+  "workspace_id": "<workspace-uuid>",
+  "ledger_entry_id": "<selected-entry-uuid>",
+  "raised_by": "<authenticated-caller-member-uuid>",
+  "reason": "The recorded amount does not match my payment.",
+  "status": "open",
+  "resolution_note": null,
+  "resolved_by": null,
+  "raised_at": "on_confirmation",
+  "resolved_at": null,
+  "notes": []
+}
+```
+
+The card also carries `secondary_confirmation: { method: "typed", phrase:
+"confirm" }`. Postgres generates the actual dispute UUID and timestamp
+inside `raise_dispute_atomic`; the dispute UUID is independent of the
+proposal UUID. The eventual executed record is checked against the existing
+16 KiB limit before the card is stored or audited. Names, notes and the
+reason remain untrusted display data.
+
+First send the normal authenticated approval request with strict empty `{}`
+input:
+
+```text
+POST /v1/workspaces/:workspaceId/agent/proposals/:proposalId/approve
+```
+
+It audits approval and revalidates the reviewed context. It opens no dispute
+and returns:
+
+```json
+{
+  "data": {
+    "proposal_id": "<proposal-uuid>",
+    "status": "awaiting_confirmation",
+    "confirmation_token": "<server-generated-uuid>",
+    "expires_at": "<original-card-expiry>"
+  }
+}
+```
+
+After the user explicitly types `confirm`, send a separate authenticated
+request to:
+
+```text
+POST /v1/workspaces/:workspaceId/agent/proposals/:proposalId/confirm
+```
+
+Its strict body is:
+
+```json
+{
+  "confirmation": "confirm",
+  "confirmation_token": "<token-from-approval-response>"
+}
+```
+
+The literal is case-sensitive. The token is scoped through the saved
+user/member/workspace/role record and must match that exact proposal.
+Approval retries return the same token without extending the original
+five-minute deadline. A known token cannot replace approval; confirming a
+pending/approving card returns `AGENT_PROPOSAL_CONFIRMATION_REQUIRED` (409).
+A wrong valid token returns `FORBIDDEN` (403); invalid bodies return 400.
+The confirm endpoint rejects Tier 2/3 cards and never calls the model.
+Both decision endpoints share the existing agent request limiter and return
+`Cache-Control: no-store` on success.
+
+The confirmation token is server-record bookkeeping. It is returned only
+by explicit approval and is never added to proposal cards, stored chat
+history, provider context, status/conversation receipts or audit metadata.
+An approved card can still be rejected while awaiting confirmation; CAS
+settles reject/confirm races. Once confirmation is processing, use the same
+confirmation request to retry. Approval cannot bypass that step.
+
+Typed confirmation first requires the stable, dedicated
+`agent.action_confirmed` audit, then rechecks fresh membership, ownership,
+all reviewed context and expiry before acquiring the irreversible execution
+claim. The native reviewed branch rechecks the real caller and exact user
+link again before invoking the existing RPC. It verifies the complete new
+dispute, requires `dispute.raised` auditing, then rereads the selected entry
+and verifies the immutable financial fields with disputed status. Admin
+notifications use the existing sender with dedup key
+`contribution_disputed:<dispute-id>`; notification failures are logged
+separately and do not invalidate a verified, audited result.
+
+Sensitive agent audits include the full before/after projection, sensitivity
+and secondary-confirmation tags, the server turn UUID as `session_id` and
+the actual scoped conversation UUID as `conversation_id`. Stateless turns
+use null for the latter. Native auditing receives that same stored trace.
+Stable audit IDs make approval/confirmation/final-audit retries idempotent.
+
+The RPC atomically inserts the dispute and changes the ledger status, with
+row locking and the existing unique open-dispute index. Only explicit null-
+data PostgreSQL rejections for known eligibility/uniqueness failures prove
+that no mutation occurred and become stale proposals. RPC transport,
+malformed result, post-read and required native audit uncertainty retain the
+execution claim; the mutation is never replayed. Pre-execution malformed or
+unavailable reads remain retryable. Saved results can finish final agent
+auditing through approve or confirm without another RPC.
+
+Status and conversation receipts use the selected `entry_id` and
+`container_id`; successful results contain the actual dispute ID and full
+verified dispute/entry projection. `awaiting_confirmation` and
+`confirmation_pending` are result-free and do not confirm execution. A
+receipt describes the past opening; later dispute resolution can change
+current state. Fresh actor/container checks, RPC, auditing, Redis storage
+and post-read are separate operations. Live Postgres/PostgREST/Redis coverage
+is still needed for text casts, deployed immutability, concurrent eligibility
+changes and partial failures across them.
+
 ## Admin ledger confirmation
 
 An admin explicitly selects an entry for the current chat request:
@@ -801,9 +964,11 @@ POST /v1/workspaces/:workspaceId/agent/proposals/:proposalId/reject
 ```
 
 Both routes share the agent's per-user request limiter and never call the
-model. They reject parameter, identity, tier and tool overrides. Approval uses
-the saved parameters, rereads membership, audits the approval, verifies the
-bound state and calls the matching existing domain service. For one
+model. They reject parameter, identity, tier and tool overrides. Tier 2/3
+approval uses the saved parameters, rereads membership, audits the approval,
+verifies the bound state and calls the matching existing domain service.
+Tier 4 approval returns a token and requires the separate confirmation step
+described above. For one
 notification, changes to the reviewed title/type/date/read state invalidate
 the proposal and the conditional update cannot rewrite an existing read
 timestamp. For mark-all,
@@ -812,7 +977,7 @@ unread before execution. The update filters on only those IDs and then verifies
 that every target is read. A target concurrently read elsewhere is already in
 the desired final state; a later notification is never included.
 
-Approval returns `{ data: { proposal_id, status: "executed", result } }`.
+Tier 2/3 approval returns `{ data: { proposal_id, status: "executed", result } }`.
 The single-notification result contains `notification_id`, `is_read: true` and
 the database's stored `read_at`. The mark-all result contains the bound
 `notification_count` and the actual `updated_count`; the latter can be smaller
@@ -884,6 +1049,8 @@ An executed result is `{ "contact_id": "<owned-contact-uuid>", "deleted": true }
 | `pending` | Awaiting approval or rejection. |
 | `expired` | The approval deadline passed before execution was claimed. |
 | `approval_pending` | Approval processing has started; no saved execution result. |
+| `awaiting_confirmation` | The Tier 4 card was approved; a separate typed confirmation is still required. No write occurred. |
+| `confirmation_pending` | Typed confirmation is processing, with auditing/revalidation unfinished. No execution was claimed. |
 | `indeterminate` | Execution was claimed; the outcome is unconfirmed, possibly still processing. Never assume success/failure or repeat the action. |
 | `rejection_pending` | Rejection processing has started; final auditing/storage is incomplete. |
 | `rejected` | Rejected without execution. |
@@ -940,7 +1107,9 @@ Execution claims are never reclaimed to repeat mutations after a crash or lost
 acknowledgement.
 
 Proposal, approval, execution and rejection events use `audit.log` and the
-new `AUDIT_ACTIONS` entries. Metadata identifies the proposal, turn, tool,
+new `AUDIT_ACTIONS` entries. Tier 4 adds a dedicated secondary-confirmation
+event before execution and retains the actual conversation/session trace.
+Metadata identifies the proposal, turn, tool,
 tier, exact parameters and agent origin. `audit.fromReq` supplies HTTP actor
 metadata; identity stays pinned to authenticated context. Notification text,
 contact values and contact labels are excluded from audit metadata. Stable
