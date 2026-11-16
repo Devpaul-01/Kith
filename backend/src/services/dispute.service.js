@@ -4,10 +4,17 @@
 // fix on the entry lookup.
 
 const { supabaseAdmin } = require('../config/supabase');
-const { AppError, NotFoundError, BusinessRuleError, ForbiddenError, ConflictError } = require('../utils/errors');
+const { AppError, NotFoundError, BusinessRuleError, ForbiddenError, ConflictError, ValidationError } = require('../utils/errors');
+const {
+  raiseDisputeDataSchema, confirmedDisputeEntrySchema, disputeEntryReadSchema, raiseDisputeContextSchema,
+  raisedDisputeStateSchema, raiseDisputeResultSchema, raiseDisputeCallerSchema,
+  reviewedDisputeRaiseSchema, disputeEntryState, raisedDisputeState, plannedDisputeState,
+  disputeRaiseWorkspaceRowSchema, disputeRaiseMemberRowSchema, disputeRaiseContainerRowSchema, disputeRaiseOpenRowSchema,
+} = require('../validators/dispute-raise.validator');
 const notification = require('./notification.service');
 const audit        = require('./audit.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
+const logger = require('../utils/logger');
 
 const DISPUTE_COLUMNS = 'id, ledger_entry_id, raised_by, reason, status, resolution_note, resolved_by, raised_at, resolved_at';
 const ENTRY_COLUMNS = 'id, container_id, cycle_id, entry_type, contributor_id, original_amount, original_currency, base_amount, is_crypto, payment_method, status, note, corrects_entry_id, recorded_at, confirmed_at';
@@ -88,9 +95,164 @@ async function getDispute({ workspaceId, disputeId, isAdmin, callerId, notesPagi
   };
 }
 
+const disputeRaiseUnavailable = () => new AppError('Dispute creation is unavailable. Please try again.', 503, 'DISPUTE_RAISE_UNAVAILABLE');
+const reviewedEntryColumns = Object.keys(confirmedDisputeEntrySchema.shape)
+  .map((field) => field === 'entry_id' ? 'id'
+    : ['original_amount', 'base_amount'].includes(field) ? `${field}::text` : field).join(', ');
+
+async function readDisputeRaiseRow(operation) {
+  try {
+    const response = await operation();
+    if (!response || response.error !== null || !Object.hasOwn(response, 'data')
+        || (response.data !== null && (typeof response.data !== 'object' || Array.isArray(response.data)))) {
+      throw disputeRaiseUnavailable();
+    }
+    return response.data;
+  } catch { throw disputeRaiseUnavailable(); }
+}
+
+/** Fresh ownership and eligibility for the caller's explicitly selected confirmed contribution. */
+async function getRaiseDisputeContext({ workspaceId, containerId, entryId, callerId, userId, isAdmin }) {
+  if (!raiseDisputeCallerSchema.safeParse({ workspaceId, containerId, entryId, callerId, userId, isAdmin }).success) {
+    throw new ValidationError('Invalid dispute creation context');
+  }
+  const workspace = await readDisputeRaiseRow(() => supabaseAdmin.from('workspaces')
+    .select('id, name, base_currency, updated_at, deleted_at').eq('id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (!workspace) throw new NotFoundError('Workspace not found');
+  if (!disputeRaiseWorkspaceRowSchema.safeParse(workspace).success) throw disputeRaiseUnavailable();
+  if (workspace.id !== workspaceId || workspace.deleted_at !== null) throw disputeRaiseUnavailable();
+  const actor = await readDisputeRaiseRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, display_name, updated_at, deleted_at')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (actor && !disputeRaiseMemberRowSchema.safeParse(actor).success) throw disputeRaiseUnavailable();
+  if (!actor || actor.id !== callerId || actor.workspace_id !== workspaceId || actor.user_id !== userId
+      || actor.role !== (isAdmin ? 'admin' : 'member') || actor.is_active !== true
+      || actor.is_proxy !== false || actor.deleted_at !== null) {
+    throw new ForbiddenError('Active non-proxy workspace membership required');
+  }
+  const container = await readDisputeRaiseRow(() => supabaseAdmin.from('containers')
+    .select('id, workspace_id, name, container_type, status, enable_money, updated_at, deleted_at')
+    .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (!container) throw new NotFoundError('Container not found');
+  if (!disputeRaiseContainerRowSchema.safeParse(container).success) throw disputeRaiseUnavailable();
+  if (container.id !== containerId || container.workspace_id !== workspaceId || container.deleted_at !== null) throw disputeRaiseUnavailable();
+  if (container.container_type !== 'event' || container.status !== 'active' || container.enable_money !== true) {
+    throw new BusinessRuleError('Dispute creation requires an active event container with money tracking enabled');
+  }
+  const entry = await readDisputeRaiseRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
+    .eq('id', entryId).eq('workspace_id', workspaceId).eq('container_id', containerId).maybeSingle());
+  if (!entry) throw new NotFoundError('Ledger entry not found');
+  if (entry.id !== entryId || entry.workspace_id !== workspaceId || entry.container_id !== containerId) throw disputeRaiseUnavailable();
+  const read = disputeEntryReadSchema.safeParse(disputeEntryState(entry));
+  if (!read.success) throw disputeRaiseUnavailable();
+  if (read.data.contributor_id !== callerId) throw new ForbiddenError('You can only dispute your own contributions');
+  const snapshot = confirmedDisputeEntrySchema.safeParse(read.data);
+  if (!snapshot.success || snapshot.data.original_currency !== workspace.base_currency
+      || snapshot.data.original_amount !== snapshot.data.base_amount) {
+    throw new BusinessRuleError('Only confirmed base-currency contributions are supported');
+  }
+  const open = await readDisputeRaiseRow(() => supabaseAdmin.from('disputes')
+    .select('id, workspace_id, ledger_entry_id, status').eq('workspace_id', workspaceId)
+    .eq('ledger_entry_id', entryId).eq('status', 'open').maybeSingle());
+  if (open !== null) {
+    if (!disputeRaiseOpenRowSchema.safeParse(open).success
+        || open.workspace_id !== workspaceId || open.ledger_entry_id !== entryId) throw disputeRaiseUnavailable();
+    throw new BusinessRuleError('This entry already has an open dispute');
+  }
+  const selected = raiseDisputeContextSchema.safeParse({
+    workspace_id: workspaceId, workspace_name: workspace.name, workspace_updated_at: workspace.updated_at,
+    base_currency: workspace.base_currency, actor_member_id: callerId, member_role: actor.role,
+    actor_display_name: actor.display_name, member_updated_at: actor.updated_at,
+    container_id: containerId, container_name: container.name, container_type: container.container_type,
+    container_status: container.status, enable_money: container.enable_money, container_updated_at: container.updated_at,
+    entry: snapshot.data, dispute: null,
+  });
+  if (!selected.success) throw disputeRaiseUnavailable();
+  return selected.data;
+}
+
+async function raiseReviewedDispute({ workspaceId, containerId, entryId, reason, callerId, isAdmin,
+  actorDisplayName, actorCtx, reviewedRaise }) {
+  const reviewed = reviewedDisputeRaiseSchema.safeParse(reviewedRaise);
+  const data = raiseDisputeDataSchema.safeParse({ reason });
+  if (!reviewed.success || !data.success || !raiseDisputeCallerSchema.safeParse({ workspaceId, containerId, entryId,
+    callerId, userId: reviewed.data?.userId, isAdmin }).success) throw new ValidationError('Valid reviewed dispute details are required');
+  const expected = reviewed.data.expected;
+  if (expected.workspace_id !== workspaceId || expected.container_id !== containerId
+      || expected.entry.workspace_id !== workspaceId || expected.entry.container_id !== containerId
+      || expected.entry.entry_id !== entryId || expected.actor_member_id !== callerId
+      || expected.entry.contributor_id !== callerId || expected.member_role !== (isAdmin ? 'admin' : 'member')
+      || reviewed.data.isAdmin !== isAdmin) {
+    throw new ForbiddenError('Dispute creation must use the reviewed workspace, contribution and caller');
+  }
+  let current;
+  try {
+    current = await getRaiseDisputeContext({ workspaceId, containerId, entryId, callerId,
+      userId: reviewed.data.userId, isAdmin });
+  } catch (err) {
+    if (['NOT_FOUND', 'FORBIDDEN', 'BUSINESS_RULE_VIOLATION'].includes(err.code)) {
+      throw new ConflictError('The reviewed dispute creation is no longer available');
+    }
+    throw err;
+  }
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new ConflictError('Dispute eligibility changed since review');
+
+  let response;
+  try {
+    response = await supabaseAdmin.rpc('raise_dispute_atomic', {
+      p_workspace_id: workspaceId, p_ledger_entry_id: entryId, p_raised_by: callerId, p_reason: data.data.reason,
+    });
+  } catch { throw disputeRaiseUnavailable(); }
+  // Only an explicit PostgreSQL rejection proves the atomic mutation did not run.
+  // Transport failures and malformed responses retain the agent execution claim.
+  if (response?.data === null && response.error && typeof response.error === 'object'
+      && !Array.isArray(response.error) && (response.error.code === '23505'
+        || (response.error.code === 'P0001' && ['ENTRY_NOT_FOUND', 'ENTRY_NOT_DISPUTABLE', 'DISPUTE_ALREADY_OPEN']
+          .includes(response.error.message)))) {
+    throw new ConflictError('The contribution can no longer be disputed');
+  }
+  if (!response || response.error !== null || !response.data || typeof response.data !== 'object'
+      || Array.isArray(response.data)) throw disputeRaiseUnavailable();
+  const dispute = raisedDisputeStateSchema.safeParse(raisedDisputeState(response.data));
+  const planned = plannedDisputeState({ selection: expected, reason: data.data.reason });
+  if (!dispute.success || Object.keys(planned)
+    .some((field) => JSON.stringify(dispute.data[field]) !== JSON.stringify(planned[field]))) throw disputeRaiseUnavailable();
+  try {
+    await audit.log({ ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId: callerId,
+      action: AUDIT_ACTIONS.DISPUTE_RAISED, targetType: 'dispute', targetId: dispute.data.dispute_id, required: true,
+      metadata: { agent_initiated: true, proposal_id: reviewed.data.proposalId,
+        session_id: reviewed.data.trace.sessionId, conversation_id: reviewed.data.trace.conversationId,
+        sensitive_action: true, secondary_confirmation: true } });
+  } catch { throw disputeRaiseUnavailable(); }
+  const changedEntry = await readDisputeRaiseRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
+    .eq('id', entryId).eq('workspace_id', workspaceId).eq('container_id', containerId).maybeSingle());
+  const result = raiseDisputeResultSchema.safeParse({ dispute: dispute.data, entry: disputeEntryState(changedEntry) });
+  if (!result.success || JSON.stringify(result.data.entry) !== JSON.stringify({ ...expected.entry, status: 'disputed' })) {
+    throw disputeRaiseUnavailable();
+  }
+  try {
+    const admins = await supabaseAdmin.from('workspace_members').select('id')
+      .eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).is('deleted_at', null);
+    if (admins.error !== null || !Array.isArray(admins.data)
+        || admins.data.some((member) => !member || typeof member.id !== 'string')) throw disputeRaiseUnavailable();
+    await notification.send({ type: 'contribution_disputed', workspaceId, recipientIds: admins.data.map((member) => member.id),
+      referenceType: 'dispute', referenceId: dispute.data.dispute_id,
+      variables: { actor: actorDisplayName, amount: `${expected.entry.original_amount} ${expected.entry.original_currency}`,
+        container: expected.container_name }, dedupKey: `contribution_disputed:${dispute.data.dispute_id}` });
+  } catch (err) {
+    logger.warn('Dispute creation notification unavailable', { workspaceId, entryId,
+      disputeId: dispute.data.dispute_id, errorCode: err?.code });
+  }
+  return { dispute: response.data, entry: changedEntry };
+}
+
 // raise_dispute_atomic inserts the dispute row and updates the ledger
 // entry's status inside one Postgres transaction.
-async function raiseDispute({ workspaceId, containerId, entryId, reason, callerId, isAdmin, actorDisplayName, actorCtx }) {
+async function raiseDispute({ workspaceId, containerId, entryId, reason, callerId, isAdmin, actorDisplayName, actorCtx, reviewedRaise }) {
+  if (reviewedRaise !== undefined) {
+    return raiseReviewedDispute({ workspaceId, containerId, entryId, reason, callerId, isAdmin, actorDisplayName, actorCtx, reviewedRaise });
+  }
   const { data: entry } = await supabaseAdmin
     .from('ledger_entries').select('*').eq('id', entryId).eq('container_id', containerId).maybeSingle();
   if (!entry) throw new NotFoundError('Ledger entry not found');
@@ -181,4 +343,4 @@ async function resolveDispute({ workspaceId, disputeId, resolutionNote, resolved
   return updated;
 }
 
-module.exports = { listDisputes, getDispute, raiseDispute, addDisputeNote, resolveDispute };
+module.exports = { listDisputes, getDispute, getRaiseDisputeContext, raiseDispute, addDisputeNote, resolveDispute };
