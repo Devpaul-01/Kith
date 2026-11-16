@@ -10,6 +10,7 @@ const AUDIT_ACTIONS = Object.freeze({
   // Agent proposals and approval execution
   AGENT_ACTION_PROPOSED: 'agent.action_proposed',
   AGENT_ACTION_APPROVED: 'agent.action_approved',
+  AGENT_ACTION_CONFIRMED: 'agent.action_confirmed',
   AGENT_ACTION_EXECUTED: 'agent.action_executed',
   AGENT_ACTION_REJECTED: 'agent.action_rejected',
   AGENT_ACTION_FAILED: 'agent.action_failed',
@@ -66,6 +67,7 @@ const AUDIT_ACTIONS = Object.freeze({
 const AUDIT_ACTION_DESCRIPTIONS = Object.freeze({
   [AUDIT_ACTIONS.AGENT_ACTION_PROPOSED]: 'proposed an agent action',
   [AUDIT_ACTIONS.AGENT_ACTION_APPROVED]: 'approved an agent action',
+  [AUDIT_ACTIONS.AGENT_ACTION_CONFIRMED]: 'explicitly confirmed a sensitive agent action',
   [AUDIT_ACTIONS.AGENT_ACTION_EXECUTED]: 'executed an agent action',
   [AUDIT_ACTIONS.AGENT_ACTION_REJECTED]: 'rejected an agent action',
   [AUDIT_ACTIONS.AGENT_ACTION_FAILED]: 'could not confirm an agent action',

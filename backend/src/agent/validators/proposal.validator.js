@@ -1,5 +1,10 @@
 const { z } = require('zod');
 const {
+  raiseDisputeTargetSchema, raiseDisputeDataSchema, raiseDisputeContextSchema,
+  raisedDisputeStateSchema, disputedEntrySchema, raiseDisputeResultSchema,
+  plannedDisputeState,
+} = require('../../validators/dispute-raise.validator');
+const {
   taskCreationTargetSchema, taskCreationDataSchema, taskCreationContextSchema,
   taskCreationStateSchema, taskCreationResultSchema, buildTaskCreationState,
 } = require('../../validators/task-creation.validator');
@@ -271,6 +276,37 @@ function ledgerConfirmationResultMatches(proposal, result) {
   })) === JSON.stringify(proposal.after);
 }
 
+const raiseDisputeArgumentsSchema = raiseDisputeDataSchema;
+const raiseDisputeParametersSchema = raiseDisputeDataSchema.extend({ container_id: z.string().uuid(), entry_id: z.string().uuid() });
+const raiseDisputeAfterSchema = z.object({
+  dispute: raisedDisputeStateSchema.extend({ dispute_id: z.literal('on_confirmation'), raised_at: z.literal('on_confirmation') }),
+  entry: disputedEntrySchema,
+}).strict();
+const DISPUTE_RAISE_SUMMARY = 'Open a dispute on your selected confirmed contribution.';
+const SECONDARY_CONFIRMATION = Object.freeze({ method: 'typed', phrase: 'confirm' });
+const secondaryConfirmationRequirementSchema = z.object({ method: z.literal('typed'), phrase: z.literal('confirm') }).strict();
+
+function raiseDisputeParametersFromArgs(selection, args) {
+  const selected = raiseDisputeContextSchema.parse(selection);
+  return raiseDisputeParametersSchema.parse({ ...raiseDisputeArgumentsSchema.parse(args),
+    container_id: selected.container_id, entry_id: selected.entry.entry_id });
+}
+function raiseDisputeAfter(selection, parameters) {
+  const selected = raiseDisputeContextSchema.parse(selection);
+  const requested = raiseDisputeParametersSchema.parse(parameters);
+  return raiseDisputeAfterSchema.parse({
+    dispute: { ...plannedDisputeState({ selection: selected, reason: requested.reason }),
+      dispute_id: 'on_confirmation', raised_at: 'on_confirmation' },
+    entry: { ...selected.entry, status: 'disputed' },
+  });
+}
+function raiseDisputeResultMatches(proposal, result) {
+  const parsed = raiseDisputeResultSchema.safeParse(result);
+  return parsed.success && JSON.stringify(raiseDisputeAfterSchema.parse({ ...parsed.data,
+    dispute: { ...parsed.data.dispute, dispute_id: 'on_confirmation', raised_at: 'on_confirmation' },
+  })) === JSON.stringify(proposal.after);
+}
+
 const containerCreationArgumentsSchema = eventContainerCreationDataSchema
   .omit({ container_type: true }).partial({
     subtitle: true, description: true, enable_money: true, enable_tasks: true,
@@ -407,6 +443,12 @@ const createTaskProposalSchema = z.object({
   summary: z.literal(TASK_CREATION_SUMMARY), parameters: taskCreationParametersSchema,
   before: taskCreationContextSchema, after: taskCreationAfterSchema, expires_at: z.string().datetime(),
 }).strict();
+const raiseDisputeProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('raise_dispute'), tier: z.literal(4),
+  summary: z.literal(DISPUTE_RAISE_SUMMARY), parameters: raiseDisputeParametersSchema,
+  before: raiseDisputeContextSchema, after: raiseDisputeAfterSchema,
+  secondary_confirmation: secondaryConfirmationRequirementSchema, expires_at: z.string().datetime(),
+}).strict();
 const addParticipantProposalSchema = z.object({
   id: z.string().uuid(), tool: z.literal('add_participants'), tier: z.literal(3),
   summary: z.literal(PARTICIPANT_ADDITION_SUMMARY), parameters: participantAdditionParametersSchema,
@@ -443,6 +485,7 @@ const proposalSchema = z.union([
   updateTaskProposalSchema,
   confirmTaskProposalSchema,
   createTaskProposalSchema,
+  raiseDisputeProposalSchema,
   addParticipantProposalSchema,
   createSelfLedgerProposalSchema,
   confirmLedgerEntryProposalSchema,
@@ -498,6 +541,17 @@ const proposalSchema = z.union([
         || JSON.stringify(value.after) !== JSON.stringify(taskCreationAfter(value.before, value.parameters, value.id)))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task creation mismatch' });
   }
+  if (value.tool === 'raise_dispute'
+      && (value.parameters.container_id !== value.before.container_id
+        || value.parameters.entry_id !== value.before.entry.entry_id
+        || value.before.entry.workspace_id !== value.before.workspace_id
+        || value.before.entry.container_id !== value.before.container_id
+        || value.before.entry.contributor_id !== value.before.actor_member_id
+        || value.before.entry.original_currency !== value.before.base_currency
+        || value.before.entry.original_amount !== value.before.entry.base_amount
+        || JSON.stringify(value.after) !== JSON.stringify(raiseDisputeAfter(value.before, value.parameters)))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Dispute creation mismatch' });
+  }
   if (value.tool === 'add_participants'
       && (value.parameters.container_id !== value.before.container_id
         || value.parameters.workspace_member_id !== value.before.workspace_member_id
@@ -545,6 +599,7 @@ const proposalResultSchema = z.union([
   taskProgressResultSchema,
   taskConfirmationResultSchema,
   taskCreationResultSchema,
+  raiseDisputeResultSchema,
   participantAdditionRowSchema,
   selfLedgerResultSchema,
   ledgerConfirmationResultSchema,
@@ -553,11 +608,26 @@ const proposalResultSchema = z.union([
 ]);
 const proposalRecordSchema = z.object({
   version: z.literal(1), scope: z.string().regex(/^[a-f0-9]{64}$/), proposal: proposalSchema,
-  state: z.enum(['preparing', 'pending', 'approving', 'executing', 'applied', 'executed', 'rejecting', 'rejected', 'failed']),
+  state: z.enum(['preparing', 'pending', 'approving', 'awaiting_confirmation', 'confirming', 'executing', 'applied', 'executed', 'rejecting', 'rejected', 'failed']),
   turnId: z.string().uuid(),
-  auditIds: z.object({ proposed: z.string().uuid(), approved: z.string().uuid(), executed: z.string().uuid(), rejected: z.string().uuid(), failed: z.string().uuid() }).strict(),
+  auditIds: z.object({ proposed: z.string().uuid(), approved: z.string().uuid(), executed: z.string().uuid(), rejected: z.string().uuid(), failed: z.string().uuid(), confirmed: z.string().uuid().optional() }).strict(),
+  conversationId: z.string().uuid().nullable().optional(),
+  secondaryConfirmation: z.object({ token: z.string().uuid(), confirmedAt: z.string().datetime().optional() }).strict().optional(),
   result: proposalResultSchema.optional(),
 }).strict().superRefine((record, ctx) => {
+  const sensitive = record.proposal.tier === 4;
+  if (sensitive !== Boolean(record.secondaryConfirmation) || sensitive !== Boolean(record.auditIds.confirmed)
+      || sensitive !== Object.hasOwn(record, 'conversationId')
+      || (!sensitive && ['awaiting_confirmation', 'confirming'].includes(record.state))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Secondary confirmation record mismatch' });
+  }
+  if (sensitive && record.secondaryConfirmation) {
+    const confirmed = Boolean(record.secondaryConfirmation.confirmedAt);
+    if ((['confirming', 'executing', 'applied', 'executed'].includes(record.state) && !confirmed)
+        || (['preparing', 'pending', 'approving', 'awaiting_confirmation', 'rejecting', 'rejected'].includes(record.state) && confirmed)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Secondary confirmation state mismatch' });
+    }
+  }
   const completed = ['applied', 'executed'].includes(record.state);
   if (completed !== Boolean(record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Proposal result state mismatch' });
@@ -608,6 +678,9 @@ const proposalRecordSchema = z.object({
   } else if (record.proposal.tool === 'create_task'
       && !taskCreationResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Task creation result mismatch' });
+  } else if (record.proposal.tool === 'raise_dispute'
+      && !raiseDisputeResultMatches(record.proposal, record.result)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Dispute creation result mismatch' });
   } else if (record.proposal.tool === 'add_participants'
       && !participantAdditionResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Participant addition result mismatch' });
@@ -621,6 +694,13 @@ const proposalRecordSchema = z.object({
 });
 
 const emptyApprovalSchema = z.object({}).strict();
+const secondaryConfirmationSchema = z.object({
+  confirmation: z.literal('confirm'), confirmation_token: z.string().uuid().transform((id) => id.toLowerCase()),
+}).strict();
+const secondaryApprovalReplySchema = z.object({
+  proposal_id: z.string().uuid(), status: z.literal('awaiting_confirmation'),
+  confirmation_token: z.string().uuid(), expires_at: z.string().datetime(),
+}).strict();
 const proposalIdSchema = z.string().uuid().transform((id) => id.toLowerCase());
 const incompleteStatuses = ['pending', 'expired', 'approval_pending', 'indeterminate', 'rejection_pending', 'rejected', 'failed'];
 
@@ -651,6 +731,9 @@ const taskCreationStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('create_task'), task_id: z.string().uuid(),
   container_id: z.string().uuid(), assigned_to: z.string().uuid().nullable(),
 }).strict();
+const raiseDisputeStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('raise_dispute'), container_id: z.string().uuid(), entry_id: z.string().uuid(),
+}).strict();
 const participantAdditionStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('add_participants'),
   participant_id: z.string().uuid(), container_id: z.string().uuid(), workspace_member_id: z.string().uuid(),
@@ -670,6 +753,16 @@ const memberCreationStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('create_member'), member_id: z.string().uuid(),
 }).strict();
 const proposalStatusSchema = z.union([
+  ...[...incompleteStatuses, 'awaiting_confirmation', 'confirmation_pending']
+    .map((status) => raiseDisputeStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => raiseDisputeStatusFields.extend({
+    status: z.literal(status), result: raiseDisputeResultSchema,
+  }).refine((value) => value.entry_id === value.result.entry.entry_id
+      && value.entry_id === value.result.dispute.ledger_entry_id
+      && value.container_id === value.result.entry.container_id
+      && value.result.dispute.workspace_id === value.result.entry.workspace_id
+      && value.result.dispute.raised_by === value.result.entry.contributor_id,
+  'Dispute creation receipt target mismatch')),
   ...incompleteStatuses.map((status) => singleStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => singleStatusFields.extend({ status: z.literal(status), result: notificationReadResultSchema })),
   ...incompleteStatuses.map((status) => bulkStatusFields.extend({ status: z.literal(status) })),
@@ -731,6 +824,10 @@ const proposedToolResultSchema = z.object({
 }).strict();
 
 module.exports = {
+  raiseDisputeTargetSchema, raiseDisputeDataSchema, raiseDisputeContextSchema,
+  raiseDisputeArgumentsSchema, raiseDisputeParametersSchema, raiseDisputeAfterSchema, raiseDisputeResultSchema,
+  raiseDisputeParametersFromArgs, raiseDisputeAfter, raiseDisputeResultMatches,
+  DISPUTE_RAISE_SUMMARY, SECONDARY_CONFIRMATION, secondaryConfirmationSchema, secondaryApprovalReplySchema,
   PROPOSAL_LIMITS,
   notificationSnapshotSchema,
   notificationRowSchema,

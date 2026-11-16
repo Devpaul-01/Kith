@@ -1,5 +1,5 @@
 const { createHash, randomUUID } = require('crypto');
-const { AppError, ValidationError } = require('../../utils/errors');
+const { AppError, ValidationError, ForbiddenError } = require('../../utils/errors');
 const { getRedis } = require('../../config/redis');
 const { agentProposalKey } = require('../../config/redis-keys');
 const { withRedisDeadline } = require('../../utils/redis-deadline');
@@ -11,7 +11,8 @@ const { assertCurrentActor } = require('./proposal-actor.service');
 const proposals = require('./proposal-registry.service');
 const {
   PROPOSAL_LIMITS, proposalRecordSchema, proposalSchema, proposalIdSchema,
-  emptyApprovalSchema, proposalStatusSchema, proposalReferencesSchema,
+  emptyApprovalSchema, secondaryConfirmationSchema, secondaryApprovalReplySchema,
+  proposalStatusSchema, proposalReferencesSchema,
 } = require('../validators/proposal.validator');
 const logger = require('../../utils/logger');
 
@@ -65,8 +66,8 @@ function storage(context, redisFactory) {
     if (parsed.scope !== scope || parsed.proposal.id !== id) throw missing();
     return { raw, record: parsed };
   }
-  async function transition(stored, state, result) {
-    const record = { ...stored.record, state, ...(result ? { result } : {}) };
+  async function transition(stored, state, result, patch = {}) {
+    const record = { ...stored.record, ...patch, state, ...(result ? { result } : {}) };
     const raw = encode(record);
     const changed = await command(() => redis.eval(CAS_PROPOSAL_SCRIPT, 1, agentProposalKey(scope, record.proposal.id), stored.raw, raw));
     if (changed !== 1) throw busy();
@@ -95,18 +96,29 @@ async function logAction({ record, context, actorCtx, stage, required = true, er
     targetType: target.targetType, targetId: target.targetId,
     metadata: { agent_initiated: true, proposal_id: record.proposal.id, turn_id: record.turnId,
       tool: record.proposal.tool, tier: record.proposal.tier, parameters: record.proposal.parameters,
-      ...(record.proposal.tier === 3 ? { before: record.proposal.before, after: record.proposal.after } : {}),
+      ...(record.proposal.tier >= 3 ? { before: record.proposal.before, after: record.proposal.after } : {}),
+      ...(record.proposal.tier === 4 ? { sensitive_action: true, secondary_confirmation_required: true,
+        session_id: record.turnId, conversation_id: record.conversationId,
+        secondary_confirmation: Boolean(record.secondaryConfirmation.confirmedAt),
+        ...(record.secondaryConfirmation.confirmedAt ? {
+          secondary_confirmed_at: record.secondaryConfirmation.confirmedAt, confirmation_method: 'typed',
+        } : {}) } : {}),
       ...(errorCode ? { error_code: errorCode } : {}),
       ...(outcome ? { execution_outcome: outcome } : {}) },
   });
 }
 
-async function createProposal({ context, tool, selection, args, actorCtx, turnId, signal, redisFactory = getRedis }) {
+async function createProposal({ context, tool, selection, args, actorCtx, turnId, conversationId = null, signal, redisFactory = getRedis }) {
   const actor = freezeContext(context);
   assertNotCancelled(signal);
   const domain = proposals.getDomain(tool);
   if (!domain) throw new ValidationError('Invalid proposal tool');
   assertProposalRole(actor, tool);
+  const sensitive = proposals.getDefinition(tool).tier === 4;
+  if (sensitive && (!proposalIdSchema.safeParse(turnId).success
+      || (conversationId !== null && !proposalIdSchema.safeParse(conversationId).success))) {
+    throw new ValidationError('A valid server-owned sensitive action trace is required');
+  }
   const store = storage(actor, redisFactory);
   const proposal = proposalSchema.parse(await domain.createProposalDraft({
     context: actor, tool, selection, args, id: randomUUID(),
@@ -114,7 +126,11 @@ async function createProposal({ context, tool, selection, args, actorCtx, turnId
   }));
   assertNotCancelled(signal);
   let stored = await store.create({ version: 1, scope: store.scope, proposal, state: 'preparing', turnId,
-    auditIds: Object.fromEntries(['proposed', 'approved', 'executed', 'rejected', 'failed'].map((stage) => [stage, randomUUID()])) });
+    auditIds: Object.fromEntries(['proposed', 'approved', 'executed', 'rejected', 'failed', ...(sensitive ? ['confirmed'] : [])]
+      .map((stage) => [stage, randomUUID()])),
+    ...(sensitive ? { conversationId: conversationId === null ? null : proposalIdSchema.parse(conversationId),
+      secondaryConfirmation: { token: randomUUID() } } : {}),
+  });
   await logAction({ record: stored.record, context: actor, actorCtx, stage: 'proposed' });
   assertNotCancelled(signal);
   stored = await store.transition(stored, 'pending');
@@ -132,6 +148,12 @@ function checkExpiry(record) {
 }
 const executedReply = (record) => ({ proposal_id: record.proposal.id, status: 'executed', result: record.result });
 const rejectedReply = (record) => ({ proposal_id: record.proposal.id, status: 'rejected' });
+// This token is returned only from explicit HTTP approval, never a status or
+// model-facing receipt. It remains stable until the original card expires.
+const secondaryApprovalReply = (record) => secondaryApprovalReplySchema.parse({
+  proposal_id: record.proposal.id, status: 'awaiting_confirmation',
+  confirmation_token: record.secondaryConfirmation.token, expires_at: record.proposal.expires_at,
+});
 
 function statusReply(record) {
   if (record.state === 'preparing') throw missing();
@@ -139,6 +161,7 @@ function statusReply(record) {
   const expired = Date.parse(record.proposal.expires_at) <= now;
   const statuses = {
     pending: expired ? 'expired' : 'pending', approving: expired ? 'expired' : 'approval_pending',
+    awaiting_confirmation: expired ? 'expired' : 'awaiting_confirmation', confirming: expired ? 'expired' : 'confirmation_pending',
     executing: 'indeterminate', applied: 'audit_pending', executed: 'executed',
     rejecting: 'rejection_pending', rejected: 'rejected', failed: 'failed',
   };
@@ -198,6 +221,62 @@ async function getProposalReceipts({ context, proposals, signal, redisFactory = 
   }));
 }
 
+async function revalidateApprovedProposal({ actor, actorCtx, store, stored }) {
+  await assertCurrentActor(actor);
+  const domain = proposals.getDomain(stored.record.proposal.tool);
+  if (!domain) throw unavailable();
+  try {
+    await domain.revalidateProposal({ context: actor, proposal: stored.record.proposal });
+  } catch (err) {
+    if (['AGENT_PROPOSAL_STALE', 'NOT_FOUND'].includes(err?.code)) {
+      stored = await store.transition(stored, 'failed');
+      await logAction({ record: stored.record, context: actor, actorCtx, stage: 'failed', required: false, errorCode: err.code });
+    }
+    throw err;
+  }
+  checkExpiry(stored.record);
+  return stored;
+}
+
+async function finishAppliedProposal({ actor, actorCtx, store, stored }) {
+  await logAction({ record: stored.record, context: actor, actorCtx, stage: 'executed' });
+  stored = await store.transition(stored, 'executed');
+  return executedReply(stored.record);
+}
+
+async function executePreparedProposal({ actor, actorCtx, store, stored }) {
+  const sensitive = stored.record.proposal.tier === 4;
+  if (stored.record.state !== (sensitive ? 'confirming' : 'approving')) throw unavailable();
+  const domain = proposals.getDomain(stored.record.proposal.tool);
+  if (!domain) throw unavailable();
+  checkExpiry(stored.record);
+  stored = await store.transition(stored, 'executing');
+  let result;
+  try {
+    result = await domain.applyProposal({ context: actor, proposal: stored.record.proposal,
+      actorCtx: { workspaceId: actor.workspace.id, actorUserId: actor.userId, actorMemberId: actor.member.id,
+        ipAddress: actorCtx?.ipAddress ?? null, userAgent: actorCtx?.userAgent ?? null },
+      ...(sensitive ? { trace: { sessionId: stored.record.turnId, conversationId: stored.record.conversationId } } : {}),
+    });
+  } catch (err) {
+    logger.warn('Agent proposal execution not confirmed', { proposalId: stored.record.proposal.id, errorCode: err?.code });
+    await logAction({ record: stored.record, context: actor, actorCtx, stage: 'failed', required: false, errorCode: err?.code,
+      outcome: err?.code === 'CONFLICT' ? 'not_applied' : 'unknown' });
+    if (err?.code === 'CONFLICT') {
+      await store.transition(stored, 'failed');
+      throw failure('AGENT_PROPOSAL_STALE', 'The proposed data changed. Please request a new proposal.', 409);
+    }
+    throw uncertain();
+  }
+  // An uncertain save must never permit another mutation. Saved results can
+  // finish their stable final audit through either appropriate retry endpoint.
+  try { stored = await store.transition(stored, 'applied', result); } catch {
+    await logAction({ record: stored.record, context: actor, actorCtx, stage: 'executed', required: false, outcome: 'applied' });
+    throw uncertain();
+  }
+  return finishAppliedProposal({ actor, actorCtx, store, stored });
+}
+
 async function decideProposal({ context, proposalId, data, decision, actorCtx, redisFactory = getRedis }) {
   const actor = freezeContext(context);
   const id = proposalIdSchema.safeParse(proposalId);
@@ -221,70 +300,71 @@ async function decideProposal({ context, proposalId, data, decision, actorCtx, r
   if (stored.record.state === 'preparing') throw missing();
 
   if (decision === 'reject') {
-    if (!['pending', 'rejecting'].includes(stored.record.state)) throw busy();
-    if (stored.record.state === 'pending') stored = await store.transition(stored, 'rejecting');
+    if (!['pending', 'awaiting_confirmation', 'rejecting'].includes(stored.record.state)) throw busy();
+    if (stored.record.state !== 'rejecting') stored = await store.transition(stored, 'rejecting');
     await logAction({ record: stored.record, context: actor, actorCtx, stage: 'rejected' });
     stored = await store.transition(stored, 'rejected');
     return rejectedReply(stored.record);
   }
   if (stored.record.state === 'rejecting') throw busy();
   if (stored.record.state === 'applied') {
-    await logAction({ record: stored.record, context: actor, actorCtx, stage: 'executed' });
-    stored = await store.transition(stored, 'executed');
-    return executedReply(stored.record);
+    return finishAppliedProposal({ actor, actorCtx, store, stored });
   }
   checkExpiry(stored.record);
+  if (stored.record.proposal.tier === 4 && stored.record.state === 'awaiting_confirmation') {
+    return secondaryApprovalReply(stored.record);
+  }
+  if (!['pending', 'approving'].includes(stored.record.state)) throw busy();
   if (stored.record.state === 'pending') stored = await store.transition(stored, 'approving');
   await logAction({ record: stored.record, context: actor, actorCtx, stage: 'approved' });
+  stored = await revalidateApprovedProposal({ actor, actorCtx, store, stored });
+  if (stored.record.proposal.tier === 4) {
+    stored = await store.transition(stored, 'awaiting_confirmation');
+    return secondaryApprovalReply(stored.record);
+  }
+  return executePreparedProposal({ actor, actorCtx, store, stored });
+}
+
+/** A separate authenticated typed confirmation is the only Tier 4 execution path. */
+async function confirmProposal({ context, proposalId, data, actorCtx, redisFactory = getRedis }) {
+  const actor = freezeContext(context);
+  const id = proposalIdSchema.safeParse(proposalId);
+  const confirmed = secondaryConfirmationSchema.safeParse(data);
+  if (!id.success || !confirmed.success) throw new ValidationError('Invalid secondary confirmation');
+  const store = storage(actor, redisFactory);
+  let stored = await store.read(id.data);
   await assertCurrentActor(actor);
-  const domain = proposals.getDomain(stored.record.proposal.tool);
-  if (!domain) throw unavailable();
-  try {
-    await domain.revalidateProposal({ context: actor, proposal: stored.record.proposal });
-  } catch (err) {
-    if (['AGENT_PROPOSAL_STALE', 'NOT_FOUND'].includes(err.code)) {
-      stored = await store.transition(stored, 'failed');
-      await logAction({ record: stored.record, context: actor, actorCtx, stage: 'failed', required: false, errorCode: err.code });
-    }
-    throw err;
+  assertProposalRole(actor, stored.record.proposal.tool);
+  if (stored.record.proposal.tier !== 4) throw new ValidationError('This proposal does not require secondary confirmation');
+  if (confirmed.data.confirmation_token !== stored.record.secondaryConfirmation.token) {
+    throw new ForbiddenError('Invalid secondary confirmation token');
   }
+  if (stored.record.state === 'executed') return executedReply(stored.record);
+  if (stored.record.state === 'applied') return finishAppliedProposal({ actor, actorCtx, store, stored });
+  if (stored.record.state === 'executing') throw uncertain();
+  if (stored.record.state === 'failed') throw failure('AGENT_PROPOSAL_STALE', 'This proposal can no longer execute. Request a new one.', 409);
+  if (stored.record.state === 'rejected') throw failure('AGENT_PROPOSAL_DECIDED', 'This proposal was rejected.', 409);
+  if (stored.record.state === 'preparing') throw missing();
+  if (['pending', 'approving'].includes(stored.record.state)) {
+    throw failure('AGENT_PROPOSAL_CONFIRMATION_REQUIRED', 'Approve the card before confirming this sensitive action.', 409);
+  }
+  if (!['awaiting_confirmation', 'confirming'].includes(stored.record.state)) throw busy();
   checkExpiry(stored.record);
-  stored = await store.transition(stored, 'executing');
-  let result;
-  try {
-    result = await domain.applyProposal({ context: actor, proposal: stored.record.proposal,
-      actorCtx: {
-        workspaceId: actor.workspace.id, actorUserId: actor.userId, actorMemberId: actor.member.id,
-        ipAddress: actorCtx?.ipAddress ?? null, userAgent: actorCtx?.userAgent ?? null,
-      },
+  if (stored.record.state === 'awaiting_confirmation') {
+    stored = await store.transition(stored, 'confirming', undefined, {
+      secondaryConfirmation: { ...stored.record.secondaryConfirmation, confirmedAt: new Date().toISOString() },
     });
-  } catch (err) {
-    logger.warn('Agent proposal execution not confirmed', { proposalId: id.data, errorCode: err.code });
-    await logAction({ record: stored.record, context: actor, actorCtx, stage: 'failed', required: false, errorCode: err.code,
-      outcome: err.code === 'CONFLICT' ? 'not_applied' : 'unknown' });
-    // A conditional conflict proves no row changed. Unknown transport failures
-    // may follow a committed write and must keep the irreversible claim.
-    if (err.code === 'CONFLICT') {
-      await store.transition(stored, 'failed');
-      throw failure('AGENT_PROPOSAL_STALE', 'The proposed data changed. Please request a new proposal.', 409);
-    }
-    throw uncertain();
   }
-  // If this save is uncertain, do not execute again. If it succeeded, a retry
-  // can finish the audit using its stable ID without repeating the mutation.
-  try { stored = await store.transition(stored, 'applied', result); } catch {
-    await logAction({ record: stored.record, context: actor, actorCtx, stage: 'executed', required: false, outcome: 'applied' });
-    throw uncertain();
-  }
-  await logAction({ record: stored.record, context: actor, actorCtx, stage: 'executed' });
-  stored = await store.transition(stored, 'executed');
-  return executedReply(stored.record);
+  await logAction({ record: stored.record, context: actor, actorCtx, stage: 'confirmed' });
+  stored = await revalidateApprovedProposal({ actor, actorCtx, store, stored });
+  return executePreparedProposal({ actor, actorCtx, store, stored });
 }
 
 module.exports = {
   createProposal,
   createNotificationProposal,
   decideProposal,
+  confirmProposal,
   getProposalStatus,
   getProposalReceipts,
   CAS_PROPOSAL_SCRIPT,
