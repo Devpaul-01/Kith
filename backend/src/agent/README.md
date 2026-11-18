@@ -69,8 +69,36 @@ the reviewed financial projection. A full card binds the financial fields
 and requested reason. Approval returns a private token; a separate typed
 confirmation request is required to open the dispute. See
 [dispute creation](PROPOSALS.md#dispute-creation-and-secondary-confirmation)
-for the selection, two-step API, audit and failure contracts. Other writes
-and voice are still pending.
+for the selection, two-step API, audit and failure contracts.
+
+An admin's current `selected_dispute_resolution` enables Tier 4
+`resolve_dispute` for one eligible owner-raised dispute on a base-currency
+contribution with recorded confirmation metadata. The full card marks both
+records resolved, preserving financial values and recording the exact
+requested resolution note and authenticated resolver. Approval requires the
+same separate typed confirmation step. See
+[admin dispute resolution](PROPOSALS.md#admin-dispute-resolution) for scope,
+result verification and retry contracts. Other writes and voice are pending.
+
+### Core milestone verification
+
+The [core coverage checklist](CORE_COVERAGE.md) tracks supported scopes,
+remaining actions and verification separately. The current dispute-resolution
+slice passes its four targeted unit suites (436 tests). A real-service
+raise/resolve integration suite has been added at
+`tests/integration/database/dispute-proposals.test.js`; it is **not executed**
+without the isolated Postgres/PostgREST/Redis stack. It covers token-bound
+approval/confirmation, both stored transitions, exact notes/timestamps,
+receipts, real Redis deduplication, auditing and conservative failure recovery.
+Fault cases inject reply/audit outages around otherwise real operations.
+
+The current resolver's post-read prevents an unverified success receipt but
+cannot undo a committed dispute-only transition if the ledger update affected
+no row. Related eligibility checks also remain outside the RPC transaction.
+The [exact resolution hardening proposal](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md)
+addresses this next, including the ordinary resolver's lock order. It is
+**review only**; no schema or runtime execution contract was changed in this
+baseline slice. Database race/ACL/deployment verification remains pending.
 
 Current work prioritizes the core money, task, member, participant and dispute
 flow. Do not add or polish tools marked Lower-Priority in the architecture;
@@ -708,6 +736,13 @@ The event must be active with money tracking enabled, and the positive
 non-crypto contribution must use the workspace base currency without a
 recurring cycle or correction link. The full card requires separate approval
 followed by typed confirmation; see [the two-step contract](PROPOSALS.md#dispute-creation-and-secondary-confirmation).
+An admin's verified `selected_dispute_resolution: { dispute_id }` offers
+Tier 4 `resolve_dispute` with only the requested `resolution_note` as model
+input. The open dispute must be raised by its active non-proxy contribution
+owner; the disputed base-currency contribution requires confirmation fields,
+no recurring cycle/correction link and an active money-enabled event.
+The full card closes both records as resolved without changing amounts.
+See [admin dispute resolution](PROPOSALS.md#admin-dispute-resolution).
 Proposal definitions include Tier 3 `create_container` and `create_member`
 for admins without an
 entity selection; their drafts read fresh workspace/admin state only when
@@ -935,6 +970,11 @@ selection and nested entry apply only to this request; fresh receipt statuses
 `awaiting_confirmation` and `confirmation_pending` do not certify a write.
 Conversation callbacks receive the server-owned `conversationId` alongside
 history, allowing sensitive audits to retain the actual conversation UUID.
+The current `selected_dispute_resolution` independently enables admin
+resolution. Both nested dispute and entry are frozen; the loop binds their
+complete reviewed context and exact normalized note to the returned card.
+Historical selections, searches, other action cards and prose cannot supply
+this target or either decision. Resolved receipts describe the past closure.
 Admin chat also offers Tier 3 event and member creation definitions
 without a selection. Injected proposal support must also satisfy the definition's role
 requirement before a provider call.
@@ -1136,6 +1176,12 @@ secondary/native audits, fresh checks, reject/confirm races, expiry, uncertain
 results, token privacy and JSON/SSE continuation with actual conversation
 traces. Live Postgres/PostgREST/Redis atomicity, text casts and related-row
 races remain integration coverage.
+Admin resolution coverage checks role gates, exact dispute/contribution
+bindings, both resolved transitions, stored-note and timestamp verification,
+mutable notes/proof exclusion, required native/secondary audits, scoped
+receipts, audit recovery and JSON/SSE continuation. Its transaction-local
+eligibility and post-read limits need live integration coverage described in
+[the resolution contract](PROPOSALS.md#admin-dispute-resolution).
 Contact deletion tests cover ownership, full reviewed-state comparisons,
 conditional conflicts and receipts that never restore selection. Live
 database/PostgREST, model and deployed-proxy verification remain pending. The existing `ioredis-mock`

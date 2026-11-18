@@ -18,6 +18,9 @@ enables Tier 3 `create_task` for one new pending task.
 The caller's explicit `selected_dispute_entry` enables Tier 4 `raise_dispute`
 for their own confirmed base-currency contribution, through a full card,
 separate approval and a distinct typed confirmation request.
+An admin's explicit `selected_dispute_resolution` enables Tier 4
+`resolve_dispute` for one eligible owner-raised dispute, using the same
+separate approval and typed-confirmation controls.
 Notification actions are scoped to the caller in the current workspace.
 Task progress changes are scoped to the caller's own assignment in that workspace.
 Self contributions are scoped to their own money-enabled participation in an
@@ -603,6 +606,129 @@ current state. Fresh actor/container checks, RPC, auditing, Redis storage
 and post-read are separate operations. Live Postgres/PostgREST/Redis coverage
 is still needed for text casts, deployed immutability, concurrent eligibility
 changes and partial failures across them.
+
+## Admin dispute resolution
+
+An admin explicitly selects an open dispute for the current authenticated
+chat request:
+
+```json
+{
+  "message": "Resolve this dispute. The payment was checked and the recorded contribution is correct.",
+  "selected_dispute_resolution": {
+    "dispute_id": "<dispute-uuid>"
+  },
+  "conversation_id": null
+}
+```
+
+Only this current verified selection offers `resolve_dispute`. The caller
+must have active, linked, non-proxy admin membership. The dispute must be
+open, have null resolution fields, and be raised by the same active non-proxy
+member who owns its contribution. An owner without a currently linked login
+is supported. Current container participation is not required.
+
+The contribution must currently be disputed, positive, non-crypto and in the
+workspace base currency, with equal original/base amounts, no recurring cycle
+or correction link, and recorded `confirmed_by`/`confirmed_at`. Its event must
+be active, non-deleted and money-enabled. The confirmation-field requirement
+conservatively narrows this milestone; it does not reconstruct legacy history.
+Entries missing those fields remain outside resolution scope even when they
+were eligible for the separate dispute-creation tool. Recurring pools,
+expenses, proxies, disputes raised on behalf of another member, bulk closure
+and financial corrections are outside this tool's scope.
+
+Strict model arguments contain only `resolution_note`, trimmed to 10–1,000
+characters, with NUL and unpaired surrogates rejected. Missing or ambiguous
+notes require clarification. The server binds `dispute_id`, `entry_id` and
+`container_id` from the current selection; IDs in prose, searches, other
+selections, prior cards and receipts cannot choose or approve this action.
+
+The full Tier 4 `before` includes workspace/admin/event names and versions,
+the contribution owner's name/role/version, all immutable reviewed entry
+fields, and the existing dispute identity, reason, raiser and timestamp.
+The `after` preserves those entry fields and existing dispute details, with
+these exact closing changes:
+
+| Field | Before | After |
+|---|---|---|
+| Dispute status | `open` | `resolved` |
+| Entry status | `disputed` | `resolved` |
+| Resolution note | `null` | Exact requested, trimmed note |
+| Resolver | `null` | Authenticated admin member ID |
+| Resolution time | `null` | `on_confirmation` until execution |
+
+The existing ledger treats a resolved contribution as paid. Resolution
+preserves amounts and original recording/confirmation metadata; it does not
+create a correction or alter financial values. Summaries still come from
+tools, without model arithmetic. Uploaded proofs and appended dispute notes
+are eligible but excluded from the review/result projection, along with
+private idempotency keys. The tool never uploads, inspects or freezes those
+mutable contents. Existing services update dispute closing fields and notes
+separately; the unchanged RPC preserves the notes column.
+
+Use the [same two-step approval and typed-confirmation API](#dispute-creation-and-secondary-confirmation).
+The full card carries `secondary_confirmation: { method: "typed", phrase:
+"confirm" }`. Empty `{}` approval audits and revalidates, then returns the
+private token with the original expiry. A separate strict confirm request
+records the required secondary audit and checks fresh state before claiming
+execution. Chat text cannot perform either decision. Tokens never enter
+cards, provider context, history, status receipts or audits.
+
+The reviewed native branch independently verifies the authenticated admin,
+owner and complete scoped context before `resolve_dispute_atomic`. The RPC
+marks the dispute resolved and conditionally marks its ledger entry resolved
+in one transaction, but does not require that ledger transition to affect a row.
+Verify its returned dispute
+against all approved stable fields, preserving the stored resolution note
+without normalization. Equivalent PostgreSQL timestamp formatting is
+accepted only for the exact server-generated instant; the returned timestamp
+is retained verbatim. Require `dispute.resolved` auditing with the stored
+session/conversation trace, then reread and verify the immutable entry with
+resolved status. Best-effort notifications to the original raiser use
+`dispute_resolved:<dispute-id>` for deduplication.
+
+Only explicit null-data PostgreSQL `P0001` with the exact requested-dispute
+not-found/already-resolved rejection proves no mutation occurred and becomes
+a stale card. Transport, malformed results, required native audit and
+post-read uncertainty retain the irreversible claim. Saved results can
+finish final agent auditing through approve or confirm without another RPC.
+Status and continuation receipts bind the same `dispute_id`, `entry_id` and
+`container_id`; successful results require both resolved states and preserve
+the reviewed financial values. Pending confirmation receipts certify no write.
+
+Workspace/admin/owner/event checks, RPC, audits, Redis storage and post-read
+remain separate operations. The unchanged RPC does not check those related
+rows inside its transaction or assert an affected ledger-row count; verified
+post-read is required before reporting success. Live Postgres/PostgREST/Redis
+coverage remains necessary for text casts, deployed immutability, concurrent
+eligibility changes, resolver races and partial failures. This milestone
+adds no schema changes or dependencies.
+
+#### Baseline integration coverage and next review
+
+`tests/integration/database/dispute-proposals.test.js` adds 12 cases through
+real domain/proposal services, Postgres/PostgREST and Redis (no paid model
+calls). Supported-flow assertions cover both Tier 4 gates, stored financial
+projections, exact reason/resolution note and timestamps, owner/admin scope,
+receipts, duplicate decisions, native/lifecycle audit deduplication and
+notification records. Fault-injection cases exercise a required secondary
+audit outage before mutation, final audit recovery from a saved result, and
+native-audit/lost-RPC-response uncertainty after real committed mutations.
+Ordinary service callers retain their dispute-only result shape.
+
+**These integration tests have not run in this sandbox.** Syntax/discovery
+checks and the four passing resolution unit suites do not prove live database
+correctness. Missing-ledger-transition and competing HTTP/eligibility-writer
+regressions will accompany the hardening patch; unsafe partial behavior is not
+asserted as an acceptance contract here.
+
+See [the core checklist](CORE_COVERAGE.md) for baseline/regression status and
+[the exact reviewed-resolution SQL proposal](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md)
+for the next schema review. The latter is not applied or wired into services.
+It proposes a service-role-only reviewed RPC, complete locked snapshot checks,
+required dual transitions and a compatible entry-first ordinary resolver.
+Reviewed raise hardening remains a subsequent small slice.
 
 ## Admin ledger confirmation
 
