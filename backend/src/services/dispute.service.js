@@ -11,6 +11,11 @@ const {
   reviewedDisputeRaiseSchema, disputeEntryState, raisedDisputeState, plannedDisputeState,
   disputeRaiseWorkspaceRowSchema, disputeRaiseMemberRowSchema, disputeRaiseContainerRowSchema, disputeRaiseOpenRowSchema,
 } = require('../validators/dispute-raise.validator');
+const {
+  resolveDisputeDataSchema, disputedResolutionEntrySchema, openDisputeResolutionSchema, disputeResolutionReadSchema,
+  resolvedDisputeStateSchema, resolveDisputeContextSchema, resolveDisputeResultSchema, resolveDisputeCallerSchema,
+  reviewedDisputeResolutionSchema, disputeResolutionState, resolutionContextMatches, plannedResolvedDisputeState,
+} = require('../validators/dispute-resolve.validator');
 const notification = require('./notification.service');
 const audit        = require('./audit.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
@@ -100,15 +105,15 @@ const reviewedEntryColumns = Object.keys(confirmedDisputeEntrySchema.shape)
   .map((field) => field === 'entry_id' ? 'id'
     : ['original_amount', 'base_amount'].includes(field) ? `${field}::text` : field).join(', ');
 
-async function readDisputeRaiseRow(operation) {
+async function readReviewedDisputeRow(operation, unavailable = disputeRaiseUnavailable) {
   try {
     const response = await operation();
     if (!response || response.error !== null || !Object.hasOwn(response, 'data')
         || (response.data !== null && (typeof response.data !== 'object' || Array.isArray(response.data)))) {
-      throw disputeRaiseUnavailable();
+      throw unavailable();
     }
     return response.data;
-  } catch { throw disputeRaiseUnavailable(); }
+  } catch { throw unavailable(); }
 }
 
 /** Fresh ownership and eligibility for the caller's explicitly selected confirmed contribution. */
@@ -116,12 +121,12 @@ async function getRaiseDisputeContext({ workspaceId, containerId, entryId, calle
   if (!raiseDisputeCallerSchema.safeParse({ workspaceId, containerId, entryId, callerId, userId, isAdmin }).success) {
     throw new ValidationError('Invalid dispute creation context');
   }
-  const workspace = await readDisputeRaiseRow(() => supabaseAdmin.from('workspaces')
+  const workspace = await readReviewedDisputeRow(() => supabaseAdmin.from('workspaces')
     .select('id, name, base_currency, updated_at, deleted_at').eq('id', workspaceId).is('deleted_at', null).maybeSingle());
   if (!workspace) throw new NotFoundError('Workspace not found');
   if (!disputeRaiseWorkspaceRowSchema.safeParse(workspace).success) throw disputeRaiseUnavailable();
   if (workspace.id !== workspaceId || workspace.deleted_at !== null) throw disputeRaiseUnavailable();
-  const actor = await readDisputeRaiseRow(() => supabaseAdmin.from('workspace_members')
+  const actor = await readReviewedDisputeRow(() => supabaseAdmin.from('workspace_members')
     .select('id, workspace_id, user_id, role, is_active, is_proxy, display_name, updated_at, deleted_at')
     .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
     .eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
@@ -131,7 +136,7 @@ async function getRaiseDisputeContext({ workspaceId, containerId, entryId, calle
       || actor.is_proxy !== false || actor.deleted_at !== null) {
     throw new ForbiddenError('Active non-proxy workspace membership required');
   }
-  const container = await readDisputeRaiseRow(() => supabaseAdmin.from('containers')
+  const container = await readReviewedDisputeRow(() => supabaseAdmin.from('containers')
     .select('id, workspace_id, name, container_type, status, enable_money, updated_at, deleted_at')
     .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle());
   if (!container) throw new NotFoundError('Container not found');
@@ -140,7 +145,7 @@ async function getRaiseDisputeContext({ workspaceId, containerId, entryId, calle
   if (container.container_type !== 'event' || container.status !== 'active' || container.enable_money !== true) {
     throw new BusinessRuleError('Dispute creation requires an active event container with money tracking enabled');
   }
-  const entry = await readDisputeRaiseRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
+  const entry = await readReviewedDisputeRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
     .eq('id', entryId).eq('workspace_id', workspaceId).eq('container_id', containerId).maybeSingle());
   if (!entry) throw new NotFoundError('Ledger entry not found');
   if (entry.id !== entryId || entry.workspace_id !== workspaceId || entry.container_id !== containerId) throw disputeRaiseUnavailable();
@@ -152,7 +157,7 @@ async function getRaiseDisputeContext({ workspaceId, containerId, entryId, calle
       || snapshot.data.original_amount !== snapshot.data.base_amount) {
     throw new BusinessRuleError('Only confirmed base-currency contributions are supported');
   }
-  const open = await readDisputeRaiseRow(() => supabaseAdmin.from('disputes')
+  const open = await readReviewedDisputeRow(() => supabaseAdmin.from('disputes')
     .select('id, workspace_id, ledger_entry_id, status').eq('workspace_id', workspaceId)
     .eq('ledger_entry_id', entryId).eq('status', 'open').maybeSingle());
   if (open !== null) {
@@ -225,7 +230,7 @@ async function raiseReviewedDispute({ workspaceId, containerId, entryId, reason,
         session_id: reviewed.data.trace.sessionId, conversation_id: reviewed.data.trace.conversationId,
         sensitive_action: true, secondary_confirmation: true } });
   } catch { throw disputeRaiseUnavailable(); }
-  const changedEntry = await readDisputeRaiseRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
+  const changedEntry = await readReviewedDisputeRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
     .eq('id', entryId).eq('workspace_id', workspaceId).eq('container_id', containerId).maybeSingle());
   const result = raiseDisputeResultSchema.safeParse({ dispute: dispute.data, entry: disputeEntryState(changedEntry) });
   if (!result.success || JSON.stringify(result.data.entry) !== JSON.stringify({ ...expected.entry, status: 'disputed' })) {
@@ -306,9 +311,164 @@ async function addDisputeNote({ workspaceId, disputeId, note, isAdmin, callerId 
   return updated;
 }
 
-// resolve_dispute_atomic updates the dispute and the ledger entry's
-// status inside one Postgres transaction.
-async function resolveDispute({ workspaceId, disputeId, resolutionNote, resolvedByMemberId, actorCtx }) {
+const disputeResolveUnavailable = () => new AppError('Dispute resolution is unavailable. Please try again.', 503, 'DISPUTE_RESOLVE_UNAVAILABLE');
+const reviewedResolutionColumns = Object.keys(openDisputeResolutionSchema.shape)
+  .map((field) => field === 'dispute_id' ? 'id' : field).join(', ');
+
+/** Fresh admin authority and eligibility for one explicitly selected dispute. */
+async function getResolveDisputeContext({ workspaceId, disputeId, callerId, userId, isAdmin }) {
+  if (!resolveDisputeCallerSchema.safeParse({ workspaceId, disputeId, callerId, userId, isAdmin }).success) {
+    throw new ValidationError('Invalid dispute resolution context');
+  }
+  if (!isAdmin) throw new ForbiddenError('Admin access required');
+  const workspace = await readReviewedDisputeRow(() => supabaseAdmin.from('workspaces')
+    .select('id, name, base_currency, updated_at, deleted_at').eq('id', workspaceId).is('deleted_at', null).maybeSingle(), disputeResolveUnavailable);
+  if (!workspace) throw new NotFoundError('Workspace not found');
+  if (!disputeRaiseWorkspaceRowSchema.safeParse(workspace).success
+      || workspace.id !== workspaceId || workspace.deleted_at !== null) throw disputeResolveUnavailable();
+  const actor = await readReviewedDisputeRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, display_name, updated_at, deleted_at')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('role', 'admin').eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle(), disputeResolveUnavailable);
+  if (actor && !disputeRaiseMemberRowSchema.safeParse(actor).success) throw disputeResolveUnavailable();
+  if (!actor || actor.id !== callerId || actor.workspace_id !== workspaceId || actor.user_id !== userId
+      || actor.role !== 'admin' || actor.is_active !== true || actor.is_proxy !== false || actor.deleted_at !== null) {
+    throw new ForbiddenError('Active non-proxy admin membership required');
+  }
+  const dispute = await readReviewedDisputeRow(() => supabaseAdmin.from('disputes').select(reviewedResolutionColumns)
+    .eq('id', disputeId).eq('workspace_id', workspaceId).maybeSingle(), disputeResolveUnavailable);
+  if (!dispute) throw new NotFoundError('Dispute not found');
+  const readDispute = disputeResolutionReadSchema.safeParse(disputeResolutionState(dispute));
+  if (!readDispute.success || readDispute.data.dispute_id !== disputeId
+      || readDispute.data.workspace_id !== workspaceId) throw disputeResolveUnavailable();
+  if (readDispute.data.status !== 'open') throw new BusinessRuleError('Dispute is already resolved');
+  const open = openDisputeResolutionSchema.safeParse(readDispute.data);
+  if (!open.success) throw disputeResolveUnavailable();
+  const entry = await readReviewedDisputeRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
+    .eq('id', open.data.ledger_entry_id).eq('workspace_id', workspaceId).maybeSingle(), disputeResolveUnavailable);
+  if (!entry) throw new NotFoundError('Ledger entry not found');
+  const readEntry = disputeEntryReadSchema.safeParse(disputeEntryState(entry));
+  if (!readEntry.success || readEntry.data.entry_id !== open.data.ledger_entry_id
+      || readEntry.data.workspace_id !== workspaceId) throw disputeResolveUnavailable();
+  const snapshot = disputedResolutionEntrySchema.safeParse(readEntry.data);
+  if (!snapshot.success || snapshot.data.original_currency !== workspace.base_currency
+      || snapshot.data.original_amount !== snapshot.data.base_amount) {
+    throw new BusinessRuleError('Only disputed base-currency contributions with confirmation metadata are supported');
+  }
+  if (open.data.raised_by !== snapshot.data.contributor_id) {
+    throw new BusinessRuleError('Only disputes raised by the contribution owner are supported');
+  }
+  const container = await readReviewedDisputeRow(() => supabaseAdmin.from('containers')
+    .select('id, workspace_id, name, container_type, status, enable_money, updated_at, deleted_at')
+    .eq('id', snapshot.data.container_id).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle(), disputeResolveUnavailable);
+  if (!container) throw new NotFoundError('Container not found');
+  if (!disputeRaiseContainerRowSchema.safeParse(container).success || container.id !== snapshot.data.container_id
+      || container.workspace_id !== workspaceId || container.deleted_at !== null) throw disputeResolveUnavailable();
+  if (container.container_type !== 'event' || container.status !== 'active' || container.enable_money !== true) {
+    throw new BusinessRuleError('Dispute resolution requires an active event container with money tracking enabled');
+  }
+  const contributor = await readReviewedDisputeRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, display_name, updated_at, deleted_at')
+    .eq('id', snapshot.data.contributor_id).eq('workspace_id', workspaceId)
+    .eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle(), disputeResolveUnavailable);
+  if (contributor && !disputeRaiseMemberRowSchema.safeParse(contributor).success) throw disputeResolveUnavailable();
+  if (!contributor || contributor.id !== snapshot.data.contributor_id || contributor.workspace_id !== workspaceId
+      || contributor.is_active !== true || contributor.is_proxy !== false || contributor.deleted_at !== null) {
+    throw new BusinessRuleError('An active non-proxy contribution owner is required');
+  }
+  const selected = resolveDisputeContextSchema.safeParse({
+    workspace_id: workspaceId, workspace_name: workspace.name, workspace_updated_at: workspace.updated_at,
+    base_currency: workspace.base_currency, actor_member_id: callerId, member_role: 'admin',
+    actor_display_name: actor.display_name, member_updated_at: actor.updated_at,
+    container_id: container.id, container_name: container.name, container_type: container.container_type,
+    container_status: container.status, enable_money: container.enable_money, container_updated_at: container.updated_at,
+    contributor_display_name: contributor.display_name, contributor_role: contributor.role,
+    contributor_updated_at: contributor.updated_at, entry: snapshot.data, dispute: open.data,
+  });
+  if (!selected.success || !resolutionContextMatches(selected.data)) throw disputeResolveUnavailable();
+  return selected.data;
+}
+
+async function resolveReviewedDispute({ workspaceId, disputeId, resolutionNote, resolvedByMemberId, isAdmin, actorCtx, reviewedResolution }) {
+  const reviewed = reviewedDisputeResolutionSchema.safeParse(reviewedResolution);
+  const data = resolveDisputeDataSchema.safeParse({ resolution_note: resolutionNote });
+  if (!reviewed.success || !data.success || !resolveDisputeCallerSchema.safeParse({ workspaceId, disputeId,
+    callerId: resolvedByMemberId, userId: reviewed.data?.userId, isAdmin }).success) {
+    throw new ValidationError('Valid reviewed dispute resolution details are required');
+  }
+  if (!isAdmin) throw new ForbiddenError('Admin access required');
+  const expected = reviewed.data.expected;
+  if (expected.workspace_id !== workspaceId || expected.dispute.dispute_id !== disputeId
+      || expected.actor_member_id !== resolvedByMemberId || !resolutionContextMatches(expected)) {
+    throw new ForbiddenError('Dispute resolution must use the reviewed workspace, dispute and admin');
+  }
+  let current;
+  try {
+    current = await getResolveDisputeContext({ workspaceId, disputeId, callerId: resolvedByMemberId,
+      userId: reviewed.data.userId, isAdmin });
+  } catch (err) {
+    if (['NOT_FOUND', 'FORBIDDEN', 'BUSINESS_RULE_VIOLATION'].includes(err.code)) {
+      throw new ConflictError('The reviewed dispute resolution is no longer available');
+    }
+    throw err;
+  }
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new ConflictError('Dispute eligibility changed since review');
+  const resolvedAt = new Date().toISOString();
+  let response;
+  try {
+    response = await supabaseAdmin.rpc('resolve_dispute_atomic', {
+      p_dispute_id: disputeId, p_resolution_note: data.data.resolution_note,
+      p_resolved_by: resolvedByMemberId, p_resolved_at: resolvedAt,
+    });
+  } catch { throw disputeResolveUnavailable(); }
+  // Only this exact typed PostgreSQL rejection proves the mutation did not run.
+  if (response?.data === null && response.error && typeof response.error === 'object' && !Array.isArray(response.error)
+      && response.error.code === 'P0001'
+      && response.error.message === `Failed to resolve dispute: Dispute ${disputeId} not found or already resolved`) {
+    throw new ConflictError('The dispute can no longer be resolved');
+  }
+  if (!response || response.error !== null || !response.data || typeof response.data !== 'object'
+      || Array.isArray(response.data)) throw disputeResolveUnavailable();
+  const dispute = resolvedDisputeStateSchema.safeParse(disputeResolutionState(response.data));
+  if (!dispute.success) throw disputeResolveUnavailable();
+  // Postgres can render the same timestamp with an offset or trailing zeroes.
+  // Do not accept nonzero precision beyond the server's millisecond input.
+  const fractionalTime = /\.(\d+)/.exec(dispute.data.resolved_at)?.[1] ?? '';
+  if (Date.parse(dispute.data.resolved_at) !== Date.parse(resolvedAt)
+      || /[1-9]/.test(fractionalTime.slice(3))) throw disputeResolveUnavailable();
+  const planned = plannedResolvedDisputeState({ selection: expected, resolutionNote: data.data.resolution_note,
+    resolvedAt: dispute.data.resolved_at });
+  if (JSON.stringify(dispute.data) !== JSON.stringify(planned)) throw disputeResolveUnavailable();
+  try {
+    await audit.log({ ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId: resolvedByMemberId,
+      action: AUDIT_ACTIONS.DISPUTE_RESOLVED, targetType: 'dispute', targetId: disputeId, required: true,
+      metadata: { agent_initiated: true, proposal_id: reviewed.data.proposalId,
+        session_id: reviewed.data.trace.sessionId, conversation_id: reviewed.data.trace.conversationId,
+        sensitive_action: true, secondary_confirmation: true } });
+  } catch { throw disputeResolveUnavailable(); }
+  const changedEntry = await readReviewedDisputeRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
+    .eq('id', expected.entry.entry_id).eq('workspace_id', workspaceId).eq('container_id', expected.container_id)
+    .maybeSingle(), disputeResolveUnavailable);
+  const result = resolveDisputeResultSchema.safeParse({ dispute: dispute.data, entry: disputeEntryState(changedEntry) });
+  if (!result.success || JSON.stringify(result.data.entry) !== JSON.stringify({ ...expected.entry, status: 'resolved' })) {
+    throw disputeResolveUnavailable();
+  }
+  try {
+    await notification.send({ type: 'dispute_resolved', workspaceId, recipientIds: [expected.dispute.raised_by],
+      referenceType: 'dispute', referenceId: disputeId, variables: { container: expected.container_name },
+      dedupKey: `dispute_resolved:${disputeId}` });
+  } catch (err) {
+    logger.warn('Dispute resolution notification unavailable', { workspaceId, disputeId, errorCode: err?.code });
+  }
+  return { dispute: response.data, entry: changedEntry };
+}
+
+// resolve_dispute_atomic marks the dispute and the ledger entry resolved
+// inside one Postgres transaction; the opt-in branch verifies both records.
+async function resolveDispute({ workspaceId, disputeId, resolutionNote, resolvedByMemberId, isAdmin, actorCtx, reviewedResolution }) {
+  if (reviewedResolution !== undefined) {
+    return resolveReviewedDispute({ workspaceId, disputeId, resolutionNote, resolvedByMemberId, isAdmin, actorCtx, reviewedResolution });
+  }
   const { data: dispute } = await supabaseAdmin
     .from('disputes')
     .select('*, ledger_entries!ledger_entry_id(container_id, containers!container_id(name))')
@@ -343,4 +503,4 @@ async function resolveDispute({ workspaceId, disputeId, resolutionNote, resolved
   return updated;
 }
 
-module.exports = { listDisputes, getDispute, getRaiseDisputeContext, raiseDispute, addDisputeNote, resolveDispute };
+module.exports = { listDisputes, getDispute, getRaiseDisputeContext, getResolveDisputeContext, raiseDispute, addDisputeNote, resolveDispute };
