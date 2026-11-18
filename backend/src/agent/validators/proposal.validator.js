@@ -5,6 +5,11 @@ const {
   plannedDisputeState,
 } = require('../../validators/dispute-raise.validator');
 const {
+  resolveDisputeTargetSchema, resolveDisputeDataSchema, resolveDisputeContextSchema,
+  resolvedDisputeStateSchema, resolvedDisputeEntrySchema, resolveDisputeResultSchema,
+  resolutionContextMatches, plannedResolvedDisputeState,
+} = require('../../validators/dispute-resolve.validator');
+const {
   taskCreationTargetSchema, taskCreationDataSchema, taskCreationContextSchema,
   taskCreationStateSchema, taskCreationResultSchema, buildTaskCreationState,
 } = require('../../validators/task-creation.validator');
@@ -307,6 +312,36 @@ function raiseDisputeResultMatches(proposal, result) {
   })) === JSON.stringify(proposal.after);
 }
 
+const resolveDisputeArgumentsSchema = resolveDisputeDataSchema;
+const resolveDisputeParametersSchema = resolveDisputeDataSchema.extend({
+  dispute_id: z.string().uuid(), container_id: z.string().uuid(), entry_id: z.string().uuid(),
+});
+const resolveDisputeAfterSchema = z.object({
+  dispute: resolvedDisputeStateSchema.extend({ resolved_at: z.literal('on_confirmation') }),
+  entry: resolvedDisputeEntrySchema,
+}).strict();
+const DISPUTE_RESOLVE_SUMMARY = 'Resolve the selected dispute and mark its contribution resolved.';
+
+function resolveDisputeParametersFromArgs(selection, args) {
+  const selected = resolveDisputeContextSchema.parse(selection);
+  return resolveDisputeParametersSchema.parse({ ...resolveDisputeArgumentsSchema.parse(args),
+    dispute_id: selected.dispute.dispute_id, container_id: selected.container_id, entry_id: selected.entry.entry_id });
+}
+function resolveDisputeAfter(selection, parameters) {
+  const selected = resolveDisputeContextSchema.parse(selection);
+  const requested = resolveDisputeParametersSchema.parse(parameters);
+  return resolveDisputeAfterSchema.parse({
+    dispute: plannedResolvedDisputeState({ selection: selected, resolutionNote: requested.resolution_note }),
+    entry: { ...selected.entry, status: 'resolved' },
+  });
+}
+function resolveDisputeResultMatches(proposal, result) {
+  const parsed = resolveDisputeResultSchema.safeParse(result);
+  return parsed.success && JSON.stringify(resolveDisputeAfterSchema.parse({ ...parsed.data,
+    dispute: { ...parsed.data.dispute, resolved_at: 'on_confirmation' },
+  })) === JSON.stringify(proposal.after);
+}
+
 const containerCreationArgumentsSchema = eventContainerCreationDataSchema
   .omit({ container_type: true }).partial({
     subtitle: true, description: true, enable_money: true, enable_tasks: true,
@@ -449,6 +484,12 @@ const raiseDisputeProposalSchema = z.object({
   before: raiseDisputeContextSchema, after: raiseDisputeAfterSchema,
   secondary_confirmation: secondaryConfirmationRequirementSchema, expires_at: z.string().datetime(),
 }).strict();
+const resolveDisputeProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('resolve_dispute'), tier: z.literal(4),
+  summary: z.literal(DISPUTE_RESOLVE_SUMMARY), parameters: resolveDisputeParametersSchema,
+  before: resolveDisputeContextSchema, after: resolveDisputeAfterSchema,
+  secondary_confirmation: secondaryConfirmationRequirementSchema, expires_at: z.string().datetime(),
+}).strict();
 const addParticipantProposalSchema = z.object({
   id: z.string().uuid(), tool: z.literal('add_participants'), tier: z.literal(3),
   summary: z.literal(PARTICIPANT_ADDITION_SUMMARY), parameters: participantAdditionParametersSchema,
@@ -486,6 +527,7 @@ const proposalSchema = z.union([
   confirmTaskProposalSchema,
   createTaskProposalSchema,
   raiseDisputeProposalSchema,
+  resolveDisputeProposalSchema,
   addParticipantProposalSchema,
   createSelfLedgerProposalSchema,
   confirmLedgerEntryProposalSchema,
@@ -552,6 +594,14 @@ const proposalSchema = z.union([
         || JSON.stringify(value.after) !== JSON.stringify(raiseDisputeAfter(value.before, value.parameters)))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Dispute creation mismatch' });
   }
+  if (value.tool === 'resolve_dispute'
+      && (value.parameters.dispute_id !== value.before.dispute.dispute_id
+        || value.parameters.container_id !== value.before.container_id
+        || value.parameters.entry_id !== value.before.entry.entry_id
+        || !resolutionContextMatches(value.before)
+        || JSON.stringify(value.after) !== JSON.stringify(resolveDisputeAfter(value.before, value.parameters)))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Dispute resolution mismatch' });
+  }
   if (value.tool === 'add_participants'
       && (value.parameters.container_id !== value.before.container_id
         || value.parameters.workspace_member_id !== value.before.workspace_member_id
@@ -600,6 +650,7 @@ const proposalResultSchema = z.union([
   taskConfirmationResultSchema,
   taskCreationResultSchema,
   raiseDisputeResultSchema,
+  resolveDisputeResultSchema,
   participantAdditionRowSchema,
   selfLedgerResultSchema,
   ledgerConfirmationResultSchema,
@@ -681,6 +732,9 @@ const proposalRecordSchema = z.object({
   } else if (record.proposal.tool === 'raise_dispute'
       && !raiseDisputeResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Dispute creation result mismatch' });
+  } else if (record.proposal.tool === 'resolve_dispute'
+      && !resolveDisputeResultMatches(record.proposal, record.result)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Dispute resolution result mismatch' });
   } else if (record.proposal.tool === 'add_participants'
       && !participantAdditionResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Participant addition result mismatch' });
@@ -734,6 +788,10 @@ const taskCreationStatusFields = z.object({
 const raiseDisputeStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('raise_dispute'), container_id: z.string().uuid(), entry_id: z.string().uuid(),
 }).strict();
+const resolveDisputeStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('resolve_dispute'), dispute_id: z.string().uuid(),
+  container_id: z.string().uuid(), entry_id: z.string().uuid(),
+}).strict();
 const participantAdditionStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('add_participants'),
   participant_id: z.string().uuid(), container_id: z.string().uuid(), workspace_member_id: z.string().uuid(),
@@ -753,6 +811,17 @@ const memberCreationStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('create_member'), member_id: z.string().uuid(),
 }).strict();
 const proposalStatusSchema = z.union([
+  ...[...incompleteStatuses, 'awaiting_confirmation', 'confirmation_pending']
+    .map((status) => resolveDisputeStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => resolveDisputeStatusFields.extend({
+    status: z.literal(status), result: resolveDisputeResultSchema,
+  }).refine((value) => value.dispute_id === value.result.dispute.dispute_id
+      && value.entry_id === value.result.entry.entry_id
+      && value.entry_id === value.result.dispute.ledger_entry_id
+      && value.container_id === value.result.entry.container_id
+      && value.result.dispute.workspace_id === value.result.entry.workspace_id
+      && value.result.dispute.raised_by === value.result.entry.contributor_id,
+  'Dispute resolution receipt target mismatch')),
   ...[...incompleteStatuses, 'awaiting_confirmation', 'confirmation_pending']
     .map((status) => raiseDisputeStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => raiseDisputeStatusFields.extend({
@@ -824,6 +893,9 @@ const proposedToolResultSchema = z.object({
 }).strict();
 
 module.exports = {
+  resolveDisputeTargetSchema, resolveDisputeDataSchema, resolveDisputeContextSchema,
+  resolveDisputeArgumentsSchema, resolveDisputeParametersSchema, resolveDisputeAfterSchema, resolveDisputeResultSchema,
+  resolveDisputeParametersFromArgs, resolveDisputeAfter, resolveDisputeResultMatches, DISPUTE_RESOLVE_SUMMARY,
   raiseDisputeTargetSchema, raiseDisputeDataSchema, raiseDisputeContextSchema,
   raiseDisputeArgumentsSchema, raiseDisputeParametersSchema, raiseDisputeAfterSchema, raiseDisputeResultSchema,
   raiseDisputeParametersFromArgs, raiseDisputeAfter, raiseDisputeResultMatches,

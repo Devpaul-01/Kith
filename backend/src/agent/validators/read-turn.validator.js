@@ -1,6 +1,6 @@
 const { z } = require('zod');
 const { tokenUsageSchema } = require('./provider-metadata.validator');
-const { taskTargetSchema, ledgerConfirmationTargetSchema, participantAdditionTargetSchema, taskCreationTargetSchema, raiseDisputeTargetSchema } = require('./proposal.validator');
+const { taskTargetSchema, ledgerConfirmationTargetSchema, participantAdditionTargetSchema, taskCreationTargetSchema, raiseDisputeTargetSchema, resolveDisputeTargetSchema } = require('./proposal.validator');
 
 const READ_TURN_LIMITS = Object.freeze({
   modelCalls: 6,
@@ -30,6 +30,7 @@ const chatInputSchema = readTurnInputSchema.extend({
   selected_container_id: z.string().uuid().transform((id) => id.toLowerCase()).optional(),
   selected_ledger_entry: ledgerConfirmationTargetSchema.optional(),
   selected_dispute_entry: raiseDisputeTargetSchema.optional(),
+  selected_dispute_resolution: resolveDisputeTargetSchema.optional(),
 });
 
 const providerToolCallSchema = z.object({
