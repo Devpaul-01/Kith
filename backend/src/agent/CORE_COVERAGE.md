@@ -82,7 +82,7 @@ spoken/chat “confirm” do not grant selection or approval.
   integration passed; CI and target deployment remain pending.
 - [ ] Reviewed raise and other money/target/destructive transactional checks.
   Include ordinary HTTP/job writers in lock/race tests.
-- [ ] Separate read-only `viewed_container_id` context; never action selection.
+- [x] Separate read-only `viewed_container_id` context; never action selection.
 - [ ] Service-calculated monthly summaries after date/timezone/status semantics
   are settled; no model arithmetic.
 - [ ] Groq STT/TTS after availability, audio limits, privacy and modality contract

@@ -683,6 +683,15 @@ body containing a nonempty `message` (up to 8,000 characters), with an optional
 notifications read or updating the caller's account profile. An optional
 `selected_notification_id` additionally enables the single-notification proposal.
 
+An optional `viewed_container_id` (UUID) tells the agent which container page
+the user is looking at, so it can interpret "this event". The server reads its
+metadata (name, type, status, money/task flags) through the container service in
+the authenticated workspace; a missing, deleted or other-workspace container
+returns not-found. It appears only as `viewed_container` in that turn's
+`get_my_context` result. It is informational: it never selects a write target,
+enables a proposal tool, grants permission or replaces read tools for current
+facts, and it is not restored from conversation history.
+
 `selected_contact_id` instead enables deletion of that exact caller-owned
 account contact. Each selection applies only to the current request; IDs in
 prose and conversation history do not select a target. See the
