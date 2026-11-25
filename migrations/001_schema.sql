@@ -1414,34 +1414,225 @@ CREATE FUNCTION public.raise_dispute_atomic(p_workspace_id uuid, p_ledger_entry_
                                       END;
                                       $$;
 
-CREATE FUNCTION public.resolve_dispute_atomic(p_dispute_id uuid, p_resolution_note text, p_resolved_by uuid, p_resolved_at timestamp with time zone) RETURNS jsonb
-    LANGUAGE plpgsql SECURITY DEFINER
-    AS $$
+CREATE OR REPLACE FUNCTION public.resolve_dispute_atomic(
+    p_dispute_id uuid,
+    p_resolution_note text,
+    p_resolved_by uuid,
+    p_resolved_at timestamp with time zone
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
 DECLARE
+    v_initial public.disputes;
     v_dispute public.disputes;
+    v_entry public.ledger_entries;
+    v_count integer;
 BEGIN
-    UPDATE public.disputes
-    SET status          = 'resolved',
-        resolution_note = p_resolution_note,
-        resolved_by     = p_resolved_by,
-        resolved_at     = p_resolved_at
-    WHERE id = p_dispute_id
-      AND status = 'open'
-    RETURNING * INTO v_dispute;
-
-    IF v_dispute.id IS NULL THEN
+    -- Read linkage without taking a dispute lock ahead of the entry lock.
+    SELECT * INTO v_initial FROM public.disputes
+    WHERE id = p_dispute_id AND status = 'open';
+    IF v_initial.id IS NULL THEN
         RAISE EXCEPTION 'Dispute % not found or already resolved', p_dispute_id;
     END IF;
 
-    UPDATE public.ledger_entries
-    SET status = 'resolved'
-    WHERE id = v_dispute.ledger_entry_id
-      AND status = 'disputed';
+    SELECT * INTO v_entry FROM public.ledger_entries
+    WHERE id = v_initial.ledger_entry_id
+      AND workspace_id = v_initial.workspace_id
+    FOR UPDATE;
 
+    SELECT * INTO v_dispute FROM public.disputes
+    WHERE id = p_dispute_id AND status = 'open'
+      AND workspace_id = v_initial.workspace_id
+      AND ledger_entry_id = v_initial.ledger_entry_id
+    FOR UPDATE;
+    IF v_dispute.id IS NULL THEN
+        RAISE EXCEPTION 'Dispute % not found or already resolved', p_dispute_id;
+    END IF;
+    IF v_entry.id IS NULL OR v_entry.status <> 'disputed' THEN
+        RAISE EXCEPTION 'Dispute % has no disputed ledger entry', p_dispute_id;
+    END IF;
+
+    UPDATE public.ledger_entries SET status = 'resolved'
+    WHERE id = v_entry.id AND workspace_id = v_dispute.workspace_id
+      AND status = 'disputed'
+    RETURNING * INTO v_entry;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    IF v_count <> 1 THEN
+        RAISE EXCEPTION 'Dispute % has no disputed ledger entry', p_dispute_id;
+    END IF;
+
+    UPDATE public.disputes
+    SET status = 'resolved', resolution_note = p_resolution_note,
+        resolved_by = p_resolved_by, resolved_at = p_resolved_at
+    WHERE id = p_dispute_id AND workspace_id = v_initial.workspace_id
+      AND ledger_entry_id = v_entry.id AND status = 'open'
+    RETURNING * INTO v_dispute;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    IF v_count <> 1 THEN
+        RAISE EXCEPTION 'Dispute % not found or already resolved', p_dispute_id;
+    END IF;
     RETURN to_jsonb(v_dispute);
-EXCEPTION
-    WHEN OTHERS THEN
-        RAISE EXCEPTION 'Failed to resolve dispute: %', SQLERRM;
+EXCEPTION WHEN OTHERS THEN
+    -- Keep the existing ordinary resolver's error envelope.
+    RAISE EXCEPTION 'Failed to resolve dispute: %', SQLERRM;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.resolve_dispute_reviewed_atomic(
+    p_workspace_id uuid,
+    p_dispute_id uuid,
+    p_user_id uuid,
+    p_resolved_by uuid,
+    p_resolution_note text,
+    p_resolved_at timestamp with time zone,
+    p_expected jsonb
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    v_workspace public.workspaces;
+    v_actor public.workspace_members;
+    v_owner public.workspace_members;
+    v_container public.containers;
+    v_entry public.ledger_entries;
+    v_dispute public.disputes;
+    v_owner_id uuid;
+    v_expected jsonb;
+    v_current jsonb;
+    v_count integer;
+BEGIN
+    IF p_workspace_id IS NULL OR p_dispute_id IS NULL OR p_user_id IS NULL
+       OR p_resolved_by IS NULL OR p_resolved_at IS NULL
+       OR NOT isfinite(p_resolved_at)
+       OR p_resolution_note IS NULL
+       OR char_length(p_resolution_note) NOT BETWEEN 10 AND 1000
+       OR p_resolution_note <> btrim(p_resolution_note)
+       OR jsonb_typeof(p_expected) IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION 'INVALID_REVIEWED_DISPUTE_INPUT';
+    END IF;
+    v_owner_id := (p_expected #>> '{entry,contributor_id}')::uuid;
+
+    SELECT * INTO v_workspace FROM public.workspaces
+    WHERE id = p_workspace_id FOR SHARE;
+    -- ORDER BY prevents two reviewed actions locking shared actors in reverse.
+    PERFORM id FROM public.workspace_members
+    WHERE id IN (p_resolved_by, v_owner_id)
+    ORDER BY id FOR SHARE;
+    SELECT * INTO v_actor FROM public.workspace_members WHERE id = p_resolved_by;
+    SELECT * INTO v_owner FROM public.workspace_members WHERE id = v_owner_id;
+    SELECT * INTO v_container FROM public.containers
+    WHERE id = (p_expected ->> 'container_id')::uuid FOR SHARE;
+    SELECT * INTO v_entry FROM public.ledger_entries
+    WHERE id = (p_expected #>> '{entry,entry_id}')::uuid FOR UPDATE;
+    SELECT * INTO v_dispute FROM public.disputes
+    WHERE id = p_dispute_id FOR UPDATE;
+
+    IF v_workspace.id IS NULL OR v_workspace.deleted_at IS NOT NULL
+       OR v_actor.id IS NULL OR v_actor.workspace_id <> p_workspace_id
+       OR v_actor.user_id IS DISTINCT FROM p_user_id OR v_actor.role <> 'admin'
+       OR NOT v_actor.is_active OR v_actor.is_proxy OR v_actor.deleted_at IS NOT NULL
+       OR v_owner.id IS NULL OR v_owner.workspace_id <> p_workspace_id
+       OR NOT v_owner.is_active OR v_owner.is_proxy OR v_owner.deleted_at IS NOT NULL
+       OR v_container.id IS NULL OR v_container.workspace_id <> p_workspace_id
+       OR v_container.container_type <> 'event' OR v_container.status <> 'active'
+       OR NOT v_container.enable_money OR v_container.deleted_at IS NOT NULL
+       OR v_entry.id IS NULL OR v_entry.workspace_id <> p_workspace_id
+       OR v_entry.container_id <> v_container.id
+       OR v_entry.contributor_id IS DISTINCT FROM v_owner.id
+       OR v_entry.entry_type <> 'contribution' OR v_entry.status <> 'disputed'
+       OR v_entry.original_amount <= 0
+       OR v_entry.original_currency <> v_workspace.base_currency
+       OR v_entry.original_amount <> v_entry.base_amount OR v_entry.is_crypto
+       OR v_entry.payment_method = 'crypto' OR v_entry.cycle_id IS NOT NULL
+       OR v_entry.corrects_entry_id IS NOT NULL
+       OR v_entry.confirmed_at IS NULL OR v_entry.confirmed_by IS NULL
+       OR v_dispute.id IS NULL OR v_dispute.workspace_id <> p_workspace_id
+       OR v_dispute.ledger_entry_id <> v_entry.id
+       OR v_dispute.raised_by <> v_owner.id OR v_dispute.status <> 'open'
+       OR v_dispute.resolution_note IS NOT NULL OR v_dispute.resolved_by IS NOT NULL
+       OR v_dispute.resolved_at IS NOT NULL THEN
+        RAISE EXCEPTION 'REVIEWED_DISPUTE_STALE';
+    END IF;
+
+    -- Match the service's complete strict selection. No proof/note/private-key
+    -- snapshots are added. Explicit text casts preserve numeric(15,2) decimals.
+    v_current := jsonb_build_object(
+        'workspace_id', v_workspace.id, 'workspace_name', v_workspace.name,
+        'workspace_updated_at', v_workspace.updated_at,
+        'base_currency', v_workspace.base_currency,
+        'actor_member_id', v_actor.id, 'member_role', v_actor.role,
+        'actor_display_name', v_actor.display_name, 'member_updated_at', v_actor.updated_at,
+        'container_id', v_container.id, 'container_name', v_container.name,
+        'container_type', v_container.container_type, 'container_status', v_container.status,
+        'enable_money', v_container.enable_money, 'container_updated_at', v_container.updated_at,
+        'contributor_display_name', v_owner.display_name,
+        'contributor_role', v_owner.role, 'contributor_updated_at', v_owner.updated_at,
+        'entry', (to_jsonb(v_entry) - ARRAY['id', 'proofs', 'idempotency_key'])
+            || jsonb_build_object('entry_id', v_entry.id,
+                'original_amount', v_entry.original_amount::text, 'base_amount', v_entry.base_amount::text),
+        'dispute', (to_jsonb(v_dispute) - ARRAY['id', 'notes'])
+            || jsonb_build_object('dispute_id', v_dispute.id)
+    );
+    -- Normalize only formatting of known timestamp fields, not financial values
+    -- or arbitrary text. Missing/extra expected fields still fail equality.
+    v_expected := p_expected || jsonb_build_object(
+        'workspace_updated_at', (p_expected ->> 'workspace_updated_at')::timestamptz,
+        'member_updated_at', (p_expected ->> 'member_updated_at')::timestamptz,
+        'container_updated_at', (p_expected ->> 'container_updated_at')::timestamptz,
+        'contributor_updated_at', (p_expected ->> 'contributor_updated_at')::timestamptz,
+        'entry', (p_expected -> 'entry') || jsonb_build_object(
+            'recorded_at', (p_expected #>> '{entry,recorded_at}')::timestamptz,
+            'confirmed_at', (p_expected #>> '{entry,confirmed_at}')::timestamptz),
+        'dispute', (p_expected -> 'dispute') || jsonb_build_object(
+            'raised_at', (p_expected #>> '{dispute,raised_at}')::timestamptz)
+    );
+    IF v_current IS DISTINCT FROM v_expected THEN
+        RAISE EXCEPTION 'REVIEWED_DISPUTE_STALE';
+    END IF;
+
+    UPDATE public.ledger_entries SET status = 'resolved'
+    WHERE id = v_entry.id AND workspace_id = p_workspace_id
+      AND container_id = v_container.id AND status = 'disputed'
+    RETURNING * INTO v_entry;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    IF v_count <> 1 THEN RAISE EXCEPTION 'REVIEWED_DISPUTE_STALE'; END IF;
+
+    UPDATE public.disputes
+    SET status = 'resolved', resolution_note = p_resolution_note,
+        resolved_by = p_resolved_by, resolved_at = p_resolved_at
+    WHERE id = p_dispute_id AND workspace_id = p_workspace_id
+      AND ledger_entry_id = v_entry.id AND raised_by = v_owner.id AND status = 'open'
+    RETURNING * INTO v_dispute;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    IF v_count <> 1 THEN RAISE EXCEPTION 'REVIEWED_DISPUTE_STALE'; END IF;
+
+    RETURN jsonb_build_object(
+        'entry', (to_jsonb(v_entry) - ARRAY['id', 'proofs', 'idempotency_key'])
+            || jsonb_build_object('entry_id', v_entry.id,
+                'original_amount', v_entry.original_amount::text, 'base_amount', v_entry.base_amount::text),
+        'dispute', (to_jsonb(v_dispute) - ARRAY['id', 'notes'])
+            || jsonb_build_object('dispute_id', v_dispute.id)
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.resolve_dispute_atomic(uuid, text, uuid, timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.resolve_dispute_reviewed_atomic(uuid, uuid, uuid, uuid, text, timestamptz, jsonb) FROM PUBLIC;
+DO $$
+DECLARE v_role text;
+BEGIN
+    FOREACH v_role IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role) THEN
+            EXECUTE format('REVOKE ALL ON FUNCTION public.resolve_dispute_atomic(uuid, text, uuid, timestamptz) FROM %I', v_role);
+            EXECUTE format('REVOKE ALL ON FUNCTION public.resolve_dispute_reviewed_atomic(uuid, uuid, uuid, uuid, text, timestamptz, jsonb) FROM %I', v_role);
+        END IF;
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        GRANT EXECUTE ON FUNCTION public.resolve_dispute_atomic(uuid, text, uuid, timestamptz) TO service_role;
+        GRANT EXECUTE ON FUNCTION public.resolve_dispute_reviewed_atomic(uuid, uuid, uuid, uuid, text, timestamptz, jsonb) TO service_role;
+    END IF;
 END;
 $$;
 

@@ -13,7 +13,7 @@ const {
 } = require('../validators/dispute-raise.validator');
 const {
   resolveDisputeDataSchema, disputedResolutionEntrySchema, openDisputeResolutionSchema, disputeResolutionReadSchema,
-  resolvedDisputeStateSchema, resolveDisputeContextSchema, resolveDisputeResultSchema, resolveDisputeCallerSchema,
+  resolveDisputeContextSchema, resolveDisputeResultSchema, resolveDisputeCallerSchema,
   reviewedDisputeResolutionSchema, disputeResolutionState, resolutionContextMatches, plannedResolvedDisputeState,
 } = require('../validators/dispute-resolve.validator');
 const notification = require('./notification.service');
@@ -416,29 +416,32 @@ async function resolveReviewedDispute({ workspaceId, disputeId, resolutionNote, 
   const resolvedAt = new Date().toISOString();
   let response;
   try {
-    response = await supabaseAdmin.rpc('resolve_dispute_atomic', {
-      p_dispute_id: disputeId, p_resolution_note: data.data.resolution_note,
-      p_resolved_by: resolvedByMemberId, p_resolved_at: resolvedAt,
+    response = await supabaseAdmin.rpc('resolve_dispute_reviewed_atomic', {
+      p_workspace_id: workspaceId, p_dispute_id: disputeId, p_user_id: reviewed.data.userId,
+      p_resolution_note: data.data.resolution_note, p_resolved_by: resolvedByMemberId,
+      p_resolved_at: resolvedAt, p_expected: expected,
     });
   } catch { throw disputeResolveUnavailable(); }
   // Only this exact typed PostgreSQL rejection proves the mutation did not run.
   if (response?.data === null && response.error && typeof response.error === 'object' && !Array.isArray(response.error)
-      && response.error.code === 'P0001'
-      && response.error.message === `Failed to resolve dispute: Dispute ${disputeId} not found or already resolved`) {
+      && response.error.code === 'P0001' && response.error.message === 'REVIEWED_DISPUTE_STALE') {
     throw new ConflictError('The dispute can no longer be resolved');
   }
-  if (!response || response.error !== null || !response.data || typeof response.data !== 'object'
-      || Array.isArray(response.data)) throw disputeResolveUnavailable();
-  const dispute = resolvedDisputeStateSchema.safeParse(disputeResolutionState(response.data));
-  if (!dispute.success) throw disputeResolveUnavailable();
-  // Postgres can render the same timestamp with an offset or trailing zeroes.
-  // Do not accept nonzero precision beyond the server's millisecond input.
-  const fractionalTime = /\.(\d+)/.exec(dispute.data.resolved_at)?.[1] ?? '';
-  if (Date.parse(dispute.data.resolved_at) !== Date.parse(resolvedAt)
+  if (!response || response.error !== null) throw disputeResolveUnavailable();
+  // Both projections come from the mutation transaction. A later read must not
+  // substitute a newer row for what this approved execution actually changed.
+  const result = resolveDisputeResultSchema.safeParse(response.data);
+  if (!result.success) throw disputeResolveUnavailable();
+  const dispute = result.data.dispute;
+  const fractionalTime = /\.(\d+)/.exec(dispute.resolved_at)?.[1] ?? '';
+  if (Date.parse(dispute.resolved_at) !== Date.parse(resolvedAt)
       || /[1-9]/.test(fractionalTime.slice(3))) throw disputeResolveUnavailable();
   const planned = plannedResolvedDisputeState({ selection: expected, resolutionNote: data.data.resolution_note,
-    resolvedAt: dispute.data.resolved_at });
-  if (JSON.stringify(dispute.data) !== JSON.stringify(planned)) throw disputeResolveUnavailable();
+    resolvedAt: dispute.resolved_at });
+  if (JSON.stringify(dispute) !== JSON.stringify(planned)
+      || JSON.stringify(result.data.entry) !== JSON.stringify({ ...expected.entry, status: 'resolved' })) {
+    throw disputeResolveUnavailable();
+  }
   try {
     await audit.log({ ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId: resolvedByMemberId,
       action: AUDIT_ACTIONS.DISPUTE_RESOLVED, targetType: 'dispute', targetId: disputeId, required: true,
@@ -446,13 +449,6 @@ async function resolveReviewedDispute({ workspaceId, disputeId, resolutionNote, 
         session_id: reviewed.data.trace.sessionId, conversation_id: reviewed.data.trace.conversationId,
         sensitive_action: true, secondary_confirmation: true } });
   } catch { throw disputeResolveUnavailable(); }
-  const changedEntry = await readReviewedDisputeRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
-    .eq('id', expected.entry.entry_id).eq('workspace_id', workspaceId).eq('container_id', expected.container_id)
-    .maybeSingle(), disputeResolveUnavailable);
-  const result = resolveDisputeResultSchema.safeParse({ dispute: dispute.data, entry: disputeEntryState(changedEntry) });
-  if (!result.success || JSON.stringify(result.data.entry) !== JSON.stringify({ ...expected.entry, status: 'resolved' })) {
-    throw disputeResolveUnavailable();
-  }
   try {
     await notification.send({ type: 'dispute_resolved', workspaceId, recipientIds: [expected.dispute.raised_by],
       referenceType: 'dispute', referenceId: disputeId, variables: { container: expected.container_name },
@@ -460,11 +456,13 @@ async function resolveReviewedDispute({ workspaceId, disputeId, resolutionNote, 
   } catch (err) {
     logger.warn('Dispute resolution notification unavailable', { workspaceId, disputeId, errorCode: err?.code });
   }
-  return { dispute: response.data, entry: changedEntry };
+  const { dispute_id: id, ...disputeFields } = result.data.dispute;
+  const { entry_id: resultEntryId, ...entryFields } = result.data.entry;
+  return { dispute: { id, ...disputeFields }, entry: { id: resultEntryId, ...entryFields } };
 }
 
-// resolve_dispute_atomic marks the dispute and the ledger entry resolved
-// inside one Postgres transaction; the opt-in branch verifies both records.
+// Both resolvers require dual transitions in one transaction. The reviewed RPC
+// also locks eligibility rows and returns both exact approved projections.
 async function resolveDispute({ workspaceId, disputeId, resolutionNote, resolvedByMemberId, isAdmin, actorCtx, reviewedResolution }) {
   if (reviewedResolution !== undefined) {
     return resolveReviewedDispute({ workspaceId, disputeId, resolutionNote, resolvedByMemberId, isAdmin, actorCtx, reviewedResolution });

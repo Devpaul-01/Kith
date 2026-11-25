@@ -37,8 +37,20 @@ const fixtures = { workspace: workspaceRow, actor: adminMember, dispute: dispute
 function contextResponses(changes = {}) {
   return Object.entries(fixtures).map(([name, fixture]) => response(changes[name] === null ? null : fixture(changes[name])));
 }
-function scriptResolution({ changes = {}, rpc = response(resolvedDispute()), reread = response(resolvedEntry()) } = {}) {
-  db.mockResponses(...contextResponses(changes), reread);
+function rpcResult({ dispute = resolvedDispute(), entry = resolvedEntry() } = {}) {
+  return {
+    dispute: Object.fromEntries(Object.keys(disputeSnapshot()).map((field) => [field, field === 'dispute_id' ? dispute.id : dispute[field]])),
+    entry: Object.fromEntries(Object.keys(entrySnapshot()).map((field) => [field, field === 'entry_id' ? entry.id : entry[field]])),
+  };
+}
+function resultRows(options) {
+  const projected = rpcResult(options);
+  const { dispute_id: id, ...dispute } = projected.dispute;
+  const { entry_id: entryId, ...entry } = projected.entry;
+  return { dispute: { id, ...dispute }, entry: { id: entryId, ...entry } };
+}
+function scriptResolution({ changes = {}, rpc = response(rpcResult()) } = {}) {
+  db.mockResponses(...contextResponses(changes));
   db.mockNextRpcResponse(rpc);
 }
 function queries(table) {
@@ -249,15 +261,16 @@ it.each([
   expectNoWrite();
 });
 
-it.each([null, CONVERSATION_ID])('resolves both records with exact parameters, required traced audit and deduplicated notice (%s)', async (conversationId) => {
+it.each([null, CONVERSATION_ID])('resolves both records with exact reviewed RPC parameters, required traced audit and deduplicated notice (%s)', async (conversationId) => {
   scriptResolution();
   const spoofed = { ...actorCtx, workspaceId: UNRELATED_ID, actorUserId: UNRELATED_ID, actorMemberId: UNRELATED_ID };
   await expect(disputes.resolveDispute(parameters({ resolutionNote: `  ${RESOLUTION_NOTE}  `, actorCtx: spoofed,
     reviewedResolution: reviewed({ trace: { sessionId: SESSION_ID, conversationId } }),
-  }))).resolves.toEqual({ dispute: resolvedDispute(), entry: resolvedEntry() });
-  expect(db.getRpcCalls()).toEqual([{ fnName: 'resolve_dispute_atomic', params: {
-    p_dispute_id: DISPUTE_ID, p_resolution_note: RESOLUTION_NOTE,
-    p_resolved_by: actor.member.id, p_resolved_at: EXECUTION_TIME,
+  }))).resolves.toEqual(resultRows());
+  expect(db.getRpcCalls()).toEqual([{ fnName: 'resolve_dispute_reviewed_atomic', params: {
+    p_workspace_id: actor.workspace.id, p_dispute_id: DISPUTE_ID, p_user_id: actor.userId,
+    p_resolution_note: RESOLUTION_NOTE, p_resolved_by: actor.member.id,
+    p_resolved_at: EXECUTION_TIME, p_expected: resolveContext(),
   } }]);
   expect(audit.log).toHaveBeenCalledWith({ ...actorCtx, required: true, action: AUDIT_ACTIONS.DISPUTE_RESOLVED,
     targetType: 'dispute', targetId: DISPUTE_ID, metadata: { agent_initiated: true, proposal_id: PROPOSAL_ID,
@@ -265,40 +278,37 @@ it.each([null, CONVERSATION_ID])('resolves both records with exact parameters, r
   expect(notification.send).toHaveBeenCalledWith({ type: 'dispute_resolved', workspaceId: actor.workspace.id,
     recipientIds: [CONTRIBUTOR_ID], referenceType: 'dispute', referenceId: DISPUTE_ID,
     variables: { container: 'Family groceries' }, dedupKey: `dispute_resolved:${DISPUTE_ID}` });
-  expect(queries('ledger_entries')[1]).toEqual(expect.arrayContaining([
-    { method: 'eq', args: ['id', ENTRY_ID] }, { method: 'eq', args: ['workspace_id', actor.workspace.id] },
-    { method: 'eq', args: ['container_id', CONTAINER_ID] },
-  ]));
+  expect(queries('ledger_entries')).toHaveLength(1);
   expectNoDirectMutation();
 });
 it('preserves null recorded_by without inventing recording or confirmation metadata', async () => {
-  scriptResolution({ changes: { entry: { recorded_by: null } }, reread: response(resolvedEntry({ recorded_by: null })) });
+  const actual = resolvedEntry({ recorded_by: null });
+  scriptResolution({ changes: { entry: { recorded_by: null } }, rpc: response(rpcResult({ entry: actual })) });
   await expect(disputes.resolveDispute(parameters({ reviewedResolution: reviewed({
     expected: resolveContext({ entry: entrySnapshot({ recorded_by: null }) }),
-  }) }))).resolves.toEqual({ dispute: resolvedDispute(), entry: resolvedEntry({ recorded_by: null }) });
+  }) }))).resolves.toEqual(resultRows({ entry: actual }));
   expect(audit.log).toHaveBeenCalledTimes(1);
   expectNoDirectMutation();
 });
-it('allows concurrent mutable notes/proofs outside the reviewed projection without auditing their contents', async () => {
-  const notes = [{ author_id: CONTRIBUTOR_ID, note: 'PRIVATE_NEW_NOTE', added_at: EXECUTION_TIME }];
-  const actualDispute = resolvedDispute({ notes });
-  const actualEntry = resolvedEntry({ proofs: ['PRIVATE_CHANGED_PROOF'], idempotency_key: 'PRIVATE_KEY' });
-  scriptResolution({ changes: { dispute: { notes: [{ note: 'PRIVATE_PREVIOUS_NOTE' }] }, entry: { proofs: [] } },
-    rpc: response(actualDispute), reread: response(actualEntry) });
-  await expect(disputes.resolveDispute(parameters())).resolves.toEqual({ dispute: actualDispute, entry: actualEntry });
-  expect(JSON.stringify(audit.log.mock.calls)).not.toMatch(/PRIVATE_/);
+it('permits mutable notes/proofs outside the projection, returning only transaction-owned whitelisted fields', async () => {
+  scriptResolution({ changes: { dispute: { notes: [{ note: 'PRIVATE_PREVIOUS_NOTE' }] },
+    entry: { proofs: ['PRIVATE_CHANGED_PROOF'], idempotency_key: 'PRIVATE_KEY' } } });
+  const result = await disputes.resolveDispute(parameters());
+  expect(result).toEqual(resultRows());
+  expect(JSON.stringify([result, audit.log.mock.calls])).not.toMatch(/PRIVATE_|proofs|idempotency_key|"notes"/);
+  expect(queries('ledger_entries')).toHaveLength(1);
   expectNoDirectMutation();
 });
 it.each(['2026-11-17T12:03:00+00:00', '2026-11-17T13:03:00.000000+01:00', '2026-11-17T12:03:00.000000Z'])(
   'verifies and preserves equivalent PostgreSQL timestamp formatting %s', async (resolved_at) => {
     const actual = resolvedDispute({ resolved_at, resolution_note: 'The payment was checked successfully 😀' });
-    scriptResolution({ rpc: response(actual) });
+    scriptResolution({ rpc: response(rpcResult({ dispute: actual })) });
     await expect(disputes.resolveDispute(parameters({ resolutionNote: '  The payment was checked successfully 😀  ' })))
-      .resolves.toEqual({ dispute: actual, entry: resolvedEntry() });
+      .resolves.toEqual(resultRows({ dispute: actual }));
     expect(audit.log).toHaveBeenCalledTimes(1);
     expectNoDirectMutation();
   });
-it('requires native auditing to finish before rereading the entry or notifying the owner', async () => {
+it('requires native auditing before notifying, without a later read substituting transaction results', async () => {
   scriptResolution();
   let finishAudit;
   let signalStarted;
@@ -312,28 +322,33 @@ it('requires native auditing to finish before rereading the entry or notifying t
   expect(queries('ledger_entries')).toHaveLength(1);
   expect(notification.send).not.toHaveBeenCalled();
   finishAudit();
-  await expect(execution).resolves.toEqual({ dispute: resolvedDispute(), entry: resolvedEntry() });
-  expect(queries('ledger_entries')).toHaveLength(2);
+  await expect(execution).resolves.toEqual(resultRows());
+  expect(queries('ledger_entries')).toHaveLength(1);
   expect(notification.send).toHaveBeenCalledTimes(1);
 });
 
-const noLongerOpen = `Failed to resolve dispute: Dispute ${DISPUTE_ID} not found or already resolved`;
-it('classifies only the exact null-data typed PostgreSQL rejection as a definite no-write conflict', async () => {
-  scriptResolution({ rpc: { data: null, error: { code: 'P0001', message: noLongerOpen } } });
+const staleMessage = 'REVIEWED_DISPUTE_STALE';
+it('classifies only the exact null-data typed reviewed PostgreSQL rejection as a definite no-write conflict', async () => {
+  scriptResolution({ rpc: { data: null, error: { code: 'P0001', message: staleMessage } } });
   await expect(disputes.resolveDispute(parameters())).rejects.toMatchObject({ code: 'CONFLICT' });
   expect(db.client.rpc).toHaveBeenCalledTimes(1);
   expect(queries('ledger_entries')).toHaveLength(1);
   expectNoEffects();
 });
 it.each([
-  response(null), response([]), response([resolvedDispute()]), { error: null }, { data: resolvedDispute() },
-  { error: { code: 'P0001', message: noLongerOpen } },
-  { data: null, error: { code: '23505', message: noLongerOpen } },
-  { data: null, error: { code: 'OTHER', message: noLongerOpen } },
-  { data: null, error: { code: 'P0001', message: `${noLongerOpen} extra text` } },
-  { data: null, error: { code: 'P0001', message: noLongerOpen.replace(DISPUTE_ID, UNRELATED_ID) } },
-  { data: null, error: { code: 'P0001', message: 'Failed to resolve dispute: PRIVATE_DATABASE_ERROR' } },
-  { data: resolvedDispute(), error: { code: 'P0001', message: noLongerOpen } },
+  response(null), response([]), response([rpcResult()]), { error: null }, { data: rpcResult() },
+  { error: { code: 'P0001', message: staleMessage } },
+  { data: null, error: { code: '23505', message: staleMessage } },
+  { data: null, error: { code: 'OTHER', message: staleMessage } },
+  { data: null, error: { code: 'P0001', message: `${staleMessage} extra text` } },
+  { data: null, error: { code: 'P0001', message: `Failed to resolve dispute: Dispute ${DISPUTE_ID} not found or already resolved` } },
+  { data: null, error: { code: 'P0001', message: 'PRIVATE_DATABASE_ERROR' } },
+  { data: rpcResult(), error: { code: 'P0001', message: staleMessage } },
+  response({ dispute: rpcResult().dispute }), response({ entry: rpcResult().entry }),
+  response({ ...rpcResult(), private_token: 'PRIVATE_TOKEN' }),
+  response({ ...rpcResult(), dispute: { ...rpcResult().dispute, notes: [] } }),
+  response({ ...rpcResult(), entry: { ...rpcResult().entry, proofs: [] } }),
+  response(resolvedDispute()),
 ])('keeps partial, malformed or unrelated RPC failures uncertain %j', async (rpc) => {
   scriptResolution({ rpc });
   await expect(disputes.resolveDispute(parameters())).rejects.toMatchObject(unavailable);
@@ -348,7 +363,7 @@ it.each([
   ['resolution_note', `  ${RESOLUTION_NOTE}  `], ['resolved_by', CONTRIBUTOR_ID], ['raised_at', EXECUTION_TIME],
   ['resolved_at', 'invalid'], ['resolved_at', '2026-11-17T12:03:01.000Z'], ['resolved_at', '2026-11-17T12:03:00.000001Z'],
 ])('verifies every stable resolved dispute field and exact resolution time (%s=%s)', async (field, value) => {
-  scriptResolution({ rpc: response(resolvedDispute({ [field]: value })) });
+  scriptResolution({ rpc: response(rpcResult({ dispute: resolvedDispute({ [field]: value }) })) });
   await expect(disputes.resolveDispute(parameters())).rejects.toMatchObject(unavailable);
   expect(db.client.rpc).toHaveBeenCalledTimes(1);
   expectNoEffects();
@@ -370,31 +385,22 @@ it.each([new Error('PRIVATE_AUDIT_ERROR'), new ConflictError('PRIVATE_AUDIT_CONF
   expect(notification.send).not.toHaveBeenCalled();
   expectNoDirectMutation();
 });
-it.each([response(null), response([]), { error: null }, { data: resolvedEntry() },
-  { data: resolvedEntry(), error: { message: 'PRIVATE_REREAD_ERROR' } }])('keeps missing or failed post-audit rereads uncertain %j', async (reread) => {
-  scriptResolution({ reread });
-  await expect(disputes.resolveDispute(parameters())).rejects.toMatchObject(unavailable);
-  expect(audit.log).toHaveBeenCalledTimes(1);
-  expect(notification.send).not.toHaveBeenCalled();
-  expectNoDirectMutation();
-});
 it.each([
   ...Object.keys(entrySnapshot()).map((field) => [field === 'entry_id' ? 'id' : field, undefined]),
   ['id', UNRELATED_ID], ['workspace_id', UNRELATED_ID], ['container_id', UNRELATED_ID], ['contributor_id', UNRELATED_ID],
   ['original_amount', '6000.00'], ['base_amount', '6000.00'], ['original_amount', 5000], ['base_amount', 5000],
-  ['payment_method', 'cash'], ['note', 'Changed after RPC'], ['recorded_by', actor.member.id], ['recorded_at', EXECUTION_TIME],
+  ['payment_method', 'cash'], ['note', 'Changed in RPC'], ['recorded_by', actor.member.id], ['recorded_at', EXECUTION_TIME],
   ['confirmed_by', CONTRIBUTOR_ID], ['confirmed_at', EXECUTION_TIME], ['status', 'disputed'], ['status', 'confirmed'],
-])('requires the unchanged ledger projection with resolved status (%s=%s)', async (field, value) => {
-  scriptResolution({ reread: response(resolvedEntry({ [field]: value })) });
+])('requires the unchanged transaction ledger projection with resolved status (%s=%s)', async (field, value) => {
+  scriptResolution({ rpc: response(rpcResult({ entry: resolvedEntry({ [field]: value }) })) });
   await expect(disputes.resolveDispute(parameters())).rejects.toMatchObject(unavailable);
-  expect(audit.log).toHaveBeenCalledTimes(1);
-  expect(notification.send).not.toHaveBeenCalled();
-  expectNoDirectMutation();
+  expectNoEffects();
+  expect(queries('ledger_entries')).toHaveLength(1);
 });
 it('returns verified resolution despite notification failure and logs only structured identifiers', async () => {
   scriptResolution();
   notification.send.mockRejectedValueOnce(new ConflictError('PRIVATE_NOTIFICATION_ERROR'));
-  await expect(disputes.resolveDispute(parameters())).resolves.toEqual({ dispute: resolvedDispute(), entry: resolvedEntry() });
+  await expect(disputes.resolveDispute(parameters())).resolves.toEqual(resultRows());
   expect(notification.send).toHaveBeenCalledTimes(1);
   expect(logger.warn).toHaveBeenCalledWith('Dispute resolution notification unavailable', {
     workspaceId: actor.workspace.id, disputeId: DISPUTE_ID, errorCode: 'CONFLICT',
@@ -402,13 +408,16 @@ it('returns verified resolution despite notification failure and logs only struc
   expect(db.client.rpc).toHaveBeenCalledTimes(1);
   expectNoDirectMutation();
 });
-it('preserves the ordinary HTTP branch without applying the new reviewed eligibility contract', async () => {
+it('preserves the ordinary HTTP branch and original RPC without applying reviewed eligibility', async () => {
   const original = { id: DISPUTE_ID, status: 'open', raised_by: CONTRIBUTOR_ID,
     ledger_entries: { container_id: CONTAINER_ID, containers: { name: 'Ordinary event' } } };
   const actual = { id: DISPUTE_ID, status: 'resolved' };
   db.mockResponses(response(original));
   db.mockNextRpcResponse(response(actual));
   await expect(disputes.resolveDispute(parameters({ isAdmin: undefined, reviewedResolution: undefined }))).resolves.toEqual(actual);
+  expect(db.client.rpc).toHaveBeenCalledWith('resolve_dispute_atomic', {
+    p_dispute_id: DISPUTE_ID, p_resolution_note: RESOLUTION_NOTE, p_resolved_by: actor.member.id, p_resolved_at: EXECUTION_TIME,
+  });
   expect(db.client.from.mock.calls).toEqual([['disputes']]);
   expect(notification.send).toHaveBeenCalledWith({ type: 'dispute_resolved', workspaceId: actor.workspace.id,
     recipientIds: [CONTRIBUTOR_ID], referenceType: 'dispute', referenceId: DISPUTE_ID,
