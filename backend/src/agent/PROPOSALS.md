@@ -726,9 +726,11 @@ See [the core checklist](CORE_COVERAGE.md) for verification status and the
 [approved reviewed-resolution SQL patch](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md)
 for targeted deployment instructions. It is implemented in source and wired
 into the reviewed service branch, **not deployed** to any existing database.
-Reviewed raise hardening is a separate **proposed, unapproved** patch: see
-[the raise SQL proposal](DISPUTE_RAISE_SCHEMA_PROPOSAL.md). It is not in the
-schema and the raise service still uses the ordinary RPC.
+Reviewed raise now uses the approved
+[`raise_dispute_reviewed_atomic` patch](DISPUTE_RAISE_SCHEMA_PROPOSAL.md): it
+locks and revalidates workspace, actor, container and entry and returns both
+verified projections from one transaction. The ordinary HTTP raise keeps its
+contract and gains a required ledger transition.
 
 ## Admin ledger confirmation
 

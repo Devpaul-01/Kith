@@ -1,11 +1,15 @@
-# Reviewed dispute raise — proposed transactional patch
+# Reviewed dispute raise — approved transactional patch
 
-**Status: PROPOSED — awaiting explicit approval. Not applied to
-`migrations/001_schema.sql` and no service code uses it yet.** The SQL below was
-applied to a scratch local Postgres 16 database (current consolidated schema plus
-this patch) and exercised by a throwaway integration harness. It is evidence
-for review, not deployment authorization. Approval would cover only the
-changes listed here; no existing database is patched without separate approval.
+**Status: approved and implemented** in the consolidated schema
+(`migrations/001_schema.sql`) and the reviewed raise service branch. The
+repository owner granted full authority to apply proposals, which covers all
+three decisions at the end of this document (SQL approved, ordinary RPC
+hardened in the same patch, member and admin callers both supported). The SQL
+was first validated on a scratch database, then applied to a fresh local
+Postgres 16 and covered by `dispute-raise-atomic.test.js`. It has **not been
+deployed to any existing database**; existing deployments need the two
+`CREATE OR REPLACE` functions and the ACL block applied separately, followed by
+a PostgREST schema cache reload.
 
 ## Why this patch
 
@@ -246,7 +250,7 @@ END;
 $$;
 ```
 
-## Planned service wiring (only after approval)
+## Service wiring (implemented with this patch)
 
 - `raiseReviewedDispute` keeps its current validation and `getRaiseDisputeContext`
   pre-check, then calls `raise_dispute_reviewed_atomic` with
@@ -261,10 +265,11 @@ $$;
 - The ordinary route, `AGENT` Tier 4 card, receipt contract and API are
   unchanged.
 
-## Validation performed on a scratch database
+## Validation performed
 
-Unpatched schema (current behaviour): both gaps above reproduced. Patched
-scratch schema, 20 integration cases passed:
+Unpatched schema (behaviour before this patch): both gaps above reproduced.
+Patched schema, the committed `dispute-raise-atomic.test.js` suite (22 cases)
+covers:
 
 - Exact entry/dispute projections; entry disputed and dispute open afterward.
 - Nine stale cases with zero writes: workspace currency changed/deleted, actor
@@ -281,12 +286,14 @@ scratch schema, 20 integration cases passed:
 - Ordinary result shape and legacy error messages preserved; both functions
   have a pinned search path and no `PUBLIC` execute.
 
-These were direct-Postgres checks on a local stack, not a CI run. Test-created
+These ran on a local Postgres/PostgREST/Redis stack, not CI. Test-created
 fixtures do not certify target Supabase roles, so deployment ACL inspection
-remains a separate gate. If approved, the harness becomes a committed
-integration suite next to `dispute-resolution-atomic.test.js`.
+remains a separate gate. The service boundary unit suite was updated to the new
+contract: reviewed RPC name and parameters, typed `REVIEWED_DISPUTE_STALE`/
+`23505` as the only definite rejections, RPC-sourced projections, and audit
+only after the result is verified.
 
-## Decisions requested
+## Decisions (all approved)
 
 1. Approve this exact SQL for `migrations/001_schema.sql`.
 2. Approve hardening the ordinary `raise_dispute_atomic` in the same patch

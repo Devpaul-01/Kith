@@ -11,10 +11,10 @@ Frontend work, uploads, Tier 5 and lower-priority expansion remain excluded.
   **5 suites / 470 tests passed** with the CLI timeout override.
 - Initial full unit baseline: **130 suites passed / 1 failed; 5,600 tests passed /
   3 failed**, all failures were 5-second timeouts in `dispute-raise-route.test.js`.
-- Post-hardening full unit regression: **132 suites / 5,619 tests passed**
+- Post-hardening full unit regression: **132 suites / 5,617 tests passed**
   (including the new viewed-container suite), with no timeout override.
 - Dispute integration suites (`dispute-proposals`, `dispute-resolution-atomic`,
-  `dispute.routes`): **3 suites / 44 tests passed** on a local Postgres 16 +
+  `dispute-raise-atomic`, `dispute.routes`): **4 suites / 66 tests passed** on a local Postgres 16 +
   PostgREST v12.0.2 + Redis stack with `migrations/001_schema.sql` applied. This
   is not a CI run. The remaining integration/rate-limit suites were not run.
 - Real-model behavior, target database ranked-search definitions/indexes/ACLs
@@ -82,9 +82,9 @@ spoken/chat “confirm” do not grant selection or approval.
   integration passed; CI and target deployment remain pending.
 - [ ] Other money/target/destructive transactional checks beyond disputes.
   Include ordinary HTTP/job writers in lock/race tests.
-- [ ] Reviewed dispute **raise** transactional hardening: exact SQL proposed in
-  [DISPUTE_RAISE_SCHEMA_PROPOSAL.md](DISPUTE_RAISE_SCHEMA_PROPOSAL.md), validated
-  on a scratch database, **awaiting approval**; not in the schema or service.
+- [x] Reviewed dispute **raise** transactional hardening implemented in the
+  schema and service ([patch](DISPUTE_RAISE_SCHEMA_PROPOSAL.md)); local real-stack
+  integration passed. CI and target deployment remain pending.
 - [x] Separate read-only `viewed_container_id` context; never action selection.
 - [ ] Service-calculated monthly summaries after date/timezone/status semantics
   are settled; no model arithmetic.
