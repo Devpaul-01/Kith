@@ -10,4 +10,10 @@ const listContainersArgsSchema = z.object({
 }).strict();
 const getContainerArgsSchema = z.object({ container_id: z.string().uuid() }).strict();
 
-module.exports = { listContainersArgsSchema, getContainerArgsSchema, MAX_CONTAINER_PAGE };
+const viewedContainerSchema = z.object({
+  workspace_id: z.string().uuid(), container_id: z.string().uuid(), name: z.string().min(1).max(200),
+  container_type: z.enum(['event', 'recurring']), status: z.enum(['active', 'completed', 'archived', 'cancelled']),
+  enable_money: z.boolean(), enable_tasks: z.boolean(),
+}).strict();
+
+module.exports = { listContainersArgsSchema, getContainerArgsSchema, MAX_CONTAINER_PAGE, viewedContainerSchema };

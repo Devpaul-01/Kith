@@ -12,7 +12,8 @@ const READ_TURN_LIMITS = Object.freeze({
   conversationBytes: 128 * 1024,
 });
 
-// Only text comes from the client. Context and provider are server-owned.
+// Client text and structured IDs are untrusted. Auth identity and provider
+// configuration are server-owned; a viewed ID never supplies action selection.
 const readTurnInputSchema = z.object({
   message: z.string().max(READ_TURN_LIMITS.messageChars).trim().min(1),
 }).strict();
@@ -21,6 +22,7 @@ const readTurnInputSchema = z.object({
 // The client never supplies the stored messages or the conversation's owner.
 const chatInputSchema = readTurnInputSchema.extend({
   conversation_id: z.string().uuid().nullable().optional(),
+  viewed_container_id: z.string().uuid().transform((id) => id.toLowerCase()).optional(),
   selected_notification_id: z.string().uuid().transform((id) => id.toLowerCase()).optional(),
   selected_contact_id: z.string().uuid().transform((id) => id.toLowerCase()).optional(),
   selected_task: taskTargetSchema.optional(),

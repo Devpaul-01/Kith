@@ -1,4 +1,5 @@
 const { assertAgentContext } = require('./context.service');
+const { getViewedContainerContext } = require('./read-tools.service');
 const { ValidationError } = require('../../utils/errors');
 const { chatInputSchema } = require('../validators/read-turn.validator');
 const { runReadTurn, runReadTurnWithHistory } = require('./read-loop.service');
@@ -42,6 +43,9 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
   });
   const provider = createGroqProvider({ budget });
   const turnData = { message: input.data.message };
+  const viewedContainer = input.data.viewed_container_id === undefined ? undefined
+    : await getViewedContainerContext({ context: actorContext, containerId: input.data.viewed_container_id });
+  // Viewport context is informational only and is not an action selection.
   // Selection is explicit client input, validated through domain services. It
   // is scoped to this request and never restored from conversation history.
   const selection = input.data.selected_notification_id === undefined ? undefined
@@ -120,14 +124,14 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     context: actorContext, proposals: extractProposalReferences(history), signal,
   });
   if (input.data.conversation_id === undefined) {
-    return runReadTurn({ data: turnData, context: actorContext, provider, onEvent, signal, proposalSupport, loadActionReceipts });
+    return runReadTurn({ data: turnData, context: actorContext, provider, onEvent, signal, proposalSupport, loadActionReceipts, viewedContainer });
   }
   return runConversationTurn({
     context: actorContext, conversationId: input.data.conversation_id,
     signal,
     runTurn: ({ history, conversationId }) => {
       proposalConversationId = conversationId;
-      return runReadTurnWithHistory({ data: turnData, context: actorContext, provider, history, onEvent, signal, proposalSupport, loadActionReceipts });
+      return runReadTurnWithHistory({ data: turnData, context: actorContext, provider, history, onEvent, signal, proposalSupport, loadActionReceipts, viewedContainer });
     },
   });
 }
