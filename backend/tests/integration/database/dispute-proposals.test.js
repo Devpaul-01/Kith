@@ -235,7 +235,7 @@ describe('reviewed dispute proposal integration baseline', () => {
     await updateRow('workspace_members', tenant.admin.member.id, { role: 'member' });
     const rpc = jest.spyOn(supabaseAdmin, 'rpc');
     await expect(confirm(tenant.adminContext, proposal, challenge)).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    expect(rpcCalls(rpc, 'resolve_dispute_atomic')).toHaveLength(0);
+    expect(rpcCalls(rpc, 'resolve_dispute_reviewed_atomic')).toHaveLength(0);
     await assertUnresolved(tenant, opened.disputeId);
   });
 
@@ -246,7 +246,7 @@ describe('reviewed dispute proposal integration baseline', () => {
     const rpc = jest.spyOn(supabaseAdmin, 'rpc');
     await expect(confirm(tenant.adminContext, proposal, challenge)).rejects.toMatchObject({ code: 'AGENT_PROPOSAL_STALE' });
     expect((await status(tenant.adminContext, proposal)).status).toBe('failed');
-    expect(rpcCalls(rpc, 'resolve_dispute_atomic')).toHaveLength(0);
+    expect(rpcCalls(rpc, 'resolve_dispute_reviewed_atomic')).toHaveLength(0);
     await assertUnresolved(tenant, opened.disputeId);
   });
 
@@ -264,7 +264,7 @@ describe('reviewed dispute proposal integration baseline', () => {
       expect(['AGENT_PROPOSAL_BUSY', 'AGENT_PROPOSAL_INDETERMINATE']).toContain(outcome.reason.code);
     }
     expect(await confirm(tenant.adminContext, proposal, challenge)).toEqual(successes[0].value);
-    expect(rpcCalls(rpc, 'resolve_dispute_atomic')).toHaveLength(1);
+    expect(rpcCalls(rpc, 'resolve_dispute_reviewed_atomic')).toHaveLength(1);
     const events = await actionAudits(tenant, proposal);
     expect(events.filter((event) => event.action === AUDIT_ACTIONS.DISPUTE_RESOLVED)).toHaveLength(1);
     expect(events.filter((event) => event.action === AUDIT_ACTIONS.AGENT_ACTION_CONFIRMED)).toHaveLength(1);
@@ -277,14 +277,14 @@ describe('reviewed dispute proposal integration baseline', () => {
     failAuditOnce(AUDIT_ACTIONS.AGENT_ACTION_CONFIRMED);
     await expect(confirm(tenant.adminContext, proposal, challenge)).rejects.toMatchObject({ code: 'AUDIT_UNAVAILABLE' });
     expect((await status(tenant.adminContext, proposal)).status).toBe('confirmation_pending');
-    expect(rpcCalls(rpc, 'resolve_dispute_atomic')).toHaveLength(0);
+    expect(rpcCalls(rpc, 'resolve_dispute_reviewed_atomic')).toHaveLength(0);
     await assertUnresolved(tenant, opened.disputeId);
     const pending = await storedRecord(tenant.adminContext, proposal);
     expect((await confirm(tenant.adminContext, proposal, challenge)).status).toBe('executed');
     expect((await storedRecord(tenant.adminContext, proposal)).secondaryConfirmation).toEqual(pending.secondaryConfirmation);
     const confirmedAudits = (await actionAudits(tenant, proposal)).filter((event) => event.action === AUDIT_ACTIONS.AGENT_ACTION_CONFIRMED);
     expect(confirmedAudits.map((event) => event.id)).toEqual([pending.auditIds.confirmed]);
-    expect(rpcCalls(rpc, 'resolve_dispute_atomic')).toHaveLength(1);
+    expect(rpcCalls(rpc, 'resolve_dispute_reviewed_atomic')).toHaveLength(1);
   });
 
   it.each(['approve', 'confirm'])('finishes final agent auditing through %s from a saved result without repeating the RPC', async (retry) => {
@@ -298,7 +298,7 @@ describe('reviewed dispute proposal integration baseline', () => {
     expect(receipt.result.entry.status).toBe('resolved');
     const result = retry === 'approve' ? await approve(tenant.adminContext, proposal) : await confirm(tenant.adminContext, proposal, challenge);
     expect(result).toEqual({ proposal_id: proposal.id, status: 'executed', result: receipt.result });
-    expect(rpcCalls(rpc, 'resolve_dispute_atomic')).toHaveLength(1);
+    expect(rpcCalls(rpc, 'resolve_dispute_reviewed_atomic')).toHaveLength(1);
     expect((await actionAudits(tenant, proposal)).filter((event) => event.action === AUDIT_ACTIONS.AGENT_ACTION_EXECUTED)).toHaveLength(1);
   });
 
@@ -308,7 +308,7 @@ describe('reviewed dispute proposal integration baseline', () => {
     const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
     const rpc = jest.spyOn(supabaseAdmin, 'rpc').mockImplementation(async (name, args) => {
       const response = await originalRpc(name, args);
-      if (failure === 'lost RPC response' && name === 'resolve_dispute_atomic') {
+      if (failure === 'lost RPC response' && name === 'resolve_dispute_reviewed_atomic') {
         expect(response.error).toBeNull();
         return { data: null, error: { code: 'NETWORK_FAILURE', message: 'Injected lost response after commit' } };
       }
@@ -323,7 +323,7 @@ describe('reviewed dispute proposal integration baseline', () => {
     expect(receipt).not.toHaveProperty('result');
     await expect(confirm(tenant.adminContext, proposal, challenge)).rejects.toMatchObject({ code: 'AGENT_PROPOSAL_INDETERMINATE' });
     await expect(approve(tenant.adminContext, proposal)).rejects.toMatchObject({ code: 'AGENT_PROPOSAL_INDETERMINATE' });
-    expect(rpcCalls(rpc, 'resolve_dispute_atomic')).toHaveLength(1);
+    expect(rpcCalls(rpc, 'resolve_dispute_reviewed_atomic')).toHaveLength(1);
     expect(await actionAudits(tenant, proposal)).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: AUDIT_ACTIONS.AGENT_ACTION_FAILED, metadata: expect.objectContaining({ execution_outcome: 'unknown' }) }),
     ]));
