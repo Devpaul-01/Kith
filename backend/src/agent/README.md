@@ -83,22 +83,26 @@ result verification and retry contracts. Other writes and voice are pending.
 ### Core milestone verification
 
 The [core coverage checklist](CORE_COVERAGE.md) tracks supported scopes,
-remaining actions and verification separately. The current dispute-resolution
-slice passes its four targeted unit suites (436 tests). A real-service
-raise/resolve integration suite has been added at
-`tests/integration/database/dispute-proposals.test.js`; it is **not executed**
-without the isolated Postgres/PostgREST/Redis stack. It covers token-bound
+remaining actions and verification separately. Hardened resolution and the
+ordinary dispute service pass five targeted unit suites (470 tests). A real-service
+raise/resolve integration suite lives at
+`tests/integration/database/dispute-proposals.test.js`; it has passed on a local
+Postgres/PostgREST/Redis stack (not yet confirmed in CI). It covers token-bound
 approval/confirmation, both stored transitions, exact notes/timestamps,
 receipts, real Redis deduplication, auditing and conservative failure recovery.
 Fault cases inject reply/audit outages around otherwise real operations.
 
-The current resolver's post-read prevents an unverified success receipt but
-cannot undo a committed dispute-only transition if the ledger update affected
-no row. Related eligibility checks also remain outside the RPC transaction.
-The [exact resolution hardening proposal](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md)
-addresses this next, including the ordinary resolver's lock order. It is
-**review only**; no schema or runtime execution contract was changed in this
-baseline slice. Database race/ACL/deployment verification remains pending.
+Reviewed resolution now locks related eligibility and both target rows inside
+`resolve_dispute_reviewed_atomic`, compares exact approved snapshots and requires
+both transitions. Receipts use its dual projections, never a later post-read.
+The [approved hardening patch](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md) also gives
+the ordinary resolver entry-first locking and a required ledger transition.
+These changes are implemented in the consolidated schema and service branch,
+**not deployed** to any existing database. The separate
+`dispute-resolution-atomic.test.js` integration suite covers observed ordinary-
+writer lock races, required-update suppression/rollback and transactional ACL
+fixtures; it passed locally. CI confirmation and target deployment/ACL
+inspection remain pending.
 
 Current work prioritizes the core money, task, member, participant and dispute
 flow. Do not add or polish tools marked Lower-Priority in the architecture;

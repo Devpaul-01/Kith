@@ -676,36 +676,33 @@ execution. Chat text cannot perform either decision. Tokens never enter
 cards, provider context, history, status receipts or audits.
 
 The reviewed native branch independently verifies the authenticated admin,
-owner and complete scoped context before `resolve_dispute_atomic`. The RPC
-marks the dispute resolved and conditionally marks its ledger entry resolved
-in one transaction, but does not require that ledger transition to affect a row.
-Verify its returned dispute
-against all approved stable fields, preserving the stored resolution note
-without normalization. Equivalent PostgreSQL timestamp formatting is
-accepted only for the exact server-generated instant; the returned timestamp
-is retained verbatim. Require `dispute.resolved` auditing with the stored
-session/conversation trace, then reread and verify the immutable entry with
-resolved status. Best-effort notifications to the original raiser use
-`dispute_resolved:<dispute-id>` for deduplication.
+owner and scoped context, then calls `resolve_dispute_reviewed_atomic`. Inside
+the transaction, that RPC locks the workspace, ordered actor/owner members,
+event, ledger entry and dispute; it rechecks eligibility and the complete
+approved snapshots. Both conditional updates must affect exactly one row or
+the transaction rolls back. It returns both whitelisted projections, not a
+later post-read. Verify all returned stable fields and the exact server-generated
+resolution instant before requiring `dispute.resolved` auditing with the saved
+session/conversation trace. The stored timestamp is retained verbatim.
+Best-effort raiser notifications use `dispute_resolved:<dispute-id>` deduplication.
 
-Only explicit null-data PostgreSQL `P0001` with the exact requested-dispute
-not-found/already-resolved rejection proves no mutation occurred and becomes
-a stale card. Transport, malformed results, required native audit and
-post-read uncertainty retain the irreversible claim. Saved results can
-finish final agent auditing through approve or confirm without another RPC.
-Status and continuation receipts bind the same `dispute_id`, `entry_id` and
-`container_id`; successful results require both resolved states and preserve
-the reviewed financial values. Pending confirmation receipts certify no write.
+Only null-data PostgreSQL `P0001` with exact `REVIEWED_DISPUTE_STALE` proves a
+reviewed no-write rejection and becomes a stale card. Transport/malformed-result
+and required native-audit uncertainty retain the irreversible claim. Saved
+results can finish final agent auditing through approve or confirm without
+another RPC. Status and continuation receipts bind the same dispute, entry
+and container IDs; successful results require both resolved states and preserve
+all reviewed financial fields. Pending confirmation receipts certify no write.
 
-Workspace/admin/owner/event checks, RPC, audits, Redis storage and post-read
-remain separate operations. The unchanged RPC does not check those related
-rows inside its transaction or assert an affected ledger-row count; verified
-post-read is required before reporting success. Live Postgres/PostgREST/Redis
-coverage remains necessary for text casts, deployed immutability, concurrent
-eligibility changes, resolver races and partial failures. This milestone
-adds no schema changes or dependencies.
+Required native auditing, Redis storage and final auditing remain separate
+from the mutation transaction; no durable automatic replay is introduced.
+Ordinary HTTP resolution retains its signature and dispute-only result but
+now locks entry before dispute and requires both transitions. This matches the
+ordinary raise RPC's lock order. Both resolvers have pinned search paths and
+service-role-only execution grants; independent handler authorization remains
+mandatory. Target database deployment and ACL inspection are still pending.
 
-#### Baseline integration coverage and next review
+#### Integration coverage and deployment status
 
 `tests/integration/database/dispute-proposals.test.js` adds 12 cases through
 real domain/proposal services, Postgres/PostgREST and Redis (no paid model
@@ -717,17 +714,18 @@ audit outage before mutation, final audit recovery from a saved result, and
 native-audit/lost-RPC-response uncertainty after real committed mutations.
 Ordinary service callers retain their dispute-only result shape.
 
-**These integration tests have not run in this sandbox.** Syntax/discovery
-checks and the four passing resolution unit suites do not prove live database
-correctness. Missing-ledger-transition and competing HTTP/eligibility-writer
-regressions will accompany the hardening patch; unsafe partial behavior is not
-asserted as an acceptance contract here.
+**Execution status:** the dispute integration suites (`dispute-proposals`,
+`dispute-resolution-atomic` and `dispute.routes`) passed locally, 44 tests, against
+Postgres 16 with `migrations/001_schema.sql`, PostgREST v12.0.2 and Redis. That
+is not a CI run and does not certify a target database or its real Supabase
+roles. The separate `dispute-resolution-atomic.test.js` suite adds ordinary/reviewed resolver races,
+competing eligibility edits, mandatory row-count rollback regressions and
+rollback-only role/ACL fixtures. Unsafe partial outcomes are not accepted.
 
-See [the core checklist](CORE_COVERAGE.md) for baseline/regression status and
-[the exact reviewed-resolution SQL proposal](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md)
-for the next schema review. The latter is not applied or wired into services.
-It proposes a service-role-only reviewed RPC, complete locked snapshot checks,
-required dual transitions and a compatible entry-first ordinary resolver.
+See [the core checklist](CORE_COVERAGE.md) for verification status and the
+[approved reviewed-resolution SQL patch](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md)
+for targeted deployment instructions. It is implemented in source and wired
+into the reviewed service branch, **not deployed** to any existing database.
 Reviewed raise hardening remains a subsequent small slice.
 
 ## Admin ledger confirmation

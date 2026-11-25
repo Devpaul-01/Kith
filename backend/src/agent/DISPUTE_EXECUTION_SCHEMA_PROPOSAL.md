@@ -1,17 +1,18 @@
-# Reviewed dispute resolution — proposed transactional patch
+# Reviewed dispute resolution — approved transactional patch
 
-**Status: review only; not applied, wired into services, or executed.**
-`migrations/001_schema.sql` is unchanged. This is the exact proposed SQL for the
-next small hardening slice, not a migration runner or an authorized deployment.
+**Status: implemented in the consolidated schema and reviewed service branch.
+Applied to and exercised on a local Postgres 16 stack (see coverage below); not
+deployed to any existing database.** The user
+approved implementation on 2026-11-18. This document records the exact patch,
+not a migration runner or authorization to deploy it to an existing database.
 
 ## Why this patch
 
-The current reviewed service rechecks workspace, admin, owner, event and both
-records, then calls `resolve_dispute_atomic`. That RPC updates the dispute first
-and does not require its conditional ledger update to affect a row. A valid
-post-read is required for an agent success receipt, but detecting a mismatch
-after commit cannot undo a partially applicable resolution. Related eligibility
-can also change between the service reads and the RPC.
+Before hardening, the reviewed service rechecked workspace, admin, owner, event
+and both records, then called `resolve_dispute_atomic`. That RPC updated the
+dispute first and did not require its conditional ledger update to affect a
+row. A valid post-read could detect a mismatch but could not undo a committed
+partial resolution. Eligibility could also change between reads and mutation.
 
 The new opt-in `resolve_dispute_reviewed_atomic` accepts only server-owned,
 strictly validated selection state and authenticated identity. It compares the
@@ -57,7 +58,7 @@ It does not move ordinary HTTP authorization into the RPC.
 - Reviewed raise hardening remains a separate subsequent slice. This proposal
   does not claim that its current pre-RPC related-row checks are transactional.
 
-## Exact SQL proposed for the consolidated schema
+## Exact approved SQL in the consolidated schema
 
 Replace the existing `resolve_dispute_atomic` definition with the first function,
 then add the reviewed function and ACL block beside it. For an existing database,
@@ -306,10 +307,14 @@ $$;
 5. Classify only the exact reviewed stale rejection as `ConflictError`; preserve
    uncertainty for all other RPC/audit/storage failures. No automatic retry.
 
-## Required regression tests with implementation (not claimed covered today)
+## Regression coverage (executed on a local Postgres 16 / PostgREST / Redis stack)
 
-Use real direct Postgres sessions with barriers/lock waits, finite timeouts and
-cleanup in `finally`, plus PostgREST and the existing service/proposal path:
+`tests/integration/database/dispute-resolution-atomic.test.js` uses real direct
+Postgres sessions with observed lock waits, finite timeouts and rollback-only
+trigger/role fixtures. A local run of the three dispute integration suites passed
+(44 tests); this is not a CI or target-database result. `dispute-proposals.test.js` now exercises the reviewed
+RPC through the real service/proposal layer. Deployment ACL inspection remains
+a separate gate; test-created roles do not certify target role inheritance.
 
 - Missing/non-disputed expected ledger transition: **neither** record changes.
 - Ordinary HTTP resolution racing reviewed resolution: one verified transition;

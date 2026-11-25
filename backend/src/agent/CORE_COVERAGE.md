@@ -7,20 +7,23 @@ Frontend work, uploads, Tier 5 and lower-priority expansion remain excluded.
 
 ## Verification status
 
-- Dispute-resolution targeted unit suite: **4 suites / 436 tests passed**.
+- Hardened resolution + ordinary dispute service targeted units:
+  **5 suites / 470 tests passed** with the CLI timeout override.
 - Initial full unit baseline: **130 suites passed / 1 failed; 5,600 tests passed /
   3 failed**, all failures were 5-second timeouts in `dispute-raise-route.test.js`.
-- Full unit regression with a CLI-only 30-second timeout override:
-  **131 suites / 5,603 tests passed**. No test/runtime timeout settings were
-  changed in source.
-- `tests/integration/database/dispute-proposals.test.js`: **12 cases added,
-  not executed**. Requires the isolated Postgres/PostgREST/Redis test stack,
-  unavailable in this sandbox. Jest discovery and syntax checks are separate
-  from real integration verification.
+- Post-hardening full unit regression: **132 suites / 5,619 tests passed**
+  (including the new viewed-container suite), with no timeout override.
+- Dispute integration suites (`dispute-proposals`, `dispute-resolution-atomic`,
+  `dispute.routes`): **3 suites / 44 tests passed** on a local Postgres 16 +
+  PostgREST v12.0.2 + Redis stack with `migrations/001_schema.sql` applied. This
+  is not a CI run. The remaining integration/rate-limit suites were not run.
 - Real-model behavior, target database ranked-search definitions/indexes/ACLs
   and deployment correctness: **unverified**. No production data or paid calls.
-- The [reviewed resolution SQL proposal](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md)
-  is **review only**. `migrations/001_schema.sql` was not changed or applied.
+- The [approved resolution SQL patch](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md)
+  is implemented in `migrations/001_schema.sql` and the reviewed service branch.
+  It has **not been deployed** to an existing database. The real
+  `dispute-resolution-atomic.test.js` race/rollback/ACL suite passed locally;
+  its ACL fixtures use test-created roles, not target Supabase roles.
 
 Verification commands from `backend/` (Jest 29 uses the singular flag):
 
@@ -50,7 +53,7 @@ and `git diff --check`. These checks do not execute the integration cases.
 | `create_task` | 3 | Assigned/unassigned task in active task-enabled event/recurring container | Separate reassignment/batch tools; proxy eligibility decision |
 | `admin_confirm_task` | 3 | Completed unconfirmed task, exact existing attachment metadata | Transactional hardening, never upload finalization |
 | `raise_dispute` | 4 | Own confirmed positive base-currency event contribution | Reviewed transaction; recurring and approved on-behalf/proxy cases |
-| `resolve_dispute` | 4 | Admin closes selected owner-raised dispute on eligible disputed base-currency event contribution with confirmation metadata | Reviewed transaction; broaden approved cases only later |
+| `resolve_dispute` | 4 | Admin closes selected owner-raised dispute; transaction locks eligibility and requires exact dual transitions | Broaden approved cases only later; real-stack/deployment verification |
 
 All existing tools retain independent permission checks, structured current-
 request selection and separate approval. Both dispute actions require the
@@ -74,9 +77,11 @@ spoken/chat “confirm” do not grant selection or approval.
 
 ## Remaining platform slices
 
-- [ ] Transactional checks for reviewed resolution, then reviewed raise and
-  other reviewed money/target/destructive operations as independently reviewed
-  patches. Include ordinary HTTP/job writers in lock/race tests.
+- [x] Reviewed resolution transactional checks and required dual transitions
+  implemented; ordinary resolver lock order coordinated. Local real-stack
+  integration passed; CI and target deployment remain pending.
+- [ ] Reviewed raise and other money/target/destructive transactional checks.
+  Include ordinary HTTP/job writers in lock/race tests.
 - [ ] Separate read-only `viewed_container_id` context; never action selection.
 - [ ] Service-calculated monthly summaries after date/timezone/status semantics
   are settled; no model arithmetic.
