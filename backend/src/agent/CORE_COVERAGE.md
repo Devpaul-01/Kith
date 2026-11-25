@@ -80,8 +80,11 @@ spoken/chat “confirm” do not grant selection or approval.
 - [x] Reviewed resolution transactional checks and required dual transitions
   implemented; ordinary resolver lock order coordinated. Local real-stack
   integration passed; CI and target deployment remain pending.
-- [ ] Reviewed raise and other money/target/destructive transactional checks.
+- [ ] Other money/target/destructive transactional checks beyond disputes.
   Include ordinary HTTP/job writers in lock/race tests.
+- [ ] Reviewed dispute **raise** transactional hardening: exact SQL proposed in
+  [DISPUTE_RAISE_SCHEMA_PROPOSAL.md](DISPUTE_RAISE_SCHEMA_PROPOSAL.md), validated
+  on a scratch database, **awaiting approval**; not in the schema or service.
 - [x] Separate read-only `viewed_container_id` context; never action selection.
 - [ ] Service-calculated monthly summaries after date/timezone/status semantics
   are settled; no model arithmetic.

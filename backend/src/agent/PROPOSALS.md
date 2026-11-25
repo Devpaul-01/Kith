@@ -726,7 +726,9 @@ See [the core checklist](CORE_COVERAGE.md) for verification status and the
 [approved reviewed-resolution SQL patch](DISPUTE_EXECUTION_SCHEMA_PROPOSAL.md)
 for targeted deployment instructions. It is implemented in source and wired
 into the reviewed service branch, **not deployed** to any existing database.
-Reviewed raise hardening remains a subsequent small slice.
+Reviewed raise hardening is a separate **proposed, unapproved** patch: see
+[the raise SQL proposal](DISPUTE_RAISE_SCHEMA_PROPOSAL.md). It is not in the
+schema and the raise service still uses the ordinary RPC.
 
 ## Admin ledger confirmation
 
