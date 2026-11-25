@@ -1386,33 +1386,170 @@ EXCEPTION
 END;
 $$;
 
-CREATE FUNCTION public.raise_dispute_atomic(p_workspace_id uuid, p_ledger_entry_id uuid, p_raised_by uuid, p_reason text) RETURNS jsonb
+-- Reviewed dispute raise: the ordinary RPC requires its ledger transition; the
+-- reviewed RPC re-validates and locks workspace -> actor -> container -> entry
+-- and compares the exact approved snapshot. See DISPUTE_RAISE_SCHEMA_PROPOSAL.md.
+CREATE OR REPLACE FUNCTION public.raise_dispute_atomic(p_workspace_id uuid, p_ledger_entry_id uuid, p_raised_by uuid, p_reason text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path TO 'public'
+    SET search_path = pg_catalog, public
     AS $$
-    DECLARE
-      v_entry   public.ledger_entries;
-        v_dispute public.disputes;
-        BEGIN
-          SELECT * INTO v_entry FROM public.ledger_entries
-             WHERE id = p_ledger_entry_id AND workspace_id = p_workspace_id
-                FOR UPDATE;
+DECLARE
+    v_entry   public.ledger_entries;
+    v_dispute public.disputes;
+    v_count   integer;
+BEGIN
+    SELECT * INTO v_entry FROM public.ledger_entries
+    WHERE id = p_ledger_entry_id AND workspace_id = p_workspace_id
+    FOR UPDATE;
 
-                  IF v_entry.id IS NULL THEN RAISE EXCEPTION 'ENTRY_NOT_FOUND'; END IF;
-                    IF v_entry.status NOT IN ('confirmed', 'pending') THEN RAISE EXCEPTION 'ENTRY_NOT_DISPUTABLE'; END IF;
-                      IF EXISTS (SELECT 1 FROM public.disputes WHERE ledger_entry_id = p_ledger_entry_id AND status = 'open') THEN
-                          RAISE EXCEPTION 'DISPUTE_ALREADY_OPEN';
-                            END IF;
+    IF v_entry.id IS NULL THEN RAISE EXCEPTION 'ENTRY_NOT_FOUND'; END IF;
+    IF v_entry.status NOT IN ('confirmed', 'pending') THEN RAISE EXCEPTION 'ENTRY_NOT_DISPUTABLE'; END IF;
+    IF EXISTS (SELECT 1 FROM public.disputes WHERE ledger_entry_id = p_ledger_entry_id AND status = 'open') THEN
+        RAISE EXCEPTION 'DISPUTE_ALREADY_OPEN';
+    END IF;
 
-                              INSERT INTO public.disputes (workspace_id, ledger_entry_id, raised_by, reason, status)
-                                VALUES (p_workspace_id, p_ledger_entry_id, p_raised_by, p_reason, 'open')
-                                  RETURNING * INTO v_dispute;
+    INSERT INTO public.disputes (workspace_id, ledger_entry_id, raised_by, reason, status)
+    VALUES (p_workspace_id, p_ledger_entry_id, p_raised_by, p_reason, 'open')
+    RETURNING * INTO v_dispute;
 
-                                    UPDATE public.ledger_entries SET status = 'disputed' WHERE id = p_ledger_entry_id;
+    UPDATE public.ledger_entries SET status = 'disputed'
+    WHERE id = p_ledger_entry_id AND workspace_id = p_workspace_id
+      AND status IN ('confirmed', 'pending');
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    -- Raising rolls back the inserted dispute: never commit one without the transition.
+    IF v_count <> 1 THEN RAISE EXCEPTION 'ENTRY_NOT_DISPUTABLE'; END IF;
 
-                                      RETURN to_jsonb(v_dispute);
-                                      END;
-                                      $$;
+    RETURN to_jsonb(v_dispute);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.raise_dispute_reviewed_atomic(
+    p_workspace_id uuid,
+    p_user_id uuid,
+    p_raised_by uuid,
+    p_reason text,
+    p_expected jsonb
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    v_workspace public.workspaces;
+    v_actor public.workspace_members;
+    v_container public.containers;
+    v_entry public.ledger_entries;
+    v_dispute public.disputes;
+    v_expected jsonb;
+    v_current jsonb;
+    v_count integer;
+BEGIN
+    IF p_workspace_id IS NULL OR p_user_id IS NULL OR p_raised_by IS NULL
+       OR p_reason IS NULL
+       OR char_length(p_reason) NOT BETWEEN 5 AND 1000
+       OR p_reason <> btrim(p_reason)
+       OR jsonb_typeof(p_expected) IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION 'INVALID_REVIEWED_DISPUTE_INPUT';
+    END IF;
+
+    SELECT * INTO v_workspace FROM public.workspaces
+    WHERE id = p_workspace_id FOR SHARE;
+    SELECT * INTO v_actor FROM public.workspace_members
+    WHERE id = p_raised_by FOR SHARE;
+    SELECT * INTO v_container FROM public.containers
+    WHERE id = (p_expected ->> 'container_id')::uuid FOR SHARE;
+    SELECT * INTO v_entry FROM public.ledger_entries
+    WHERE id = (p_expected #>> '{entry,entry_id}')::uuid FOR UPDATE;
+
+    IF v_workspace.id IS NULL OR v_workspace.deleted_at IS NOT NULL
+       OR v_actor.id IS NULL OR v_actor.workspace_id <> p_workspace_id
+       OR v_actor.user_id IS DISTINCT FROM p_user_id
+       OR v_actor.role NOT IN ('member', 'admin')
+       OR NOT v_actor.is_active OR v_actor.is_proxy OR v_actor.deleted_at IS NOT NULL
+       OR v_container.id IS NULL OR v_container.workspace_id <> p_workspace_id
+       OR v_container.container_type <> 'event' OR v_container.status <> 'active'
+       OR NOT v_container.enable_money OR v_container.deleted_at IS NOT NULL
+       OR v_entry.id IS NULL OR v_entry.workspace_id <> p_workspace_id
+       OR v_entry.container_id <> v_container.id
+       OR v_entry.contributor_id IS DISTINCT FROM v_actor.id
+       OR v_entry.entry_type <> 'contribution' OR v_entry.status <> 'confirmed'
+       OR v_entry.original_amount <= 0
+       OR v_entry.original_currency <> v_workspace.base_currency
+       OR v_entry.original_amount <> v_entry.base_amount OR v_entry.is_crypto
+       OR v_entry.payment_method = 'crypto' OR v_entry.cycle_id IS NOT NULL
+       OR v_entry.corrects_entry_id IS NOT NULL
+       OR v_entry.confirmed_at IS NULL OR v_entry.confirmed_by IS NULL
+       OR EXISTS (SELECT 1 FROM public.disputes
+                  WHERE ledger_entry_id = v_entry.id AND status = 'open') THEN
+        RAISE EXCEPTION 'REVIEWED_DISPUTE_STALE';
+    END IF;
+
+    -- Mirror the service's strict raise selection exactly: no proof, note or
+    -- private-key snapshots. Explicit text casts preserve numeric(15,2) decimals.
+    v_current := jsonb_build_object(
+        'workspace_id', v_workspace.id, 'workspace_name', v_workspace.name,
+        'workspace_updated_at', v_workspace.updated_at,
+        'base_currency', v_workspace.base_currency,
+        'actor_member_id', v_actor.id, 'member_role', v_actor.role,
+        'actor_display_name', v_actor.display_name, 'member_updated_at', v_actor.updated_at,
+        'container_id', v_container.id, 'container_name', v_container.name,
+        'container_type', v_container.container_type, 'container_status', v_container.status,
+        'enable_money', v_container.enable_money, 'container_updated_at', v_container.updated_at,
+        'entry', (to_jsonb(v_entry) - ARRAY['id', 'proofs', 'idempotency_key'])
+            || jsonb_build_object('entry_id', v_entry.id,
+                'original_amount', v_entry.original_amount::text, 'base_amount', v_entry.base_amount::text),
+        'dispute', 'null'::jsonb
+    );
+    -- Normalize only formatting of known timestamp fields, not financial values
+    -- or arbitrary text. Missing/extra expected fields still fail equality.
+    v_expected := p_expected || jsonb_build_object(
+        'workspace_updated_at', (p_expected ->> 'workspace_updated_at')::timestamptz,
+        'member_updated_at', (p_expected ->> 'member_updated_at')::timestamptz,
+        'container_updated_at', (p_expected ->> 'container_updated_at')::timestamptz,
+        'entry', (p_expected -> 'entry') || jsonb_build_object(
+            'recorded_at', (p_expected #>> '{entry,recorded_at}')::timestamptz,
+            'confirmed_at', (p_expected #>> '{entry,confirmed_at}')::timestamptz)
+    );
+    IF v_current IS DISTINCT FROM v_expected THEN
+        RAISE EXCEPTION 'REVIEWED_DISPUTE_STALE';
+    END IF;
+
+    INSERT INTO public.disputes (workspace_id, ledger_entry_id, raised_by, reason, status)
+    VALUES (p_workspace_id, v_entry.id, v_actor.id, p_reason, 'open')
+    RETURNING * INTO v_dispute;
+
+    UPDATE public.ledger_entries SET status = 'disputed'
+    WHERE id = v_entry.id AND workspace_id = p_workspace_id
+      AND container_id = v_container.id AND status = 'confirmed'
+    RETURNING * INTO v_entry;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    IF v_count <> 1 THEN RAISE EXCEPTION 'REVIEWED_DISPUTE_STALE'; END IF;
+
+    RETURN jsonb_build_object(
+        'entry', (to_jsonb(v_entry) - ARRAY['id', 'proofs', 'idempotency_key'])
+            || jsonb_build_object('entry_id', v_entry.id,
+                'original_amount', v_entry.original_amount::text, 'base_amount', v_entry.base_amount::text),
+        'dispute', (to_jsonb(v_dispute) - 'id') || jsonb_build_object('dispute_id', v_dispute.id)
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.raise_dispute_atomic(uuid, uuid, uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.raise_dispute_reviewed_atomic(uuid, uuid, uuid, text, jsonb) FROM PUBLIC;
+DO $$
+DECLARE v_role text;
+BEGIN
+    FOREACH v_role IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role) THEN
+            EXECUTE format('REVOKE ALL ON FUNCTION public.raise_dispute_atomic(uuid, uuid, uuid, text) FROM %I', v_role);
+            EXECUTE format('REVOKE ALL ON FUNCTION public.raise_dispute_reviewed_atomic(uuid, uuid, uuid, text, jsonb) FROM %I', v_role);
+        END IF;
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        GRANT EXECUTE ON FUNCTION public.raise_dispute_atomic(uuid, uuid, uuid, text) TO service_role;
+        GRANT EXECUTE ON FUNCTION public.raise_dispute_reviewed_atomic(uuid, uuid, uuid, text, jsonb) TO service_role;
+    END IF;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION public.resolve_dispute_atomic(
     p_dispute_id uuid,

@@ -15,7 +15,7 @@ const { AUDIT_ACTIONS } = require('../../../src/constants/audit-actions');
 const { OTHER_ID } = require('../../helpers/agent-proposal');
 const {
   CONTAINER_ID, ENTRY_ID, DISPUTE_ID, PROPOSAL_ID, SESSION_ID, CONVERSATION_ID, EXECUTION_TIME, REASON,
-  context, member, workspaceRow, containerRow, entrySnapshot, entryRow, raiseContext, disputeRow,
+  context, member, workspaceRow, containerRow, entrySnapshot, entryRow, raiseContext, disputeRow, plannedDispute, raiseResult,
 } = require('../../helpers/agent-dispute-raise');
 const db = require('../../../src/config/supabase').__mockInstance;
 const actor = context();
@@ -36,9 +36,9 @@ function contextResponses(changes = {}) {
     open: () => null }).map(([name, fixture]) => response(changes[name] === null ? null
     : name === 'open' ? changes.open ?? null : fixture(changes[name])));
 }
-function scriptRaise({ changes = {}, rpc = response(disputeRow()),
-  reread = response(entryRow({ status: 'disputed' })), admins = response([{ id: OTHER_ID }]) } = {}) {
-  db.mockResponses(...contextResponses(changes), reread, admins);
+const executed = (entry = {}) => ({ dispute: disputeRow(), entry: entryRow({ status: 'disputed', ...entry }) });
+function scriptRaise({ changes = {}, rpc = response(raiseResult()), admins = response([{ id: OTHER_ID }]) } = {}) {
+  db.mockResponses(...contextResponses(changes), admins);
   db.mockNextRpcResponse(rpc);
 }
 function queries(table) {
@@ -223,9 +223,10 @@ it.each([['member', false, null], ['admin', true, CONVERSATION_ID]])(
     const spoofed = { ...actorCtx, workspaceId: OTHER_ID, actorUserId: OTHER_ID, actorMemberId: OTHER_ID };
     await expect(disputes.raiseDispute(parameters({ isAdmin, reason: `  ${REASON}  `, actorCtx: spoofed,
       reviewedRaise: reviewed({ isAdmin, trace: { sessionId: SESSION_ID, conversationId }, expected: raiseContext({ member_role: role }) }),
-    }))).resolves.toEqual({ dispute: disputeRow(), entry: entryRow({ status: 'disputed' }) });
-    expect(db.getRpcCalls()).toEqual([{ fnName: 'raise_dispute_atomic', params: {
-      p_workspace_id: actor.workspace.id, p_ledger_entry_id: ENTRY_ID, p_raised_by: actor.member.id, p_reason: REASON,
+    }))).resolves.toEqual(executed());
+    expect(db.getRpcCalls()).toEqual([{ fnName: 'raise_dispute_reviewed_atomic', params: {
+      p_workspace_id: actor.workspace.id, p_user_id: actor.userId, p_raised_by: actor.member.id, p_reason: REASON,
+      p_expected: raiseContext({ member_role: role }),
     } }]);
     expect(audit.log).toHaveBeenCalledWith({ ...actorCtx, required: true, action: AUDIT_ACTIONS.DISPUTE_RAISED,
       targetType: 'dispute', targetId: DISPUTE_ID, metadata: { agent_initiated: true, proposal_id: PROPOSAL_ID,
@@ -234,10 +235,8 @@ it.each([['member', false, null], ['admin', true, CONVERSATION_ID]])(
       recipientIds: [OTHER_ID], referenceType: 'dispute', referenceId: DISPUTE_ID,
       variables: { actor: 'Adaeze', amount: '5000.00 NGN', container: 'Family groceries' },
       dedupKey: `contribution_disputed:${DISPUTE_ID}` });
-    expect(queries('ledger_entries')[1]).toEqual(expect.arrayContaining([
-      { method: 'eq', args: ['id', ENTRY_ID] }, { method: 'eq', args: ['workspace_id', actor.workspace.id] },
-      { method: 'eq', args: ['container_id', CONTAINER_ID] },
-    ]));
+    // The mutation's own projections are returned: there is no later ledger re-read.
+    expect(queries('ledger_entries')).toHaveLength(1);
     expect(queries('workspace_members')[1]).toEqual(expect.arrayContaining([
       { method: 'eq', args: ['workspace_id', actor.workspace.id] }, { method: 'eq', args: ['role', 'admin'] },
       { method: 'eq', args: ['is_active', true] }, { method: 'is', args: ['deleted_at', null] },
@@ -245,10 +244,11 @@ it.each([['member', false, null], ['admin', true, CONVERSATION_ID]])(
     expectNoDirectMutation();
   });
 it('accepts the actual RPC-assigned ID/time and preserves a valid emoji reason', async () => {
-  const actual = disputeRow({ id: OTHER_ID, raised_at: '2026-11-16T12:03:00.125+00:00', reason: 'My contribution needs review 😀' });
-  scriptRaise({ rpc: response(actual) });
-  await expect(disputes.raiseDispute(parameters({ reason: '  My contribution needs review 😀  ' })))
-    .resolves.toMatchObject({ dispute: actual });
+  const reason = 'My contribution needs review 😀';
+  const raised_at = '2026-11-16T12:03:00.125+00:00';
+  scriptRaise({ rpc: response(raiseResult({ dispute: { ...plannedDispute({ reason }), dispute_id: OTHER_ID, raised_at } })) });
+  await expect(disputes.raiseDispute(parameters({ reason: `  ${reason}  ` })))
+    .resolves.toMatchObject({ dispute: { id: OTHER_ID, reason, raised_at } });
   expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ targetId: OTHER_ID }));
   expect(notification.send).toHaveBeenCalledWith(expect.objectContaining({ referenceId: OTHER_ID,
     dedupKey: `contribution_disputed:${OTHER_ID}` }));
@@ -256,14 +256,14 @@ it('accepts the actual RPC-assigned ID/time and preserves a valid emoji reason',
 it('supports confirmed legacy audit columns that are explicitly null without inventing values', async () => {
   const nullable = { recorded_by: null, confirmed_by: null, confirmed_at: null };
   const changed = entryRow({ ...nullable, status: 'disputed' });
-  scriptRaise({ changes: { entry: nullable }, reread: response(changed) });
+  scriptRaise({ changes: { entry: nullable }, rpc: response(raiseResult({ entry: entrySnapshot({ ...nullable, status: 'disputed' }) })) });
   await expect(disputes.raiseDispute(parameters({ reviewedRaise: reviewed({
     expected: raiseContext({ entry: entrySnapshot(nullable) }),
   }) }))).resolves.toEqual({ dispute: disputeRow(), entry: changed });
   expect(audit.log).toHaveBeenCalledTimes(1);
   expect(notification.send).toHaveBeenCalledTimes(1);
 });
-it('awaits the native required audit before rereading the entry or notifying admins', async () => {
+it('awaits the native required audit before notifying admins', async () => {
   scriptRaise();
   let finishAudit;
   let signalStarted;
@@ -274,17 +274,16 @@ it('awaits the native required audit before rereading the entry or notifying adm
   });
   const execution = disputes.raiseDispute(parameters());
   await started;
-  expect(queries('ledger_entries')).toHaveLength(1);
   expect(notification.send).not.toHaveBeenCalled();
   finishAudit();
-  await expect(execution).resolves.toEqual({ dispute: disputeRow(), entry: entryRow({ status: 'disputed' }) });
-  expect(queries('ledger_entries')).toHaveLength(2);
+  await expect(execution).resolves.toEqual(executed());
+  expect(queries('ledger_entries')).toHaveLength(1);
   expect(notification.send).toHaveBeenCalledTimes(1);
 });
 
 it.each([
   { code: '23505', message: 'PRIVATE_UNIQUE_REJECTION' },
-  ...['ENTRY_NOT_FOUND', 'ENTRY_NOT_DISPUTABLE', 'DISPUTE_ALREADY_OPEN'].map((message) => ({ code: 'P0001', message })),
+  { code: 'P0001', message: 'REVIEWED_DISPUTE_STALE' },
 ])('reports only explicit null-data PostgreSQL rejection as definite conflict %j', async (error) => {
   scriptRaise({ rpc: { data: null, error } });
   await expect(disputes.raiseDispute(parameters())).rejects.toMatchObject({ code: 'CONFLICT' });
@@ -293,12 +292,15 @@ it.each([
   expectNoEffects();
 });
 it.each([
-  response(null), response([]), response([disputeRow()]), { error: null }, { data: disputeRow() },
-  { error: { code: '23505', message: 'PRIVATE_ERROR' } },
-  { data: null, error: { code: 'P0001', message: 'ENTRY_NOT_FOUND extra text' } },
-  { data: null, error: { code: 'OTHER', message: 'DISPUTE_ALREADY_OPEN' } },
-  { data: disputeRow(), error: { code: '23505', message: 'PRIVATE_PARTIAL_ERROR' } },
-  { data: disputeRow(), error: { code: 'P0001', message: 'ENTRY_NOT_DISPUTABLE' } },
+  response(null), response([]), response(raiseResult().dispute), response([raiseResult()]), { error: null }, { data: raiseResult() },
+  response({ ...raiseResult(), proofs: [] }), { error: { code: '23505', message: 'PRIVATE_ERROR' } },
+  { data: null, error: { code: 'P0001', message: 'REVIEWED_DISPUTE_STALE extra text' } },
+  { data: null, error: { code: 'OTHER', message: 'REVIEWED_DISPUTE_STALE' } },
+  // Only the reviewed RPC's typed rejection proves no mutation; ordinary/input errors stay uncertain.
+  ...['ENTRY_NOT_DISPUTABLE', 'DISPUTE_ALREADY_OPEN', 'INVALID_REVIEWED_DISPUTE_INPUT']
+    .map((message) => ({ data: null, error: { code: 'P0001', message } })),
+  { data: raiseResult(), error: { code: '23505', message: 'PRIVATE_PARTIAL_ERROR' } },
+  { data: raiseResult(), error: { code: 'P0001', message: 'REVIEWED_DISPUTE_STALE' } },
 ])('keeps malformed or partial RPC outcome uncertain %j', async (rpc) => {
   scriptRaise({ rpc });
   await expect(disputes.raiseDispute(parameters())).rejects.toMatchObject(unavailable);
@@ -307,11 +309,11 @@ it.each([
   expectNoEffects();
 });
 it.each([
-  ...Object.keys(disputeRow()).map((field) => [field, undefined]), ['id', 'invalid'], ['raised_at', 'invalid'],
+  ...Object.keys(raiseResult().dispute).map((field) => [field, undefined]), ['dispute_id', 'invalid'], ['raised_at', 'invalid'],
   ['workspace_id', OTHER_ID], ['ledger_entry_id', OTHER_ID], ['raised_by', OTHER_ID], ['reason', 'Unreviewed reason'],
   ['status', 'resolved'], ['resolution_note', 'Resolved'], ['resolved_by', OTHER_ID], ['resolved_at', EXECUTION_TIME], ['notes', [{}]],
 ])('requires a full canonical new dispute after RPC (%s=%s)', async (field, value) => {
-  scriptRaise({ rpc: response(disputeRow({ [field]: value })) });
+  scriptRaise({ rpc: response(raiseResult({ dispute: { ...raiseResult().dispute, [field]: value } })) });
   await expect(disputes.raiseDispute(parameters())).rejects.toMatchObject(unavailable);
   expect(db.client.rpc).toHaveBeenCalledTimes(1);
   expectNoEffects();
@@ -333,33 +335,23 @@ it.each([new Error('PRIVATE_AUDIT_ERROR'), new ConflictError('PRIVATE_AUDIT_CONF
   expect(notification.send).not.toHaveBeenCalled();
   expectNoDirectMutation();
 });
-it.each([response(null), response([]), { error: null }, { data: entryRow({ status: 'disputed' }) },
-  { data: entryRow({ status: 'disputed' }), error: { message: 'PRIVATE_REREAD_ERROR' } }])(
-  'keeps failed or malformed post-audit reread uncertain %j', async (reread) => {
-    scriptRaise({ reread });
-    await expect(disputes.raiseDispute(parameters())).rejects.toMatchObject(unavailable);
-    expect(audit.log).toHaveBeenCalledTimes(1);
-    expect(notification.send).not.toHaveBeenCalled();
-    expectNoDirectMutation();
-  });
 it.each([
-  ...Object.keys(entrySnapshot()).map((field) => [field === 'entry_id' ? 'id' : field, undefined]),
-  ['id', OTHER_ID], ['workspace_id', OTHER_ID], ['container_id', OTHER_ID], ['contributor_id', OTHER_ID],
+  ...Object.keys(entrySnapshot()).map((field) => [field, undefined]),
+  ['entry_id', OTHER_ID], ['workspace_id', OTHER_ID], ['container_id', OTHER_ID], ['contributor_id', OTHER_ID],
   ['original_amount', '6000.00'], ['base_amount', '6000.00'], ['original_amount', 5000], ['base_amount', 5000],
   ['payment_method', 'cash'], ['note', 'Changed after RPC'], ['recorded_by', OTHER_ID],
   ['recorded_at', EXECUTION_TIME], ['confirmed_by', actor.member.id], ['confirmed_at', EXECUTION_TIME], ['status', 'confirmed'],
 ])('verifies all approved ledger fields except the required disputed status (%s=%s)', async (field, value) => {
-  scriptRaise({ reread: response(entryRow({ status: 'disputed', [field]: value })) });
+  scriptRaise({ rpc: response(raiseResult({ entry: entrySnapshot({ status: 'disputed', [field]: value }) })) });
   await expect(disputes.raiseDispute(parameters())).rejects.toMatchObject(unavailable);
-  expect(audit.log).toHaveBeenCalledTimes(1);
-  expect(notification.send).not.toHaveBeenCalled();
-  expectNoDirectMutation();
+  // Verification precedes the required audit: an unverifiable result is never audited as raised.
+  expectNoEffects();
 });
 
 it.each([response(null), { error: null }, { data: [] }, response([null]), response([{ id: null }]),
   { data: [{ id: OTHER_ID }], error: { message: 'PRIVATE_ADMINS_ERROR' } }])('treats admin notification lookup failure as best effort %j', async (admins) => {
   scriptRaise({ admins });
-  await expect(disputes.raiseDispute(parameters())).resolves.toEqual({ dispute: disputeRow(), entry: entryRow({ status: 'disputed' }) });
+  await expect(disputes.raiseDispute(parameters())).resolves.toEqual(executed());
   expect(notification.send).not.toHaveBeenCalled();
   expect(logger.warn).toHaveBeenCalledTimes(1);
   expect(db.client.rpc).toHaveBeenCalledTimes(1);
@@ -368,7 +360,7 @@ it.each([response(null), { error: null }, { data: [] }, response([null]), respon
 it('returns the verified dispute when notification throws and logs only structured identifiers', async () => {
   scriptRaise();
   notification.send.mockRejectedValueOnce(new ConflictError('PRIVATE_NOTIFICATION_ERROR'));
-  await expect(disputes.raiseDispute(parameters())).resolves.toEqual({ dispute: disputeRow(), entry: entryRow({ status: 'disputed' }) });
+  await expect(disputes.raiseDispute(parameters())).resolves.toEqual(executed());
   expect(notification.send).toHaveBeenCalledTimes(1);
   expect(logger.warn).toHaveBeenCalledWith('Dispute creation notification unavailable', {
     workspaceId: actor.workspace.id, entryId: ENTRY_ID, disputeId: DISPUTE_ID, errorCode: 'CONFLICT',

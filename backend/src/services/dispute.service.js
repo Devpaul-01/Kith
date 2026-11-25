@@ -205,51 +205,52 @@ async function raiseReviewedDispute({ workspaceId, containerId, entryId, reason,
 
   let response;
   try {
-    response = await supabaseAdmin.rpc('raise_dispute_atomic', {
-      p_workspace_id: workspaceId, p_ledger_entry_id: entryId, p_raised_by: callerId, p_reason: data.data.reason,
+    response = await supabaseAdmin.rpc('raise_dispute_reviewed_atomic', {
+      p_workspace_id: workspaceId, p_user_id: reviewed.data.userId, p_raised_by: callerId,
+      p_reason: data.data.reason, p_expected: expected,
     });
   } catch { throw disputeRaiseUnavailable(); }
   // Only an explicit PostgreSQL rejection proves the atomic mutation did not run.
   // Transport failures and malformed responses retain the agent execution claim.
   if (response?.data === null && response.error && typeof response.error === 'object'
       && !Array.isArray(response.error) && (response.error.code === '23505'
-        || (response.error.code === 'P0001' && ['ENTRY_NOT_FOUND', 'ENTRY_NOT_DISPUTABLE', 'DISPUTE_ALREADY_OPEN']
-          .includes(response.error.message)))) {
+        || (response.error.code === 'P0001' && response.error.message === 'REVIEWED_DISPUTE_STALE'))) {
     throw new ConflictError('The contribution can no longer be disputed');
   }
-  if (!response || response.error !== null || !response.data || typeof response.data !== 'object'
-      || Array.isArray(response.data)) throw disputeRaiseUnavailable();
-  const dispute = raisedDisputeStateSchema.safeParse(raisedDisputeState(response.data));
+  if (!response || response.error !== null) throw disputeRaiseUnavailable();
+  // Both projections come from the mutation transaction. A later read must not
+  // substitute a newer row for what this approved execution actually changed.
+  const result = raiseDisputeResultSchema.safeParse(response.data);
   const planned = plannedDisputeState({ selection: expected, reason: data.data.reason });
-  if (!dispute.success || Object.keys(planned)
-    .some((field) => JSON.stringify(dispute.data[field]) !== JSON.stringify(planned[field]))) throw disputeRaiseUnavailable();
+  if (!result.success || Object.keys(planned)
+    .some((field) => JSON.stringify(result.data.dispute[field]) !== JSON.stringify(planned[field]))
+    || JSON.stringify(result.data.entry) !== JSON.stringify({ ...expected.entry, status: 'disputed' })) {
+    throw disputeRaiseUnavailable();
+  }
+  const dispute = result.data.dispute;
   try {
     await audit.log({ ...actorCtx, workspaceId, actorUserId: reviewed.data.userId, actorMemberId: callerId,
-      action: AUDIT_ACTIONS.DISPUTE_RAISED, targetType: 'dispute', targetId: dispute.data.dispute_id, required: true,
+      action: AUDIT_ACTIONS.DISPUTE_RAISED, targetType: 'dispute', targetId: dispute.dispute_id, required: true,
       metadata: { agent_initiated: true, proposal_id: reviewed.data.proposalId,
         session_id: reviewed.data.trace.sessionId, conversation_id: reviewed.data.trace.conversationId,
         sensitive_action: true, secondary_confirmation: true } });
   } catch { throw disputeRaiseUnavailable(); }
-  const changedEntry = await readReviewedDisputeRow(() => supabaseAdmin.from('ledger_entries').select(reviewedEntryColumns)
-    .eq('id', entryId).eq('workspace_id', workspaceId).eq('container_id', containerId).maybeSingle());
-  const result = raiseDisputeResultSchema.safeParse({ dispute: dispute.data, entry: disputeEntryState(changedEntry) });
-  if (!result.success || JSON.stringify(result.data.entry) !== JSON.stringify({ ...expected.entry, status: 'disputed' })) {
-    throw disputeRaiseUnavailable();
-  }
   try {
     const admins = await supabaseAdmin.from('workspace_members').select('id')
       .eq('workspace_id', workspaceId).eq('role', 'admin').eq('is_active', true).is('deleted_at', null);
     if (admins.error !== null || !Array.isArray(admins.data)
         || admins.data.some((member) => !member || typeof member.id !== 'string')) throw disputeRaiseUnavailable();
     await notification.send({ type: 'contribution_disputed', workspaceId, recipientIds: admins.data.map((member) => member.id),
-      referenceType: 'dispute', referenceId: dispute.data.dispute_id,
+      referenceType: 'dispute', referenceId: dispute.dispute_id,
       variables: { actor: actorDisplayName, amount: `${expected.entry.original_amount} ${expected.entry.original_currency}`,
-        container: expected.container_name }, dedupKey: `contribution_disputed:${dispute.data.dispute_id}` });
+        container: expected.container_name }, dedupKey: `contribution_disputed:${dispute.dispute_id}` });
   } catch (err) {
     logger.warn('Dispute creation notification unavailable', { workspaceId, entryId,
-      disputeId: dispute.data.dispute_id, errorCode: err?.code });
+      disputeId: dispute.dispute_id, errorCode: err?.code });
   }
-  return { dispute: response.data, entry: changedEntry };
+  const { dispute_id: id, ...disputeFields } = result.data.dispute;
+  const { entry_id: resultEntryId, ...entryFields } = result.data.entry;
+  return { dispute: { id, ...disputeFields }, entry: { id: resultEntryId, ...entryFields } };
 }
 
 // raise_dispute_atomic inserts the dispute row and updates the ledger
