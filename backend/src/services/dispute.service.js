@@ -16,6 +16,10 @@ const {
   resolveDisputeContextSchema, resolveDisputeResultSchema, resolveDisputeCallerSchema,
   reviewedDisputeResolutionSchema, disputeResolutionState, resolutionContextMatches, plannedResolvedDisputeState,
 } = require('../validators/dispute-resolve.validator');
+const {
+  disputeNoteDataSchema, disputeNoteCallerSchema, disputeNoteContextSchema, appendedNoteSchema,
+  disputeNoteRowSchema, disputeNoteReadRowSchema, noteContextMatches,
+} = require('../validators/dispute-note.validator');
 const notification = require('./notification.service');
 const audit        = require('./audit.service');
 const { AUDIT_ACTIONS } = require('../constants/audit-actions');
@@ -316,6 +320,75 @@ async function addDisputeNote({ workspaceId, disputeId, note, isAdmin, callerId 
   return updated;
 }
 
+const disputeNoteUnavailable = () => new AppError('Dispute note information is unavailable. Please try again.', 503, 'DISPUTE_NOTE_UNAVAILABLE');
+
+/** Fresh authority and eligibility for adding a note to one explicitly selected open dispute. */
+async function getDisputeNoteContext({ workspaceId, disputeId, callerId, userId }) {
+  if (!disputeNoteCallerSchema.safeParse({ workspaceId, disputeId, callerId, userId }).success) {
+    throw new ValidationError('Invalid dispute note context');
+  }
+  const workspace = await readReviewedDisputeRow(() => supabaseAdmin.from('workspaces')
+    .select('id, name, base_currency, updated_at, deleted_at').eq('id', workspaceId).is('deleted_at', null).maybeSingle(), disputeNoteUnavailable);
+  if (!workspace) throw new NotFoundError('Workspace not found');
+  if (!disputeRaiseWorkspaceRowSchema.safeParse(workspace).success
+      || workspace.id !== workspaceId || workspace.deleted_at !== null) throw disputeNoteUnavailable();
+  const actor = await readReviewedDisputeRow(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, display_name, updated_at, deleted_at')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle(), disputeNoteUnavailable);
+  if (actor && !disputeRaiseMemberRowSchema.safeParse(actor).success) throw disputeNoteUnavailable();
+  if (!actor || actor.id !== callerId || actor.workspace_id !== workspaceId || actor.user_id !== userId
+      || actor.is_active !== true || actor.is_proxy !== false || actor.deleted_at !== null) {
+    throw new ForbiddenError('Active non-proxy workspace membership required');
+  }
+  const dispute = await readReviewedDisputeRow(() => supabaseAdmin.from('disputes')
+    .select('id, workspace_id, ledger_entry_id, raised_by, reason, status, raised_at')
+    .eq('id', disputeId).eq('workspace_id', workspaceId).maybeSingle(), disputeNoteUnavailable);
+  if (!dispute) throw new NotFoundError('Dispute not found');
+  const row = disputeNoteReadRowSchema.safeParse(dispute);
+  if (!row.success || row.data.id !== disputeId || row.data.workspace_id !== workspaceId) throw disputeNoteUnavailable();
+  const selected = disputeNoteContextSchema.safeParse({ workspace_id: workspaceId, actor_member_id: callerId,
+    member_role: actor.role, dispute: { dispute_id: row.data.id, ledger_entry_id: row.data.ledger_entry_id,
+      raised_by: row.data.raised_by, reason: row.data.reason, status: 'open', raised_at: row.data.raised_at } });
+  if (!selected.success) throw disputeNoteUnavailable();
+  if (!noteContextMatches(selected.data)) throw new ForbiddenError('Access denied');
+  // Authorization first: an unrelated member must not learn a dispute's state.
+  if (row.data.status !== 'open') throw new BusinessRuleError('Notes can only be added to open disputes');
+  return selected.data;
+}
+
+/**
+ * Appends the approved note through the atomic RPC, which re-derives authority and
+ * openness under lock. Only its typed rejections prove nothing was written; any
+ * other outcome is uncertain and must not be retried by the caller.
+ */
+async function addReviewedDisputeNote({ workspaceId, disputeId, note, authorMemberId }) {
+  const data = disputeNoteDataSchema.safeParse({ note });
+  if (!data.success || !disputeNoteCallerSchema.safeParse({ workspaceId, disputeId, callerId: authorMemberId, userId: authorMemberId }).success) {
+    throw new ValidationError('Valid reviewed dispute note details are required');
+  }
+  let response;
+  try {
+    response = await supabaseAdmin.rpc('add_dispute_note_atomic', {
+      p_workspace_id: workspaceId, p_dispute_id: disputeId, p_author_id: authorMemberId,
+      p_note: data.data.note, p_require_open: true,
+    });
+  } catch { throw disputeNoteUnavailable(); }
+  if (response?.data === null && response.error && typeof response.error === 'object' && !Array.isArray(response.error)
+      && response.error.code === 'P0001'
+      && ['DISPUTE_NOT_FOUND', 'DISPUTE_ACCESS_DENIED', 'DISPUTE_NOT_OPEN'].includes(response.error.message)) {
+    throw new ConflictError('The dispute can no longer receive this note');
+  }
+  if (!response || response.error !== null) throw disputeNoteUnavailable();
+  const row = disputeNoteRowSchema.safeParse(response.data);
+  const appended = row.success ? appendedNoteSchema.safeParse(row.data.notes[row.data.notes.length - 1]) : undefined;
+  if (!row.success || row.data.id !== disputeId || row.data.workspace_id !== workspaceId || !appended.success
+      || appended.data.author_id !== authorMemberId || appended.data.note !== data.data.note) {
+    throw disputeNoteUnavailable();
+  }
+  return { dispute_id: row.data.id, note: appended.data };
+}
+
 const disputeResolveUnavailable = () => new AppError('Dispute resolution is unavailable. Please try again.', 503, 'DISPUTE_RESOLVE_UNAVAILABLE');
 const reviewedResolutionColumns = Object.keys(openDisputeResolutionSchema.shape)
   .map((field) => field === 'dispute_id' ? 'id' : field).join(', ');
@@ -506,4 +579,5 @@ async function resolveDispute({ workspaceId, disputeId, resolutionNote, resolved
   return updated;
 }
 
-module.exports = { listDisputes, getDispute, getRaiseDisputeContext, getResolveDisputeContext, raiseDispute, addDisputeNote, resolveDispute };
+module.exports = { listDisputes, getDispute, getRaiseDisputeContext, getResolveDisputeContext, getDisputeNoteContext,
+  raiseDispute, addDisputeNote, addReviewedDisputeNote, resolveDispute };
