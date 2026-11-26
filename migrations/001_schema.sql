@@ -1551,6 +1551,81 @@ BEGIN
 END;
 $$;
 
+-- Atomic dispute note append. A single UPDATE of the locked dispute row appends
+-- to the latest committed notes, so concurrent notes are preserved (the former
+-- service read-modify-write replaced the whole array and could drop one).
+-- Authority is re-derived under lock: an active non-proxy author who is an admin
+-- or the dispute's raiser. p_require_open is used by the reviewed agent path.
+CREATE OR REPLACE FUNCTION public.add_dispute_note_atomic(
+    p_workspace_id uuid,
+    p_dispute_id uuid,
+    p_author_id uuid,
+    p_note text,
+    p_require_open boolean DEFAULT false
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    v_workspace public.workspaces;
+    v_author public.workspace_members;
+    v_dispute public.disputes;
+    v_count integer;
+BEGIN
+    IF p_workspace_id IS NULL OR p_dispute_id IS NULL OR p_author_id IS NULL
+       OR p_note IS NULL OR p_require_open IS NULL
+       OR char_length(p_note) NOT BETWEEN 1 AND 1000
+       OR (p_require_open AND (p_note <> btrim(p_note))) THEN
+        RAISE EXCEPTION 'INVALID_DISPUTE_NOTE';
+    END IF;
+
+    SELECT * INTO v_workspace FROM public.workspaces
+    WHERE id = p_workspace_id FOR SHARE;
+    SELECT * INTO v_author FROM public.workspace_members
+    WHERE id = p_author_id AND workspace_id = p_workspace_id FOR SHARE;
+    SELECT * INTO v_dispute FROM public.disputes
+    WHERE id = p_dispute_id AND workspace_id = p_workspace_id FOR UPDATE;
+
+    IF v_workspace.id IS NULL OR v_workspace.deleted_at IS NOT NULL OR v_dispute.id IS NULL THEN
+        RAISE EXCEPTION 'DISPUTE_NOT_FOUND';
+    END IF;
+    IF v_author.id IS NULL OR NOT v_author.is_active OR v_author.is_proxy
+       OR v_author.deleted_at IS NOT NULL
+       OR (v_author.role <> 'admin' AND v_dispute.raised_by <> v_author.id) THEN
+        RAISE EXCEPTION 'DISPUTE_ACCESS_DENIED';
+    END IF;
+    IF p_require_open AND v_dispute.status <> 'open' THEN
+        RAISE EXCEPTION 'DISPUTE_NOT_OPEN';
+    END IF;
+
+    UPDATE public.disputes
+    SET notes = COALESCE(notes, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+        'author_id', p_author_id, 'note', p_note,
+        'added_at', to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
+    WHERE id = p_dispute_id AND workspace_id = p_workspace_id
+    RETURNING * INTO v_dispute;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    IF v_count <> 1 THEN RAISE EXCEPTION 'DISPUTE_NOT_FOUND'; END IF;
+
+    RETURN to_jsonb(v_dispute);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.add_dispute_note_atomic(uuid, uuid, uuid, text, boolean) FROM PUBLIC;
+DO $$
+DECLARE v_role text;
+BEGIN
+    FOREACH v_role IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role) THEN
+            EXECUTE format('REVOKE ALL ON FUNCTION public.add_dispute_note_atomic(uuid, uuid, uuid, text, boolean) FROM %I', v_role);
+        END IF;
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        GRANT EXECUTE ON FUNCTION public.add_dispute_note_atomic(uuid, uuid, uuid, text, boolean) TO service_role;
+    END IF;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.resolve_dispute_atomic(
     p_dispute_id uuid,
     p_resolution_note text,

@@ -302,12 +302,16 @@ async function addDisputeNote({ workspaceId, disputeId, note, isAdmin, callerId 
   if (!dispute) throw new NotFoundError('Dispute not found');
   if (!isAdmin && dispute.raised_by !== callerId) throw new ForbiddenError('Access denied');
 
-  const newNote  = { author_id: callerId, note, added_at: new Date().toISOString() };
-  const newNotes = [...(Array.isArray(dispute.notes) ? dispute.notes : []), newNote];
-
-  const { data: updated, error } = await supabaseAdmin
-    .from('disputes').update({ notes: newNotes }).eq('id', disputeId).select().single();
-  if (error) throw new Error(error.message);
+  // One atomic append under the dispute row lock: a read-modify-write of the whole
+  // notes array here would drop a concurrent note. The RPC re-derives authority.
+  const { data: updated, error } = await supabaseAdmin.rpc('add_dispute_note_atomic', {
+    p_workspace_id: workspaceId, p_dispute_id: disputeId, p_author_id: callerId, p_note: note, p_require_open: false,
+  });
+  if (error) {
+    if (error.code === 'P0001' && error.message === 'DISPUTE_NOT_FOUND') throw new NotFoundError('Dispute not found');
+    if (error.code === 'P0001' && error.message === 'DISPUTE_ACCESS_DENIED') throw new ForbiddenError('Access denied');
+    throw new Error(error.message);
+  }
 
   return updated;
 }

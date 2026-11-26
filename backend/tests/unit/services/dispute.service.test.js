@@ -210,23 +210,43 @@ describe('services/dispute.service', () => {
       ).rejects.toBeInstanceOf(ForbiddenError);
     });
 
-    it('the original raiser can add a note', async () => {
+    it('the original raiser can add a note through the atomic RPC', async () => {
       mockSupabaseInstance.mockNextResponse({ data: { id: 'd1', raised_by: 'caller-1', notes: [] }, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'd1', notes: [{ note: 'x' }] }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: { id: 'd1', notes: [{ note: 'x' }] }, error: null });
 
       const result = await disputeService.addDisputeNote({ workspaceId: WORKSPACE_ID, disputeId: 'd1', note: 'x', isAdmin: false, callerId: 'caller-1' });
 
       expect(result.notes).toHaveLength(1);
+      expect(mockSupabaseInstance.getRpcCalls()).toEqual([{ fnName: 'add_dispute_note_atomic', params: {
+        p_workspace_id: WORKSPACE_ID, p_dispute_id: 'd1', p_author_id: 'caller-1', p_note: 'x', p_require_open: false,
+      } }]);
     });
 
-    it('appends to existing notes rather than replacing them', async () => {
+    it('appends in the database and never rewrites the notes array from the service', async () => {
       mockSupabaseInstance.mockNextResponse({ data: { id: 'd1', raised_by: 'admin-1', notes: [{ note: 'first' }] }, error: null });
-      mockSupabaseInstance.mockNextResponse({ data: { id: 'd1', notes: [{ note: 'first' }, { note: 'second' }] }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: { id: 'd1', notes: [{ note: 'first' }, { note: 'second' }] }, error: null });
 
       await disputeService.addDisputeNote({ workspaceId: WORKSPACE_ID, disputeId: 'd1', note: 'second', isAdmin: true, callerId: 'admin-1' });
 
-      const updateCall = mockSupabaseInstance.getCalls().find((c) => c.method === 'update');
-      expect(updateCall.args[0].notes).toHaveLength(2);
+      expect(mockSupabaseInstance.getCalls().some((c) => c.method === 'update')).toBe(false);
+    });
+
+    it.each([
+      ['DISPUTE_NOT_FOUND', NotFoundError], ['DISPUTE_ACCESS_DENIED', ForbiddenError],
+    ])('maps the typed RPC rejection %s to its HTTP error', async (message, ErrorType) => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'd1', raised_by: 'admin-1', notes: [] }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: null, error: { code: 'P0001', message } });
+
+      await expect(disputeService.addDisputeNote({ workspaceId: WORKSPACE_ID, disputeId: 'd1', note: 'x', isAdmin: true, callerId: 'admin-1' }))
+        .rejects.toBeInstanceOf(ErrorType);
+    });
+
+    it('surfaces an unexpected RPC failure', async () => {
+      mockSupabaseInstance.mockNextResponse({ data: { id: 'd1', raised_by: 'admin-1', notes: [] }, error: null });
+      mockSupabaseInstance.mockNextRpcResponse({ data: null, error: { code: 'XX000', message: 'boom' } });
+
+      await expect(disputeService.addDisputeNote({ workspaceId: WORKSPACE_ID, disputeId: 'd1', note: 'x', isAdmin: true, callerId: 'admin-1' }))
+        .rejects.toThrow('boom');
     });
   });
 
