@@ -62,7 +62,7 @@ spoken/chat “confirm” do not grant selection or approval.
 
 ## Missing core tools (not exposed as completed)
 
-- [ ] Tier 2: `add_dispute_note`.
+- [x] Tier 2: `add_dispute_note` (atomic append shared with the HTTP route).
 - [ ] Tier 3 containers: `update_container`, `archive_container`.
 - [ ] Tier 3 membership: `update_member`, `update_participant`.
 - [ ] Tier 3 tasks: `bulk_create_tasks`, `reassign_task`.

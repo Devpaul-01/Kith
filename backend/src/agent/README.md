@@ -71,6 +71,13 @@ confirmation request is required to open the dispute. See
 [dispute creation](PROPOSALS.md#dispute-creation-and-secondary-confirmation)
 for the selection, two-step API, audit and failure contracts.
 
+A current `selected_dispute_note` (`{ dispute_id }`) enables Tier 2
+`add_dispute_note` for an admin or the member who raised that open dispute. The
+model supplies only the note (1–1000 trimmed characters); the card binds the
+dispute, exact note and authenticated author, and the server records the time.
+Existing notes are outside the approval and are appended atomically, so
+concurrent notes are preserved. See [dispute notes](PROPOSALS.md#dispute-notes).
+
 An admin's current `selected_dispute_resolution` enables Tier 4
 `resolve_dispute` for one eligible owner-raised dispute on a base-currency
 contribution with recorded confirmation metadata. The full card marks both

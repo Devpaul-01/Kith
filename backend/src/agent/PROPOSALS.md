@@ -928,6 +928,31 @@ Unit tests cover handlers, scripted model turns, mocked HTTP/SSE workflows and
 the real task service with a mocked database. Live Postgres concurrency and live
 model behavior still require integration/evaluation coverage.
 
+## Dispute notes
+
+`add_dispute_note` is a Tier 2 proposal enabled only by the current request's
+`selected_dispute_note: { dispute_id }`. The server re-reads fresh authority: an
+active non-proxy member who is an admin or the dispute's raiser, on an open
+dispute in the authenticated workspace. The model supplies only `note`
+(trimmed, 1–1000 characters, no NUL or lone surrogates). The card binds the
+immutable dispute identity (id, entry, raiser, reason, raised time), the exact
+note and the authenticated author as `before`/`after`. Existing notes are
+deliberately not bound, so a concurrent note never makes the card stale.
+
+Approval revalidates the selection (stale on any change), then calls
+`add_reviewed_dispute_note`, which uses `add_dispute_note_atomic`: one UPDATE of
+the locked dispute row appends to the latest committed notes, re-derives
+authority and openness under lock, and records the author and a server
+timestamp. The returned last note must match the approved note and author.
+Only the RPC's typed `DISPUTE_NOT_FOUND`, `DISPUTE_ACCESS_DENIED` and
+`DISPUTE_NOT_OPEN` rejections are definite conflicts (HTTP 409
+`AGENT_PROPOSAL_STALE`); any other outcome is uncertain and blocks retries, as
+the append is not idempotent. The existing HTTP note route now uses the same
+atomic RPC, which fixes a lost-update race when two notes arrive together.
+Resolved disputes keep accepting notes through that HTTP route; the agent
+requires an open dispute. Audit uses the generic proposal stages targeting the
+dispute; there is no separate note audit action.
+
 ## Admin task confirmation
 
 After an admin explicitly selects a completed task, send its task/container
