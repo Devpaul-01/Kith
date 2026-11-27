@@ -87,8 +87,8 @@ async function findCandidates(params, rpcName, shapeCandidate, { requestSchema =
     throw new AppError('Entity search is unavailable. Please try again.', 503, 'SEARCH_UNAVAILABLE');
   }
 
-  // Determine ambiguity before truncation. Never select the highest-scoring
-  // candidate on behalf of the caller, even if it is an exact match.
+  // Determine ambiguity before truncation. This service never selects a candidate;
+  // the agent's target resolution decides separately, and only for low-risk tiers.
   return {
     query,
     status: rows.length === 0 ? 'not_found' : rows.length === 1 ? 'single_match' : 'ambiguous',
@@ -136,10 +136,27 @@ async function findDisputes(params) {
   }), { requestSchema: callerEntitySearchRequestSchema, rpcScope: callerRpcScope });
 }
 
+/** The member's own open tasks, soonest due first, for "update a task" with no details. */
+async function listOpenTasksForMember({ memberId, limit }) {
+  if (typeof memberId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(memberId)
+      || !Number.isInteger(limit) || limit < 1 || limit > 20) {
+    throw new ValidationError('Invalid open task listing');
+  }
+  const { data, error } = await supabaseAdmin.from('container_tasks')
+    .select('id, container_id, title, assigned_to, status, due_date')
+    .eq('assigned_to', memberId).in('status', ['pending', 'in_progress', 'overdue'])
+    .is('deleted_at', null).is('admin_confirmed_at', null)
+    .order('due_date', { ascending: true, nullsFirst: false }).limit(limit);
+  if (error || !Array.isArray(data)) {
+    throw new AppError('Task listing is unavailable. Please try again.', 503, 'SEARCH_UNAVAILABLE');
+  }
+  return data.map((row) => ({ ...row, match_type: null, score: null }));
+}
+
 async function findGroups(params) {
   return findCandidates(params, 'search_groups_ranked', (row) => ({
     id: row.id, name: row.name, description: row.description, created_at: row.created_at, match_type: row.match_type, score: row.score,
   }));
 }
 
-module.exports = { searchWorkspace, findMembers, findContainers, findTasks, findLedgerEntries, findDisputes, findGroups };
+module.exports = { searchWorkspace, findMembers, findContainers, findTasks, findLedgerEntries, findDisputes, findGroups, listOpenTasksForMember };
