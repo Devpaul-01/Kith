@@ -23,6 +23,7 @@ const { createContainerDefinition } = require('./container-creation-proposal.ser
 const { createMemberDefinition } = require('./member-creation-proposal.service');
 const { selectParticipantAddition, addParticipantsDefinition } = require('./participant-addition-proposal.service');
 const { createProposal, getProposalReceipts } = require('./proposal.service');
+const { resolveTarget } = require('./target-resolution.service');
 const { extractProposalReferences } = require('./proposal-history.service');
 
 /** Compose the read loop with server-owned provider configuration per turn. */
@@ -108,9 +109,11 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     ...(disputeSelection ? { disputeSelection } : {}),
     ...(disputeResolutionSelection ? { disputeResolutionSelection } : {}),
     ...(disputeNoteSelection ? { disputeNoteSelection } : {}),
-    create: ({ name, args, turnId }) => createProposal({
+    resolveTarget: ({ purpose, query }) => resolveTarget({ context: actorContext, purpose, query }),
+    create: ({ name, args, turnId, selection: resolved }) => createProposal({
       context: actorContext, tool: name,
-      selection: [createContainerDefinition.name, createMemberDefinition.name].includes(name) ? undefined
+      selection: resolved !== undefined ? resolved
+        : [createContainerDefinition.name, createMemberDefinition.name].includes(name) ? undefined
         : name === confirmLedgerEntryDefinition.name ? ledgerEntrySelection
         : name === raiseDisputeDefinition.name ? disputeSelection
         : name === resolveDisputeDefinition.name ? disputeResolutionSelection
