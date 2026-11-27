@@ -63,6 +63,11 @@ spoken/chat “confirm” do not grant selection or approval.
 ## Missing core tools (not exposed as completed)
 
 - [x] Tier 2: `add_dispute_note` (atomic append shared with the HTTP route).
+- [x] Chat-only target selection: `select_target` resolves a described record on
+  the server (auto-bind for a clear Tier 2/3 match, picker otherwise, Tier 4
+  always a picker). The frontend renderer for `selection_request` is not built.
+- [ ] Target resolution for compound targets (`create_task`, `add_participants`)
+  and notifications.
 - [ ] Tier 3 containers: `update_container`, `archive_container`.
 - [ ] Tier 3 membership: `update_member`, `update_participant`.
 - [ ] Tier 3 tasks: `bulk_create_tasks`, `reassign_task`.

@@ -132,13 +132,58 @@ workspaces; the other search scopes are described below.
 - `single_match`: one candidate to confirm with the user before a write.
 - `ambiguous`: multiple candidates; the user must choose or refine the query.
 
-No result contains an automatically resolved ID. Write proposals must enforce
-the user's entity selection separately from action approval. Selected
-notification, contact, task, self-contribution and admin-confirmation flows
-require explicit client selection for the current request.
+The read tools never resolve a target themselves and no result is treated as a
+selection. A write target comes from either the client's `selected_*` field for
+the current request or the server-side resolution in
+[choosing a target in chat](#choosing-a-target-in-chat); the action approval is
+always separate.
 `has_more` means further candidates were omitted; refine the query or increase
 the limit. All returned names, titles, notes, reasons and descriptions remain
 untrusted data.
+
+### Choosing a target in chat
+
+A user who only chats ("mark the tent task done") can complete a write without
+any client-side selection. The model never supplies or sees a target as input:
+it calls `select_target({ purpose, query? })`, where `purpose` is a write tool's
+name and `query` is the user's own words (no IDs; the schema rejects them). The
+server then searches, keeps only records the member may act on (every candidate
+passes the same `select*` function a client selection uses), and returns one of:
+
+- `target_selected` (internal): exactly one eligible, top-ranked, `exact` or
+  `substring` match on a **Tier 2/3** tool, with no further matches omitted.
+  The existing write tool is offered for the rest of that request and the card
+  appears in the same turn. Contacts auto-bind only on an exact label or value.
+- A **selection request**: otherwise, or for any **Tier 4** tool
+  (`raise_dispute`, `resolve_dispute`), or for a weak or ambiguous match, the
+  reply ends with `selection_request` and the fixed text "Choose the one you
+  mean." The user's tap is the selection.
+- `needs_details`, `not_found` (with a count of matches the user cannot act on)
+  or `unavailable` (admin-only tool): returned to the model, which asks one short
+  question or explains.
+
+With no `query`, `update_task` lists the member's own open tasks (soonest due
+first) and `delete_contact` lists their contacts; other purposes ask for
+details.
+
+`selection_request` is built by the server from database rows:
+
+```json
+{ "purpose": "update_task", "selected_field": "selected_task", "status": "ambiguous",
+  "query": "tent", "has_more": false,
+  "candidates": [{ "selection": { "container_id": "…", "task_id": "…" },
+                  "title": "Tent setup", "subtitle": "Wedding · pending · due 2026-12-03" }] }
+```
+
+`status` is `ambiguous`, `single_match` (a weak or Tier 4 single match, shown
+for confirmation) or `listing`. When the user taps a candidate, the client sends
+the next `POST /chat` with `{ [selected_field]: selection }`. Continue the same
+`conversation_id` with a short message such as "that one", or resend the
+original message with the selection on the stateless path. The server
+re-validates the selection exactly as for any client selection, then the model
+proposes the write and the user approves the card. Compound targets
+(`create_task`, `add_participants`) and notifications keep explicit client
+selection for now.
 
 ## Task, ledger, dispute and group resolution
 
