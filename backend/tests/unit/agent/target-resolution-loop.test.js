@@ -173,6 +173,8 @@ describe('chat composition', () => {
     await chat.runChatTurn({ data: { message: 'Hi' }, context: actor });
     await captured.support.resolveTarget({ purpose: 'update_task', query: 'tent' });
     expect(resolver.resolveTarget).toHaveBeenCalledWith({ context: expect.objectContaining({ userId: actor.userId }), purpose: 'update_task', query: 'tent' });
+    await captured.support.resolveTarget({ purpose: 'create_task', query: 'wedding', member_query: 'ada' });
+    expect(resolver.resolveTarget).toHaveBeenLastCalledWith({ context: expect.anything(), purpose: 'create_task', query: 'wedding', memberQuery: 'ada' });
     await captured.support.create({ name: 'update_task', args: { status: 'completed' }, turnId: 't', selection: { id: TASK_ID } });
     expect(proposals.createProposal).toHaveBeenCalledWith(expect.objectContaining({ tool: 'update_task', selection: { id: TASK_ID } }));
   });

@@ -11,6 +11,10 @@ const raiseProposal = require('../../../src/agent/services/dispute-raise-proposa
 const resolveProposal = require('../../../src/agent/services/dispute-resolve-proposal.service');
 const contactProposal = require('../../../src/agent/services/contact-proposal.service');
 const confirmProposal = require('../../../src/agent/services/task-confirmation-proposal.service');
+const creationProposal = require('../../../src/agent/services/task-creation-proposal.service');
+const participantProposal = require('../../../src/agent/services/participant-addition-proposal.service');
+const ledgerProposal = require('../../../src/agent/services/ledger-proposal.service');
+const ledgerConfirmProposal = require('../../../src/agent/services/ledger-confirmation-proposal.service');
 const { resolveTarget } = require('../../../src/agent/services/target-resolution.service');
 const { selectTargetArgsSchema, selectionRequestSchema } = require('../../../src/agent/validators/target-resolution.validator');
 const { ForbiddenError, BusinessRuleError, AppError } = require('../../../src/utils/errors');
@@ -36,6 +40,8 @@ describe('select_target arguments', () => {
   it('carry only a purpose and the user\'s words, never an identifier', () => {
     expect(selectTargetArgsSchema.parse({ purpose: 'update_task', query: '  tent  ' })).toEqual({ purpose: 'update_task', query: 'tent' });
     expect(selectTargetArgsSchema.parse({ purpose: 'update_task' })).toEqual({ purpose: 'update_task' });
+    expect(selectTargetArgsSchema.safeParse({ purpose: 'create_task', query: 'wedding', member_query: 'ada' }).success).toBe(true);
+    expect(selectTargetArgsSchema.safeParse({ purpose: 'update_task', query: 'tent', member_query: 'ada' }).success).toBe(false);
     for (const bad of [{ purpose: 'update_task', task_id: id(1) }, { purpose: 'update_task', query: 'a' }, { purpose: 'drop_table' },
       { purpose: 'update_task', query: 'x'.repeat(201) }, { purpose: 'update_task', query: 'a\u0000b' }, { query: 'tent' }]) {
       expect(selectTargetArgsSchema.safeParse(bad).success).toBe(false);
@@ -182,5 +188,136 @@ describe('other outcomes', () => {
   it('rejects an unknown purpose and an invalid context', async () => {
     await expect(resolveTarget({ context: actor, purpose: 'drop_table', query: 'x' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
     await expect(resolveTarget({ context: null, purpose: 'update_task', query: 'tent' })).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
+describe('admin and ledger tools', () => {
+  const entry = (n, changes = {}) => ({ id: id(n), container_id: CONTAINER, contributor_name: 'Ada', original_amount: '5000.00',
+    original_currency: 'NGN', status: 'pending', note: null, match_type: 'exact', ...changes });
+
+  it('binds an admin task confirmation through the confirmation selector', async () => {
+    search.findTasks.mockResolvedValue(found([task(1, { status: 'completed' })]));
+    jest.spyOn(confirmProposal, 'selectTaskConfirmation').mockImplementation(async ({ taskId }) => ({ task_id: taskId }));
+    await expect(resolveTarget({ context: admin, purpose: 'admin_confirm_task', query: 'tent' })).resolves.toMatchObject({
+      kind: 'bound', tool: 'admin_confirm_task', selectionKey: 'taskConfirmationSelection' });
+    expect(confirmProposal.selectTaskConfirmation).toHaveBeenCalledWith({ context: admin, containerId: CONTAINER, taskId: id(1) });
+    expect(search.findTasks).toHaveBeenCalledWith(expect.objectContaining({ isAdmin: true }));
+  });
+
+  it('binds an admin ledger confirmation with the entry payload', async () => {
+    search.findLedgerEntries.mockResolvedValue(found([entry(7)]));
+    jest.spyOn(ledgerConfirmProposal, 'selectLedgerEntry').mockImplementation(async ({ entryId }) => ({ entry_id: entryId }));
+    await expect(resolveTarget({ context: admin, purpose: 'confirm_ledger_entry', query: '5000' })).resolves.toMatchObject({
+      kind: 'bound', selectionKey: 'ledgerEntrySelection', label: { title: 'Ada: 5000.00 NGN', subtitle: 'Wedding · pending' } });
+    expect(ledgerConfirmProposal.selectLedgerEntry).toHaveBeenCalledWith({ context: admin, containerId: CONTAINER, entryId: id(7) });
+    search.findLedgerEntries.mockResolvedValue(found([entry(7), entry(8)]));
+    const { request } = await resolveTarget({ context: admin, purpose: 'confirm_ledger_entry', query: '5000' });
+    expect(request).toMatchObject({ selected_field: 'selected_ledger_entry', candidates: [
+      { selection: { container_id: CONTAINER, entry_id: id(7) } }, { selection: { container_id: CONTAINER, entry_id: id(8) } }] });
+  });
+
+  it('binds a ledger container by exact name and offers a picker on a partial name', async () => {
+    const container = (n, name, match_type) => ({ id: id(n), name, container_type: 'event', status: 'active', match_type });
+    jest.spyOn(ledgerProposal, 'selectLedgerContainer').mockImplementation(async ({ containerId }) => ({ container_id: containerId }));
+    search.findContainers.mockResolvedValue(found([container(40, 'Wedding', 'exact')]));
+    await expect(resolveTarget({ context: actor, purpose: 'create_ledger_entry', query: 'Wedding' })).resolves.toMatchObject({
+      kind: 'bound', selectionKey: 'ledgerSelection', label: { title: 'Wedding', subtitle: 'event · active' } });
+    search.findContainers.mockResolvedValue(found([container(40, 'Wedding', 'substring'), container(41, 'Wedding rehearsal', 'substring')]));
+    const { request } = await resolveTarget({ context: actor, purpose: 'create_ledger_entry', query: 'Wedding' });
+    expect(request).toMatchObject({ selected_field: 'selected_container_id', candidates: [{ selection: id(40) }, { selection: id(41) }] });
+  });
+});
+
+describe('compound targets (container and member)', () => {
+  const container = (n, name = 'Wedding', match_type = 'exact') => ({ id: id(n), name, container_type: 'event', status: 'active', match_type });
+  const member = (n, display_name = 'Ada', match_type = 'exact') => ({ id: id(n), display_name, role: 'member', is_proxy: false, match_type });
+  const wire = () => {
+    jest.spyOn(creationProposal, 'selectTaskCreation').mockImplementation(async ({ containerId, assigneeId }) => ({ containerId, assigneeId }));
+    jest.spyOn(participantProposal, 'selectParticipantAddition').mockImplementation(async ({ containerId, memberId }) => ({ containerId, memberId }));
+  };
+
+  it('binds a clear container and assignee through the composed selector', async () => {
+    wire();
+    search.findContainers.mockResolvedValue(found([container(40)]));
+    search.findMembers.mockResolvedValue(found([member(50)]));
+    await expect(resolveTarget({ context: admin, purpose: 'create_task', query: 'wedding', memberQuery: 'ada' })).resolves.toMatchObject({
+      kind: 'bound', tool: 'create_task', selectionKey: 'taskCreationSelection', label: { title: 'Wedding', subtitle: 'Assign to Ada' } });
+    expect(creationProposal.selectTaskCreation).toHaveBeenCalledWith({ context: admin, containerId: id(40), assigneeId: id(50) });
+    expect(search.findMembers).toHaveBeenCalledWith({ workspaceId: admin.workspace.id, query: 'ada', limit: 10 });
+  });
+
+  it('creates an unassigned task when no assignee was described', async () => {
+    wire();
+    search.findContainers.mockResolvedValue(found([container(40)]));
+    await expect(resolveTarget({ context: admin, purpose: 'create_task', query: 'wedding' })).resolves.toMatchObject({
+      kind: 'bound', label: { subtitle: 'Unassigned' } });
+    expect(creationProposal.selectTaskCreation).toHaveBeenCalledWith({ context: admin, containerId: id(40), assigneeId: null });
+    expect(search.findMembers).not.toHaveBeenCalled();
+  });
+
+  it('binds a participant addition and requires the member to be described', async () => {
+    wire();
+    search.findContainers.mockResolvedValue(found([container(40)]));
+    search.findMembers.mockResolvedValue(found([member(50, 'Grace')]));
+    await expect(resolveTarget({ context: admin, purpose: 'add_participants', query: 'wedding', memberQuery: 'grace' })).resolves.toMatchObject({
+      kind: 'bound', selectionKey: 'participantAdditionSelection', label: { title: 'Add Grace', subtitle: 'to Wedding' } });
+    await expect(resolveTarget({ context: admin, purpose: 'add_participants', query: 'wedding' })).resolves.toEqual({ kind: 'needs_details' });
+    await expect(resolveTarget({ context: admin, purpose: 'add_participants', memberQuery: 'grace' })).resolves.toEqual({ kind: 'needs_details' });
+  });
+
+  it('shows pairs to choose from when either part is ambiguous, with null-safe payloads', async () => {
+    wire();
+    search.findContainers.mockResolvedValue(found([container(40), container(41, 'Wedding rehearsal', 'substring')]));
+    const { request } = await resolveTarget({ context: admin, purpose: 'create_task', query: 'wedding' });
+    expect(request).toMatchObject({ selected_field: 'selected_task_creation', status: 'ambiguous', candidates: [
+      { selection: { container_id: id(40), assignee_id: null }, title: 'Wedding', subtitle: 'Unassigned' },
+      { selection: { container_id: id(41), assignee_id: null }, title: 'Wedding rehearsal', subtitle: 'Unassigned' }] });
+    search.findContainers.mockResolvedValue(found([container(40)]));
+    search.findMembers.mockResolvedValue(found([member(50), member(51, 'Ada Obi', 'substring')]));
+    const pairs = await resolveTarget({ context: admin, purpose: 'add_participants', query: 'wedding', memberQuery: 'ada' });
+    expect(pairs.request.candidates.map((c) => c.selection)).toEqual([
+      { container_id: id(40), member_id: id(50) }, { container_id: id(40), member_id: id(51) }]);
+  });
+
+  it('never binds on a weak or truncated part', async () => {
+    wire();
+    search.findContainers.mockResolvedValue(found([container(40, 'Wedding', 'fuzzy')]));
+    expect((await resolveTarget({ context: admin, purpose: 'create_task', query: 'wedng' })).kind).toBe('choose');
+    search.findContainers.mockResolvedValue(found([container(40)]));
+    search.findMembers.mockResolvedValue(found([member(50)], { has_more: true }));
+    expect((await resolveTarget({ context: admin, purpose: 'create_task', query: 'wedding', memberQuery: 'ada' })).kind).toBe('choose');
+  });
+
+  it('keeps ineligible pairs out and reports what was missing', async () => {
+    wire();
+    search.findContainers.mockResolvedValue(found([container(40)]));
+    search.findMembers.mockResolvedValue(found([member(50), member(51, 'Bob')]));
+    participantProposal.selectParticipantAddition.mockImplementation(async ({ memberId }) => {
+      if (memberId === id(50)) throw new BusinessRuleError('Already a participant');
+      return { memberId };
+    });
+    const bound = await resolveTarget({ context: admin, purpose: 'add_participants', query: 'wedding', memberQuery: 'a' });
+    expect(bound.kind).toBe('choose');
+    expect(bound.request.candidates).toHaveLength(1);
+    search.findMembers.mockResolvedValue(found([]));
+    await expect(resolveTarget({ context: admin, purpose: 'add_participants', query: 'wedding', memberQuery: 'zz' }))
+      .resolves.toEqual({ kind: 'not_found', ineligible_matches: 0, missing: 'member' });
+    search.findContainers.mockResolvedValue(found([]));
+    await expect(resolveTarget({ context: admin, purpose: 'create_task', query: 'zzz' }))
+      .resolves.toEqual({ kind: 'not_found', ineligible_matches: 0, missing: 'container' });
+  });
+
+  it('fails closed on selector outages and is unavailable to members', async () => {
+    wire();
+    search.findContainers.mockResolvedValue(found([container(40)]));
+    creationProposal.selectTaskCreation.mockRejectedValue(new AppError('Unavailable', 503, 'AGENT_SELECTION_UNAVAILABLE'));
+    await expect(resolveTarget({ context: admin, purpose: 'create_task', query: 'wedding' })).rejects.toMatchObject({ statusCode: 503 });
+    for (const purpose of ['create_task', 'add_participants']) {
+      await expect(resolveTarget({ context: actor, purpose, query: 'wedding', memberQuery: 'ada' })).resolves.toEqual({ kind: 'unavailable', reason: 'admin_required' });
+    }
+  });
+
+  it('rejects a member description on a single-target purpose', async () => {
+    await expect(resolveTarget({ context: actor, purpose: 'update_task', query: 'tent', memberQuery: 'ada' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
   });
 });
