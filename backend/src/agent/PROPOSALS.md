@@ -1107,6 +1107,29 @@ remains pending: its existing RPC can change primary flags on other contacts
 and does not check saved approval state. That behavior needs its own guarded
 design before the tool is exposed.
 
+## Container archiving
+
+`archive_container` is a Tier 3 admin proposal for one active or completed
+container chosen by `selected_container_archive: { container_id }`, or resolved
+by `select_target` (automatically only on an exact name). It takes no
+arguments; the target is never a model argument.
+
+- **Selection and card:** a fresh read requires an active non-proxy admin and a
+  non-deleted container in the workspace whose status is `active` or
+  `completed`. The snapshot holds the name, type, status, money/task flags and
+  `updated_at`. The card's `after` is only `{ container_id, status: "archived" }`.
+- **Revalidation:** the whole snapshot is compared again at approval. Any change,
+  including a rename or a touch of `updated_at`, is `AGENT_PROPOSAL_STALE`.
+- **Execution:** `archiveReviewedContainer` is one conditional update that also
+  matches the approved `status` and `updated_at`. It needs no schema change.
+  Zero matched rows prove nothing was written and map to a stale 409. Any error
+  or unverifiable result is indeterminate and is not retried. A required
+  `container.archived` audit (agent-initiated, with the proposal ID) follows the
+  write; its failure is also indeterminate because the row is already archived.
+- **Result:** the container ID, `archived` and the new `updated_at`.
+- **Not included:** rename, complete, delete, settings changes, un-archiving and
+  archiving cancelled or already archived containers.
+
 ## Approve or reject
 
 Send a distinct authenticated POST with an empty JSON body `{}` to:

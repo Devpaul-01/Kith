@@ -68,7 +68,8 @@ spoken/chat “confirm” do not grant selection or approval.
   always a picker). The frontend renderer for `selection_request` is not built.
 - [x] Target resolution for compound targets (`create_task`, `add_participants`).
 - [ ] Target resolution for notifications (kept as explicit client selection).
-- [ ] Tier 3 containers: `update_container`, `archive_container`.
+- [x] Tier 3 `archive_container` (reviewed compare-and-set, no schema change).
+- [ ] Tier 3 containers: `update_container`.
 - [ ] Tier 3 membership: `update_member`, `update_participant`.
 - [ ] Tier 3 tasks: `bulk_create_tasks`, `reassign_task`.
 - [ ] Tier 3 groups: `create_group`, `update_group`, `add_group_members`.

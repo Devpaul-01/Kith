@@ -78,6 +78,13 @@ dispute, exact note and authenticated author, and the server records the time.
 Existing notes are outside the approval and are appended atomically, so
 concurrent notes are preserved. See [dispute notes](PROPOSALS.md#dispute-notes).
 
+An admin's current `selected_container_archive` for an active or completed
+container enables Tier 3 `archive_container` with no arguments. The card binds
+the container's name, type, status and exact `updated_at` version, and execution
+is one conditional update that matches that version, so a container changed
+after review is stale instead of silently archived. See
+[container archiving](PROPOSALS.md#container-archiving).
+
 An admin's current `selected_dispute_resolution` enables Tier 4
 `resolve_dispute` for one eligible owner-raised dispute on a base-currency
 contribution with recorded confirmation metadata. The full card marks both
@@ -153,7 +160,8 @@ passes the same `select*` function a client selection uses), and returns one of:
 - `target_selected` (internal): exactly one eligible, top-ranked, `exact` or
   `substring` match on a **Tier 2/3** tool, with no further matches omitted.
   The existing write tool is offered for the rest of that request and the card
-  appears in the same turn. Contacts auto-bind only on an exact label or value.
+  appears in the same turn. Contacts and containers to archive auto-bind only on
+  an exact label, value or name.
 - A **selection request**: otherwise, or for any **Tier 4** tool
   (`raise_dispute`, `resolve_dispute`), or for a weak or ambiguous match, the
   reply ends with `selection_request` and the fixed text "Choose the one you
