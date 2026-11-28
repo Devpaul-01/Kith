@@ -11,6 +11,11 @@ const {
   eventContainerCreationDataSchema, containerCreationContextSchema,
   eventContainerCreationStateSchema, buildEventContainerCreationState,
 } = require('../validators/workspace.validator');
+const {
+  containerArchiveCallerSchema, containerArchiveContextSchema, containerArchiveReadRowSchema,
+  containerArchiveResultSchema, containerArchiveRowSchema,
+} = require('../validators/container-archive.validator');
+const { disputeRaiseMemberRowSchema } = require('../validators/dispute-raise.validator');
 const { generatePublicToken } = require('../utils/crypto');
 const { generateUploadUrl }   = require('./storage.service');
 const notification = require('./notification.service');
@@ -473,6 +478,78 @@ async function archiveContainer({ workspaceId, containerId, actorCtx }) {
   return data;
 }
 
+const containerArchiveUnavailable = () => new AppError('Container archive information is unavailable. Please try again.', 503, 'CONTAINER_ARCHIVE_UNAVAILABLE');
+
+/** Fresh admin authority and eligibility for archiving one explicitly selected container. */
+async function getContainerArchiveContext({ workspaceId, containerId, callerId, userId }) {
+  if (!containerArchiveCallerSchema.safeParse({ workspaceId, containerId, callerId, userId }).success) {
+    throw new ValidationError('Invalid container archive context');
+  }
+  const read = async (operation) => {
+    let response;
+    try { response = await operation(); } catch { throw containerArchiveUnavailable(); }
+    // A response without a data key is malformed, not an empty result.
+    if (!response || response.error || !Object.prototype.hasOwnProperty.call(response, 'data')) throw containerArchiveUnavailable();
+    return response.data ?? null;
+  };
+  const actor = await read(() => supabaseAdmin.from('workspace_members')
+    .select('id, workspace_id, user_id, role, is_active, is_proxy, display_name, updated_at, deleted_at')
+    .eq('id', callerId).eq('workspace_id', workspaceId).eq('user_id', userId)
+    .eq('is_active', true).eq('is_proxy', false).is('deleted_at', null).maybeSingle());
+  if (actor && !disputeRaiseMemberRowSchema.safeParse(actor).success) throw containerArchiveUnavailable();
+  if (!actor || actor.id !== callerId || actor.workspace_id !== workspaceId || actor.user_id !== userId
+      || actor.role !== 'admin' || actor.is_active !== true || actor.is_proxy !== false || actor.deleted_at !== null) {
+    throw new ForbiddenError('Only an active workspace admin can archive containers');
+  }
+  const row = await read(() => supabaseAdmin.from('containers')
+    .select('id, workspace_id, name, container_type, status, enable_money, enable_tasks, updated_at, deleted_at')
+    .eq('id', containerId).eq('workspace_id', workspaceId).is('deleted_at', null).maybeSingle());
+  if (!row) throw new NotFoundError('Container not found');
+  const parsed = containerArchiveReadRowSchema.safeParse(row);
+  if (!parsed.success || parsed.data.id !== containerId || parsed.data.workspace_id !== workspaceId) throw containerArchiveUnavailable();
+  if (!['active', 'completed'].includes(parsed.data.status)) {
+    throw new BusinessRuleError('Only active or completed containers can be archived');
+  }
+  const selected = containerArchiveContextSchema.safeParse({ workspace_id: workspaceId, actor_member_id: callerId, member_role: 'admin',
+    container: { container_id: parsed.data.id, name: parsed.data.name, container_type: parsed.data.container_type,
+      status: parsed.data.status, enable_money: parsed.data.enable_money, enable_tasks: parsed.data.enable_tasks,
+      updated_at: parsed.data.updated_at } });
+  if (!selected.success) throw containerArchiveUnavailable();
+  return selected.data;
+}
+
+/**
+ * Archives exactly the reviewed container version with one conditional update that
+ * matches the approved status and updated_at. Zero matched rows prove nothing was
+ * written (stale); any error or unverifiable result is uncertain and not retried.
+ */
+async function archiveReviewedContainer({ workspaceId, containerId, expected, actorCtx, proposalId }) {
+  const reviewed = containerArchiveContextSchema.safeParse(expected);
+  if (!reviewed.success || reviewed.data.workspace_id !== workspaceId || reviewed.data.container.container_id !== containerId) {
+    throw new ValidationError('Valid reviewed container archive details are required');
+  }
+  let response;
+  try {
+    response = await supabaseAdmin.from('containers')
+      .update({ status: 'archived', updated_at: new Date().toISOString() })
+      .eq('id', containerId).eq('workspace_id', workspaceId)
+      .eq('status', reviewed.data.container.status).eq('updated_at', reviewed.data.container.updated_at)
+      .is('deleted_at', null).select('id, status, updated_at').maybeSingle();
+  } catch { throw containerArchiveUnavailable(); }
+  if (response && response.error === null && response.data === null) {
+    throw new ConflictError('The container changed and can no longer be archived');
+  }
+  const row = containerArchiveRowSchema.safeParse(response?.error === null ? response.data : undefined);
+  if (!row.success || row.data.id !== containerId) throw containerArchiveUnavailable();
+  try {
+    await audit.log({ ...actorCtx, workspaceId, action: AUDIT_ACTIONS.CONTAINER_ARCHIVED, targetType: 'container',
+      targetId: containerId, required: true, metadata: { agent_initiated: true, proposal_id: proposalId } });
+  } catch { throw containerArchiveUnavailable(); }
+  const result = containerArchiveResultSchema.safeParse({ container_id: row.data.id, status: row.data.status, updated_at: row.data.updated_at });
+  if (!result.success) throw containerArchiveUnavailable();
+  return result.data;
+}
+
 async function generatePublicLink({ workspaceId, containerId }) {
   const token = generatePublicToken();
 
@@ -697,6 +774,8 @@ module.exports = {
   completeContainer,
   convertToRecurring,
   archiveContainer,
+  getContainerArchiveContext,
+  archiveReviewedContainer,
   generatePublicLink,
   deleteContainer,
   restoreContainer,
