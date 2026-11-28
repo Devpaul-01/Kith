@@ -8,13 +8,14 @@ const taskCreation = require('./task-creation-proposal.service');
 const disputeRaise = require('./dispute-raise-proposal.service');
 const disputeResolve = require('./dispute-resolve-proposal.service');
 const disputeNote = require('./dispute-note-proposal.service');
+const containerArchive = require('./container-archive-proposal.service');
 const ledger = require('./ledger-proposal.service');
 const ledgerConfirmation = require('./ledger-confirmation-proposal.service');
 const containerCreation = require('./container-creation-proposal.service');
 const memberCreation = require('./member-creation-proposal.service');
 const participantAddition = require('./participant-addition-proposal.service');
 
-const domains = Object.freeze([notification, profile, contact, task, taskConfirmation, taskCreation, disputeRaise, disputeResolve, disputeNote, ledger, ledgerConfirmation, containerCreation, memberCreation, participantAddition]);
+const domains = Object.freeze([notification, profile, contact, task, taskConfirmation, taskCreation, disputeRaise, disputeResolve, disputeNote, containerArchive, ledger, ledgerConfirmation, containerCreation, memberCreation, participantAddition]);
 const definitions = Object.freeze(domains.flatMap((domain) => domain.definitions));
 const entries = new Map();
 for (const domain of domains) {

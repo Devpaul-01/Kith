@@ -62,6 +62,7 @@ function table() {
   const { selectDisputeContribution } = require('./dispute-raise-proposal.service');
   const { selectDisputeResolution } = require('./dispute-resolve-proposal.service');
   const { selectDisputeNote } = require('./dispute-note-proposal.service');
+  const { selectContainerArchive } = require('./container-archive-proposal.service');
   const { definitions } = require('./proposal-registry.service');
   const tool = (name) => definitions.find((definition) => definition.name === name);
   const caller = (context) => ({ workspaceId: context.workspace.id, callerId: context.member.id,
@@ -108,6 +109,10 @@ function table() {
     confirm_ledger_entry: { tool: tool('confirm_ledger_entry'), field: 'selected_ledger_entry', key: 'ledgerEntrySelection', autoBind: true,
       search: entries, select: (context, c) => selectLedgerEntry({ context, containerId: c.container_id, entryId: c.id }),
       payload: entryPayload, describe: describeEntry },
+    // Archiving is hard to undo, so only an exact name binds automatically.
+    archive_container: { tool: tool('archive_container'), field: 'selected_container_archive', key: 'containerArchiveSelection', autoBind: true,
+      strong: ['exact'], search: containerSearch, select: (context, c) => selectContainerArchive({ context, containerId: c.id }),
+      payload: (c) => ({ container_id: c.id }), describe: describeContainer },
     create_ledger_entry: { tool: tool('create_ledger_entry'), field: 'selected_container_id', key: 'ledgerSelection', autoBind: true,
       search: ({ context, query }) => search.findContainers({ ...caller(context), query }),
       select: (context, c) => selectLedgerContainer({ context, containerId: c.id }), payload: (c) => c.id, describe: describeContainer },

@@ -10,6 +10,9 @@ const {
   resolutionContextMatches, plannedResolvedDisputeState,
 } = require('../../validators/dispute-resolve.validator');
 const {
+  containerArchiveTargetSchema, containerArchiveContextSchema, containerArchiveResultSchema,
+} = require('../../validators/container-archive.validator');
+const {
   disputeNoteTargetSchema, disputeNoteDataSchema, disputeNoteContextSchema, disputeNoteResultSchema,
 } = require('../../validators/dispute-note.validator');
 const {
@@ -373,6 +376,21 @@ function disputeNoteResultMatches(proposal, result) {
   })) === JSON.stringify(proposal.after);
 }
 
+const containerArchiveArgumentsSchema = z.object({}).strict();
+const containerArchiveParametersSchema = z.object({ container_id: z.string().uuid() }).strict();
+const containerArchiveAfterSchema = z.object({ container_id: z.string().uuid(), status: z.literal('archived') }).strict();
+const CONTAINER_ARCHIVE_SUMMARY = 'Archive the selected container.';
+
+function containerArchiveAfter(selection) {
+  const selected = containerArchiveContextSchema.parse(selection);
+  return containerArchiveAfterSchema.parse({ container_id: selected.container.container_id, status: 'archived' });
+}
+function containerArchiveResultMatches(proposal, result) {
+  const parsed = containerArchiveResultSchema.safeParse(result);
+  return parsed.success && JSON.stringify(containerArchiveAfterSchema.parse({
+    container_id: parsed.data.container_id, status: parsed.data.status })) === JSON.stringify(proposal.after);
+}
+
 const containerCreationArgumentsSchema = eventContainerCreationDataSchema
   .omit({ container_type: true }).partial({
     subtitle: true, description: true, enable_money: true, enable_tasks: true,
@@ -526,6 +544,11 @@ const addDisputeNoteProposalSchema = z.object({
   summary: z.literal(DISPUTE_NOTE_SUMMARY), parameters: disputeNoteParametersSchema,
   before: disputeNoteContextSchema, after: disputeNoteAfterSchema, expires_at: z.string().datetime(),
 }).strict();
+const archiveContainerProposalSchema = z.object({
+  id: z.string().uuid(), tool: z.literal('archive_container'), tier: z.literal(3),
+  summary: z.literal(CONTAINER_ARCHIVE_SUMMARY), parameters: containerArchiveParametersSchema,
+  before: containerArchiveContextSchema, after: containerArchiveAfterSchema, expires_at: z.string().datetime(),
+}).strict();
 const addParticipantProposalSchema = z.object({
   id: z.string().uuid(), tool: z.literal('add_participants'), tier: z.literal(3),
   summary: z.literal(PARTICIPANT_ADDITION_SUMMARY), parameters: participantAdditionParametersSchema,
@@ -565,6 +588,7 @@ const proposalSchema = z.union([
   raiseDisputeProposalSchema,
   resolveDisputeProposalSchema,
   addDisputeNoteProposalSchema,
+  archiveContainerProposalSchema,
   addParticipantProposalSchema,
   createSelfLedgerProposalSchema,
   confirmLedgerEntryProposalSchema,
@@ -645,6 +669,11 @@ const proposalSchema = z.union([
         || JSON.stringify(value.after) !== JSON.stringify(disputeNoteAfter(value.before, value.parameters)))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Dispute note mismatch' });
   }
+  if (value.tool === 'archive_container'
+      && (value.parameters.container_id !== value.before.container.container_id
+        || JSON.stringify(value.after) !== JSON.stringify(containerArchiveAfter(value.before)))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Container archive mismatch' });
+  }
   if (value.tool === 'add_participants'
       && (value.parameters.container_id !== value.before.container_id
         || value.parameters.workspace_member_id !== value.before.workspace_member_id
@@ -695,6 +724,7 @@ const proposalResultSchema = z.union([
   raiseDisputeResultSchema,
   resolveDisputeResultSchema,
   disputeNoteResultSchema,
+  containerArchiveResultSchema,
   participantAdditionRowSchema,
   selfLedgerResultSchema,
   ledgerConfirmationResultSchema,
@@ -782,6 +812,9 @@ const proposalRecordSchema = z.object({
   } else if (record.proposal.tool === 'add_dispute_note'
       && !disputeNoteResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Dispute note result mismatch' });
+  } else if (record.proposal.tool === 'archive_container'
+      && !containerArchiveResultMatches(record.proposal, record.result)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Container archive result mismatch' });
   } else if (record.proposal.tool === 'add_participants'
       && !participantAdditionResultMatches(record.proposal, record.result)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Participant addition result mismatch' });
@@ -842,6 +875,9 @@ const resolveDisputeStatusFields = z.object({
 const disputeNoteStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('add_dispute_note'), dispute_id: z.string().uuid(),
 }).strict();
+const containerArchiveStatusFields = z.object({
+  ...commonStatusFields, tool: z.literal('archive_container'), container_id: z.string().uuid(),
+}).strict();
 const participantAdditionStatusFields = z.object({
   ...commonStatusFields, tool: z.literal('add_participants'),
   participant_id: z.string().uuid(), container_id: z.string().uuid(), workspace_member_id: z.string().uuid(),
@@ -872,6 +908,10 @@ const proposalStatusSchema = z.union([
       && value.result.dispute.workspace_id === value.result.entry.workspace_id
       && value.result.dispute.raised_by === value.result.entry.contributor_id,
   'Dispute resolution receipt target mismatch')),
+  ...incompleteStatuses.map((status) => containerArchiveStatusFields.extend({ status: z.literal(status) })),
+  ...['audit_pending', 'executed'].map((status) => containerArchiveStatusFields.extend({
+    status: z.literal(status), result: containerArchiveResultSchema,
+  }).refine((value) => value.container_id === value.result.container_id, 'Container archive receipt target mismatch')),
   ...incompleteStatuses.map((status) => disputeNoteStatusFields.extend({ status: z.literal(status) })),
   ...['audit_pending', 'executed'].map((status) => disputeNoteStatusFields.extend({
     status: z.literal(status), result: disputeNoteResultSchema,
@@ -947,6 +987,9 @@ const proposedToolResultSchema = z.object({
 }).strict();
 
 module.exports = {
+  containerArchiveTargetSchema, containerArchiveContextSchema, containerArchiveArgumentsSchema,
+  containerArchiveParametersSchema, containerArchiveAfterSchema, containerArchiveResultSchema,
+  containerArchiveAfter, containerArchiveResultMatches, CONTAINER_ARCHIVE_SUMMARY,
   disputeNoteTargetSchema, disputeNoteDataSchema, disputeNoteContextSchema,
   disputeNoteArgumentsSchema, disputeNoteParametersSchema, disputeNoteAfterSchema, disputeNoteResultSchema,
   disputeNoteParametersFromArgs, disputeNoteAfter, disputeNoteResultMatches, DISPUTE_NOTE_SUMMARY,

@@ -19,6 +19,7 @@ const { selectLedgerEntry, confirmLedgerEntryDefinition } = require('./ledger-co
 const { selectDisputeContribution, raiseDisputeDefinition } = require('./dispute-raise-proposal.service');
 const { selectDisputeResolution, resolveDisputeDefinition } = require('./dispute-resolve-proposal.service');
 const { selectDisputeNote, addDisputeNoteDefinition } = require('./dispute-note-proposal.service');
+const { selectContainerArchive, archiveContainerDefinition } = require('./container-archive-proposal.service');
 const { createContainerDefinition } = require('./container-creation-proposal.service');
 const { createMemberDefinition } = require('./member-creation-proposal.service');
 const { selectParticipantAddition, addParticipantsDefinition } = require('./participant-addition-proposal.service');
@@ -78,6 +79,8 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     : await selectDisputeResolution({ context: actorContext, disputeId: input.data.selected_dispute_resolution.dispute_id });
   const disputeNoteSelection = input.data.selected_dispute_note === undefined ? undefined
     : await selectDisputeNote({ context: actorContext, disputeId: input.data.selected_dispute_note.dispute_id });
+  const containerArchiveSelection = input.data.selected_container_archive === undefined ? undefined
+    : await selectContainerArchive({ context: actorContext, containerId: input.data.selected_container_archive.container_id });
   let proposalConversationId = null;
   const proposalSupport = {
     definitions: Object.freeze([
@@ -94,6 +97,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
       ...(disputeSelection ? [raiseDisputeDefinition] : []),
       ...(disputeResolutionSelection ? [resolveDisputeDefinition] : []),
       ...(disputeNoteSelection ? [addDisputeNoteDefinition] : []),
+      ...(containerArchiveSelection ? [archiveContainerDefinition] : []),
       createContainerDefinition,
       createMemberDefinition,
     ].filter((definition) => definition.minRole === 'member'
@@ -109,6 +113,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     ...(disputeSelection ? { disputeSelection } : {}),
     ...(disputeResolutionSelection ? { disputeResolutionSelection } : {}),
     ...(disputeNoteSelection ? { disputeNoteSelection } : {}),
+    ...(containerArchiveSelection ? { containerArchiveSelection } : {}),
     resolveTarget: ({ purpose, query, member_query: memberQuery }) => resolveTarget({ context: actorContext, purpose, query, memberQuery }),
     create: ({ name, args, turnId, selection: resolved }) => createProposal({
       context: actorContext, tool: name,
@@ -118,6 +123,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
         : name === raiseDisputeDefinition.name ? disputeSelection
         : name === resolveDisputeDefinition.name ? disputeResolutionSelection
         : name === addDisputeNoteDefinition.name ? disputeNoteSelection
+        : name === archiveContainerDefinition.name ? containerArchiveSelection
         : name === createLedgerEntryDefinition.name ? ledgerSelection
         : name === updateTaskDefinition.name ? taskSelection
         : name === adminConfirmTaskDefinition.name ? taskConfirmationSelection

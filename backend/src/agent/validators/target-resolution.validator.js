@@ -5,7 +5,7 @@ const TARGET_TOOL_NAME = 'select_target';
 // when the client sends a matching selected_* field.
 const TARGET_PURPOSES = Object.freeze([
   'update_task', 'admin_confirm_task', 'delete_contact', 'add_dispute_note', 'resolve_dispute',
-  'raise_dispute', 'confirm_ledger_entry', 'create_ledger_entry', 'create_task', 'add_participants',
+  'raise_dispute', 'confirm_ledger_entry', 'create_ledger_entry', 'create_task', 'add_participants', 'archive_container',
 ]);
 // These need a container and a member, so the model describes each in the user's words.
 const COMPOUND_PURPOSES = Object.freeze(['create_task', 'add_participants']);

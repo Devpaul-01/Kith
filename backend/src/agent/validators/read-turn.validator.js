@@ -1,6 +1,6 @@
 const { z } = require('zod');
 const { tokenUsageSchema } = require('./provider-metadata.validator');
-const { taskTargetSchema, ledgerConfirmationTargetSchema, participantAdditionTargetSchema, taskCreationTargetSchema, raiseDisputeTargetSchema, resolveDisputeTargetSchema, disputeNoteTargetSchema } = require('./proposal.validator');
+const { taskTargetSchema, ledgerConfirmationTargetSchema, participantAdditionTargetSchema, taskCreationTargetSchema, raiseDisputeTargetSchema, resolveDisputeTargetSchema, disputeNoteTargetSchema, containerArchiveTargetSchema } = require('./proposal.validator');
 
 const READ_TURN_LIMITS = Object.freeze({
   modelCalls: 6,
@@ -34,6 +34,7 @@ const chatInputSchema = readTurnInputSchema.extend({
   selected_dispute_entry: raiseDisputeTargetSchema.optional(),
   selected_dispute_resolution: resolveDisputeTargetSchema.optional(),
   selected_dispute_note: disputeNoteTargetSchema.optional(),
+  selected_container_archive: containerArchiveTargetSchema.optional(),
 });
 
 const providerToolCallSchema = z.object({
