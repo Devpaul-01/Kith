@@ -166,6 +166,17 @@ With no `query`, `update_task` lists the member's own open tasks (soonest due
 first) and `delete_contact` lists their contacts; other purposes ask for
 details.
 
+`create_task` and `add_participants` (admin only) take a container and a member,
+so the model also sets `member_query` to the user's words naming the assignee or
+member (omit it for an unassigned task; `add_participants` requires it). The
+server searches both, validates each container-and-member pair with the same
+composed selector a client selection uses, and binds only when exactly one pair
+is eligible, both parts are top-ranked strong matches, and nothing was omitted.
+Otherwise the picker lists up to five pairs; its `selection` is
+`{ container_id, assignee_id }` (null for unassigned) or
+`{ container_id, member_id }`. A missing part is reported as `not_found` with
+`missing: "container"` or `"member"`.
+
 `selection_request` is built by the server from database rows:
 
 ```json
@@ -181,9 +192,8 @@ the next `POST /chat` with `{ [selected_field]: selection }`. Continue the same
 `conversation_id` with a short message such as "that one", or resend the
 original message with the selection on the stateless path. The server
 re-validates the selection exactly as for any client selection, then the model
-proposes the write and the user approves the card. Compound targets
-(`create_task`, `add_participants`) and notifications keep explicit client
-selection for now.
+proposes the write and the user approves the card. Notifications keep explicit
+client selection.
 
 ## Task, ledger, dispute and group resolution
 
