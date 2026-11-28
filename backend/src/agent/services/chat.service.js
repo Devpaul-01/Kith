@@ -109,7 +109,7 @@ async function runChatTurn({ data, context, onEvent, signal, actorCtx } = {}) {
     ...(disputeSelection ? { disputeSelection } : {}),
     ...(disputeResolutionSelection ? { disputeResolutionSelection } : {}),
     ...(disputeNoteSelection ? { disputeNoteSelection } : {}),
-    resolveTarget: ({ purpose, query }) => resolveTarget({ context: actorContext, purpose, query }),
+    resolveTarget: ({ purpose, query, member_query: memberQuery }) => resolveTarget({ context: actorContext, purpose, query, memberQuery }),
     create: ({ name, args, turnId, selection: resolved }) => createProposal({
       context: actorContext, tool: name,
       selection: resolved !== undefined ? resolved
