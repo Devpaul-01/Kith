@@ -14,6 +14,7 @@ const confirmProposal = require('../../../src/agent/services/task-confirmation-p
 const creationProposal = require('../../../src/agent/services/task-creation-proposal.service');
 const participantProposal = require('../../../src/agent/services/participant-addition-proposal.service');
 const ledgerProposal = require('../../../src/agent/services/ledger-proposal.service');
+const archiveProposal = require('../../../src/agent/services/container-archive-proposal.service');
 const ledgerConfirmProposal = require('../../../src/agent/services/ledger-confirmation-proposal.service');
 const { resolveTarget } = require('../../../src/agent/services/target-resolution.service');
 const { selectTargetArgsSchema, selectionRequestSchema } = require('../../../src/agent/validators/target-resolution.validator');
@@ -225,6 +226,28 @@ describe('admin and ledger tools', () => {
     search.findContainers.mockResolvedValue(found([container(40, 'Wedding', 'substring'), container(41, 'Wedding rehearsal', 'substring')]));
     const { request } = await resolveTarget({ context: actor, purpose: 'create_ledger_entry', query: 'Wedding' });
     expect(request).toMatchObject({ selected_field: 'selected_container_id', candidates: [{ selection: id(40) }, { selection: id(41) }] });
+  });
+});
+
+describe('archive_container', () => {
+  const container = (n, name, match_type) => ({ id: id(n), name, container_type: 'event', status: 'active', match_type });
+  beforeEach(() => { jest.spyOn(archiveProposal, 'selectContainerArchive').mockImplementation(async ({ containerId }) => ({ container: { container_id: containerId } })); });
+
+  it('binds only on an exact name because archiving is hard to undo', async () => {
+    search.findContainers.mockResolvedValue(found([container(40, 'Wedding', 'exact')]));
+    await expect(resolveTarget({ context: admin, purpose: 'archive_container', query: 'Wedding' })).resolves.toMatchObject({
+      kind: 'bound', tool: 'archive_container', selectionKey: 'containerArchiveSelection' });
+    expect(archiveProposal.selectContainerArchive).toHaveBeenCalledWith({ context: admin, containerId: id(40) });
+    search.findContainers.mockResolvedValue(found([container(40, 'Wedding', 'substring')]));
+    const { kind, request } = await resolveTarget({ context: admin, purpose: 'archive_container', query: 'Wed' });
+    expect(kind).toBe('choose');
+    expect(request).toMatchObject({ selected_field: 'selected_container_archive', status: 'single_match',
+      candidates: [{ selection: { container_id: id(40) }, title: 'Wedding', subtitle: 'event · active' }] });
+  });
+
+  it('is unavailable to members and asks for details when none were given', async () => {
+    await expect(resolveTarget({ context: actor, purpose: 'archive_container', query: 'Wedding' })).resolves.toEqual({ kind: 'unavailable', reason: 'admin_required' });
+    await expect(resolveTarget({ context: admin, purpose: 'archive_container' })).resolves.toEqual({ kind: 'needs_details' });
   });
 });
 
